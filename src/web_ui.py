@@ -1,12 +1,16 @@
-"""Live web UI -- a chess.com-style 8x8 board diagram driven by detection.
+"""Live web UI -- a chess.com-style 8x8 board diagram plus the annotated
+camera feed, with plain-English move descriptions as pieces are moved.
 
-Unlike live_view.py (which shows the raw camera feed with boxes overlaid),
-this renders a clean abstract board from the tracked board_state matrix:
-no camera image, just squares + Unicode piece glyphs, updating as the
-tracker's stable state changes.
+Combines what live_view.py and main.py do separately into one page: the
+raw camera feed with detection boxes (left/top), and a clean abstract
+board rendered from the tracked, smoothed board_state matrix (right/
+bottom). Whenever the smoothed state changes, it's diffed against the
+previous state to describe what happened ("White Knight moves to A1",
+"Black Bishop captures on D4") -- this is a physical-change description,
+not a legal-move engine (no python-chess, no turn tracking).
 
     python3 src/web_ui.py                      # http://<this-pi>:8000/
-    python3 src/web_ui.py --port 9000 --conf 0.35
+    python3 src/web_ui.py --port 9000 --conf 0.25
 
 Requires config/calibration.json (run calibrate.py first) and a trained,
 NCNN-exported model (see training/NOTES.md).
@@ -18,8 +22,11 @@ import time
 from pathlib import Path
 from threading import Lock, Thread
 
-from board_state import BoardStateTracker, load_calibration
+import cv2
+
+from board_state import BOARD_SIZE, BoardStateTracker, load_calibration, square_name
 from detect import detect, load_model
+from live_view import annotate
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CALIBRATION = REPO_ROOT / "config" / "calibration.json"
@@ -34,10 +41,12 @@ PAGE = """<!doctype html>
 <style>
   :root { color-scheme: dark; }
   body {
-    margin: 0; min-height: 100vh; display: flex; flex-direction: column;
-    align-items: center; justify-content: center; gap: 12px;
+    margin: 0; min-height: 100vh; display: flex; flex-wrap: wrap;
+    align-items: flex-start; justify-content: center; gap: 24px; padding: 24px;
     background: #1a1a1a; font-family: -apple-system, Helvetica, Arial, sans-serif;
+    box-sizing: border-box;
   }
+  .col { display: flex; flex-direction: column; align-items: center; gap: 12px; }
   #status { color: #888; font-size: 14px; }
   #status.stale { color: #d9534f; }
   #board {
@@ -51,12 +60,22 @@ PAGE = """<!doctype html>
   .dark  { background: #769656; }
   .white-piece { color: #fff; text-shadow: 0 0 2px #000, 0 1px 3px rgba(0,0,0,.6); }
   .black-piece { color: #111; }
-  #labels { display: flex; gap: 4px; color: #666; font-size: 12px; }
+  #stream { max-width: min(90vw, 640px); border-radius: 6px; box-shadow: 0 8px 30px rgba(0,0,0,0.5); }
+  #lastMove { color: #eee; font-size: 18px; min-height: 24px; }
+  #moveLog { color: #999; font-size: 13px; max-width: 320px; text-align: center; max-height: 140px; overflow-y: auto; }
+  #moveLog div { padding: 2px 0; }
 </style>
 </head>
 <body>
-  <div id="board"></div>
-  <div id="status">connecting...</div>
+  <div class="col">
+    <div id="board"></div>
+    <div id="lastMove"></div>
+    <div id="moveLog"></div>
+    <div id="status">connecting...</div>
+  </div>
+  <div class="col">
+    <img id="stream" src="/stream.mjpg">
+  </div>
 <script>
 const GLYPHS = {
   "white-king": "\\u2654", "white-queen": "\\u2655", "white-rook": "\\u2656",
@@ -87,13 +106,28 @@ function render(matrix) {
 }
 
 const statusEl = document.getElementById("status");
+const lastMoveEl = document.getElementById("lastMove");
+const moveLogEl = document.getElementById("moveLog");
 let lastOk = Date.now();
+let lastMoveSeq = 0;
+
+function logMove(text) {
+  const line = document.createElement("div");
+  line.textContent = text;
+  moveLogEl.prepend(line);
+  while (moveLogEl.children.length > 8) moveLogEl.removeChild(moveLogEl.lastChild);
+}
 
 async function poll() {
   try {
     const res = await fetch("/board.json", { cache: "no-store" });
     const data = await res.json();
     render(data.matrix);
+    if (data.move_seq > lastMoveSeq && data.last_move) {
+      lastMoveEl.textContent = data.last_move;
+      logMove(data.last_move);
+    }
+    lastMoveSeq = data.move_seq;
     lastOk = Date.now();
     statusEl.textContent = "live -- updated " + new Date(data.updated_at * 1000).toLocaleTimeString();
     statusEl.classList.remove("stale");
@@ -110,22 +144,81 @@ poll();
 """
 
 
+def _describe_piece(label):
+    color, piece = label.split("-")
+    return f"{color.capitalize()} {piece.capitalize()}"
+
+
+def describe_move(old, new):
+    """Diffs two stable board matrices into a human-readable description of
+    what physically changed -- not a legal-move engine, just a description
+    of which squares emptied and which squares gained a piece."""
+    departures = []  # (square, label) squares that became empty
+    arrivals = []  # (square, label, was_occupied_before)
+
+    for rank_idx in range(BOARD_SIZE):
+        for file_idx in range(BOARD_SIZE):
+            old_label = old[rank_idx][file_idx]
+            new_label = new[rank_idx][file_idx]
+            if old_label == new_label:
+                continue
+            square = square_name(file_idx, rank_idx)
+            if new_label is None:
+                departures.append((square, old_label))
+            else:
+                arrivals.append((square, new_label, old_label is not None))
+
+    messages = []
+    for square, label, was_occupied in arrivals:
+        piece_desc = _describe_piece(label)
+        match_idx = next((i for i, (_, dep_label) in enumerate(departures) if dep_label == label), None)
+        if match_idx is not None:
+            departures.pop(match_idx)
+            messages.append(f"{piece_desc} moves to {square.upper()}")
+        elif was_occupied:
+            messages.append(f"{piece_desc} captures on {square.upper()}")
+        else:
+            messages.append(f"{piece_desc} appears on {square.upper()}")
+
+    return "; ".join(messages) if messages else None
+
+
 class BoardBuffer:
-    """Holds the most recent stable board matrix for the HTTP handler to read."""
+    """Holds the latest board matrix, move description, and annotated JPEG
+    frame for the HTTP handler to read -- one lock guards all three since
+    they're updated together once per detection loop iteration."""
 
     def __init__(self):
         self._lock = Lock()
         self._matrix = None
         self._updated_at = 0.0
+        self._last_move = None
+        self._move_seq = 0
+        self._jpeg = None
 
-    def set(self, matrix):
+    def set_board(self, matrix):
         with self._lock:
-            self._matrix = matrix
+            self._matrix = [row[:] for row in matrix]
             self._updated_at = time.time()
 
-    def get(self):
+    def set_move(self, text):
         with self._lock:
-            return self._matrix, self._updated_at
+            self._last_move = text
+            self._move_seq += 1
+
+    def set_frame(self, frame):
+        ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        if ok:
+            with self._lock:
+                self._jpeg = buf.tobytes()
+
+    def get_board(self):
+        with self._lock:
+            return self._matrix, self._updated_at, self._last_move, self._move_seq
+
+    def get_frame(self):
+        with self._lock:
+            return self._jpeg
 
 
 def start_server(host, port, buffer):
@@ -141,14 +234,32 @@ def start_server(host, port, buffer):
                 self.end_headers()
                 self.wfile.write(body)
             elif self.path == "/board.json":
-                matrix, updated_at = buffer.get()
+                matrix, updated_at, last_move, move_seq = buffer.get_board()
                 rows = matrix if matrix is not None else [[None] * 8 for _ in range(8)]
-                body = json.dumps({"matrix": rows, "updated_at": updated_at}).encode("utf-8")
+                body = json.dumps(
+                    {"matrix": rows, "updated_at": updated_at, "last_move": last_move, "move_seq": move_seq}
+                ).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+            elif self.path == "/stream.mjpg":
+                self.send_response(200)
+                self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+                self.end_headers()
+                try:
+                    while True:
+                        jpeg = buffer.get_frame()
+                        if jpeg is None:
+                            time.sleep(0.05)
+                            continue
+                        self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n\r\n")
+                        self.wfile.write(jpeg)
+                        self.wfile.write(b"\r\n")
+                        time.sleep(0.03)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass  # viewer closed the tab
             else:
                 self.send_error(404)
 
@@ -190,14 +301,34 @@ def main():
 
     from capture import Camera
 
+    previous_stable = None
+    fps = 0.0
+    last_tick = time.time()
+
     print("Running. Ctrl+C to stop.")
     try:
         with Camera() as cam:
             while True:
                 frame = cam.read_frame()
                 detections = detect(model, frame, conf=args.conf)
-                matrix, _ = tracker.update(detections)
-                buffer.set(matrix)
+                matrix, changed = tracker.update(detections)
+
+                if changed:
+                    new_stable = [row[:] for row in matrix]
+                    if previous_stable is not None:
+                        move_text = describe_move(previous_stable, new_stable)
+                        if move_text:
+                            buffer.set_move(move_text)
+                    previous_stable = new_stable
+
+                buffer.set_board(matrix)
+
+                now = time.time()
+                fps = 1.0 / (now - last_tick) if now > last_tick else fps
+                last_tick = now
+                canvas = annotate(frame, detections, calibration_matrix, True, fps, args.conf)
+                buffer.set_frame(canvas)
+
                 time.sleep(args.interval)
     except KeyboardInterrupt:
         print("Stopped.")
