@@ -1,0 +1,8 @@
+# Install with: pip install -r requirements.txt
+# picamera2 is NOT installed via pip -- see README.md for apt install instructions,
+# it must come from the system package manager on Raspberry Pi OS.
+
+ultralytics>=8.3.0
+opencv-python>=4.9.0
+numpy>=1.26.0
+ncnn>=1.0.20240410

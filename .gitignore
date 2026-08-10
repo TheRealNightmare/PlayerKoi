@@ -1,0 +1,21 @@
+__pycache__/
+.venv/
+*.log
+capture_test.jpg
+# Training artifacts (this PC only, never committed)
+.venv-train/
+training/**/data.yaml.bak
+training/datasets
+
+# Base pretrained checkpoints (auto-downloaded by ultralytics on demand,
+# no reason to version multi-tens-of-MB files that never change)
+/yolov8n.pt
+/yolo26n.pt
+/yolo26l.pt
+/yolo26x.pt
+
+# Duplicate run dirs ultralytics creates when --name collides with an
+# existing run (chessred_yolo26l-2, val-3, etc.) -- only the unsuffixed
+# name is ever the one actually validated/exported/deployed.
+runs/detect/*-[0-9]
+runs/

@@ -1,0 +1,11 @@
+# Training-side dependencies (this PC, NOT the Raspberry Pi).
+#
+# IMPORTANT: torch + torchvision are NOT listed here on purpose. On an
+# RTX 5060 Ti (Blackwell / sm_120) they must come from the CUDA 12.8 wheel
+# index, which training/setup.sh installs FIRST. Pinning them here would let
+# ultralytics pull a CPU/older-CUDA build that can't drive the GPU.
+#
+# Install via: bash training/setup.sh   (do not `pip install -r` this directly)
+
+ultralytics>=8.3.0
+pyyaml>=6.0
