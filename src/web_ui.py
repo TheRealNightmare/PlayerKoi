@@ -1,19 +1,22 @@
-"""Live web UI -- a chess.com-style 8x8 board diagram plus the annotated
-camera feed, with plain-English move descriptions as pieces are moved.
+"""Live web UI -- a chess.com-style 8x8 board diagram plus the live camera
+feed, with move descriptions in real algebraic notation as pieces are moved.
 
-Combines what live_view.py and main.py do separately into one page: the
-raw camera feed with detection boxes (left/top), and a clean abstract
-board rendered from the tracked, smoothed board_state matrix (right/
-bottom). Whenever the smoothed state changes, it's diffed against the
-previous state to describe what happened ("White Knight moves to A1",
-"Black Bishop captures on D4") -- this is a physical-change description,
-not a legal-move engine (no python-chess, no turn tracking).
+The board diagram is driven by src/tracking_loop.py's event-gated
+diff/classify/legal-move pipeline (see that module's docstring) rather
+than a fixed-interval full-frame detection loop: the camera feed updates
+continuously and cheaply, but the board only re-evaluates when something
+has actually settled. Moves are real algebraic notation (SAN) via
+python-chess (src/move_resolver.py), not just a physical before/after
+description.
 
     python3 src/web_ui.py                      # http://<this-pi>:8000/
     python3 src/web_ui.py --port 9000 --conf 0.25
 
-Requires config/calibration.json (run calibrate.py first) and a trained,
-NCNN-exported model (see training/NOTES.md).
+Requires config/calibration.json (run calibrate.py first), a trained,
+NCNN-exported detector (see training/NOTES.md) for the full-frame fallback
+path, and a trained, NCNN-exported per-square classifier (see
+training/prepare_square_crops.py and training/train_classifier.py) for the
+fast routine per-move path.
 """
 
 import argparse
@@ -24,13 +27,16 @@ from threading import Lock, Thread
 
 import cv2
 
-from board_state import BOARD_SIZE, BoardStateTracker, load_calibration, square_name
-from detect import detect, load_model
-from live_view import annotate
+from board_state import load_calibration
+from capture import Camera, CaptureStream
+from detect import load_model
+from square_classifier import load_classifier
+from tracking_loop import TrackingLoop
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CALIBRATION = REPO_ROOT / "config" / "calibration.json"
 DEFAULT_MODEL = REPO_ROOT / "models" / "best_ncnn_model"
+DEFAULT_CLASSIFIER = REPO_ROOT / "models" / "square_classifier_ncnn_model"
 
 PAGE = """<!doctype html>
 <html>
@@ -123,9 +129,14 @@ async function poll() {
     const res = await fetch("/board.json", { cache: "no-store" });
     const data = await res.json();
     render(data.matrix);
-    if (data.move_seq > lastMoveSeq && data.last_move) {
-      lastMoveEl.textContent = data.last_move;
-      logMove(data.last_move);
+    if (data.move_seq > lastMoveSeq) {
+      if (data.last_move) {
+        lastMoveEl.textContent = data.last_move;
+        logMove(data.last_move);
+      } else if (data.flagged) {
+        lastMoveEl.textContent = "board re-synced -- please verify the position";
+        logMove("(flagged: no legal move matched, even after a rescan)");
+      }
     }
     lastMoveSeq = data.move_seq;
     lastOk = Date.now();
@@ -144,49 +155,11 @@ poll();
 """
 
 
-def _describe_piece(label):
-    color, piece = label.split("-")
-    return f"{color.capitalize()} {piece.capitalize()}"
-
-
-def describe_move(old, new):
-    """Diffs two stable board matrices into a human-readable description of
-    what physically changed -- not a legal-move engine, just a description
-    of which squares emptied and which squares gained a piece."""
-    departures = []  # (square, label) squares that became empty
-    arrivals = []  # (square, label, was_occupied_before)
-
-    for rank_idx in range(BOARD_SIZE):
-        for file_idx in range(BOARD_SIZE):
-            old_label = old[rank_idx][file_idx]
-            new_label = new[rank_idx][file_idx]
-            if old_label == new_label:
-                continue
-            square = square_name(file_idx, rank_idx)
-            if new_label is None:
-                departures.append((square, old_label))
-            else:
-                arrivals.append((square, new_label, old_label is not None))
-
-    messages = []
-    for square, label, was_occupied in arrivals:
-        piece_desc = _describe_piece(label)
-        match_idx = next((i for i, (_, dep_label) in enumerate(departures) if dep_label == label), None)
-        if match_idx is not None:
-            departures.pop(match_idx)
-            messages.append(f"{piece_desc} moves to {square.upper()}")
-        elif was_occupied:
-            messages.append(f"{piece_desc} captures on {square.upper()}")
-        else:
-            messages.append(f"{piece_desc} appears on {square.upper()}")
-
-    return "; ".join(messages) if messages else None
-
-
 class BoardBuffer:
-    """Holds the latest board matrix, move description, and annotated JPEG
-    frame for the HTTP handler to read -- one lock guards all three since
-    they're updated together once per detection loop iteration."""
+    """Holds the latest board matrix, move text, flagged status, and JPEG
+    frame for the HTTP handler to read -- one lock guards the board fields
+    since tracking_loop's on_update sets them together; the frame is set
+    separately and far more often (every capture tick, for a live feed)."""
 
     def __init__(self):
         self._lock = Lock()
@@ -194,16 +167,15 @@ class BoardBuffer:
         self._updated_at = 0.0
         self._last_move = None
         self._move_seq = 0
+        self._flagged = False
         self._jpeg = None
 
-    def set_board(self, matrix):
+    def set_board(self, matrix, move_text, flagged):
         with self._lock:
             self._matrix = [row[:] for row in matrix]
             self._updated_at = time.time()
-
-    def set_move(self, text):
-        with self._lock:
-            self._last_move = text
+            self._last_move = move_text
+            self._flagged = flagged
             self._move_seq += 1
 
     def set_frame(self, frame):
@@ -214,7 +186,7 @@ class BoardBuffer:
 
     def get_board(self):
         with self._lock:
-            return self._matrix, self._updated_at, self._last_move, self._move_seq
+            return self._matrix, self._updated_at, self._last_move, self._move_seq, self._flagged
 
     def get_frame(self):
         with self._lock:
@@ -234,10 +206,16 @@ def start_server(host, port, buffer):
                 self.end_headers()
                 self.wfile.write(body)
             elif self.path == "/board.json":
-                matrix, updated_at, last_move, move_seq = buffer.get_board()
+                matrix, updated_at, last_move, move_seq, flagged = buffer.get_board()
                 rows = matrix if matrix is not None else [[None] * 8 for _ in range(8)]
                 body = json.dumps(
-                    {"matrix": rows, "updated_at": updated_at, "last_move": last_move, "move_seq": move_seq}
+                    {
+                        "matrix": rows,
+                        "updated_at": updated_at,
+                        "last_move": last_move,
+                        "move_seq": move_seq,
+                        "flagged": flagged,
+                    }
                 ).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -273,10 +251,12 @@ def start_server(host, port, buffer):
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--interval", type=float, default=0.75, help="seconds between frames")
-    parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
+    parser.add_argument("--poll-interval", type=float, default=0.12,
+                        help="seconds between cheap motion-gate polls (not a detection interval)")
+    parser.add_argument("--model", type=Path, default=DEFAULT_MODEL, help="full-frame fallback detector")
+    parser.add_argument("--classifier", type=Path, default=DEFAULT_CLASSIFIER, help="per-square classifier")
     parser.add_argument("--calibration", type=Path, default=DEFAULT_CALIBRATION)
-    parser.add_argument("--conf", type=float, default=0.4, help="detection confidence threshold")
+    parser.add_argument("--conf", type=float, default=0.4, help="fallback detector confidence threshold")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--host", default="0.0.0.0")
     return parser.parse_args()
@@ -288,48 +268,51 @@ def main():
     if not args.calibration.exists():
         raise SystemExit(f"No calibration found at {args.calibration} -- run calibrate.py first.")
     if not args.model.exists():
-        raise SystemExit(f"No model found at {args.model} -- see training/NOTES.md to train/export one.")
+        raise SystemExit(f"No fallback model found at {args.model} -- see training/NOTES.md to train/export one.")
+    if not args.classifier.exists():
+        raise SystemExit(
+            f"No classifier model found at {args.classifier} -- see training/prepare_square_crops.py "
+            "and training/train_classifier.py to train/export one."
+        )
 
     calibration_matrix = load_calibration(args.calibration)
-    print("Loading model...")
-    model = load_model(str(args.model))
-    tracker = BoardStateTracker(calibration_matrix)
+    print("Loading models...")
+    fallback_model = load_model(str(args.model))
+    classifier_model = load_classifier(str(args.classifier))
 
     buffer = BoardBuffer()
     start_server(args.host, args.port, buffer)
     print(f"Serving at http://<this-pi>:{args.port}/")
 
-    from capture import Camera
-
-    previous_stable = None
-    fps = 0.0
-    last_tick = time.time()
+    def on_update(matrix, move_text, frame, flagged):
+        buffer.set_board(matrix, move_text, flagged)
 
     print("Running. Ctrl+C to stop.")
     try:
-        with Camera() as cam:
+        with Camera() as cam, CaptureStream(cam) as stream:
+            frame = None
+            while frame is None:
+                frame, _timestamp = stream.get_latest()
+            image_size = (frame.shape[1], frame.shape[0])
+
+            loop = TrackingLoop(
+                capture_stream=stream,
+                calibration_matrix=calibration_matrix,
+                image_size=image_size,
+                fallback_model=fallback_model,
+                classifier_model=classifier_model,
+                on_update=on_update,
+                poll_interval=args.poll_interval,
+                fallback_conf=args.conf,
+            )
+            buffer.set_board(loop.current_matrix, None, False)  # seed the UI before any move happens
+
             while True:
-                frame = cam.read_frame()
-                detections = detect(model, frame, conf=args.conf)
-                matrix, changed = tracker.update(detections)
-
-                if changed:
-                    new_stable = [row[:] for row in matrix]
-                    if previous_stable is not None:
-                        move_text = describe_move(previous_stable, new_stable)
-                        if move_text:
-                            buffer.set_move(move_text)
-                    previous_stable = new_stable
-
-                buffer.set_board(matrix)
-
-                now = time.time()
-                fps = 1.0 / (now - last_tick) if now > last_tick else fps
-                last_tick = now
-                canvas = annotate(frame, detections, calibration_matrix, True, fps, args.conf)
-                buffer.set_frame(canvas)
-
-                time.sleep(args.interval)
+                live_frame, _timestamp = stream.get_latest()
+                if live_frame is not None:
+                    buffer.set_frame(live_frame)
+                loop.tick()
+                time.sleep(args.poll_interval)
     except KeyboardInterrupt:
         print("Stopped.")
 

@@ -123,3 +123,26 @@ def _abbreviate(label):
     color, piece = label.split("-")
     letter = _PIECE_LETTERS.get(piece, "?")
     return letter if color == "white" else letter.lower()
+
+
+def matrix_to_fen_placement(matrix):
+    """Converts a stable board matrix (matrix[rank_idx][file_idx], rank_idx=0
+    is rank 1) into the piece-placement field of a FEN string -- FEN lists
+    ranks top-down (rank 8 first), the reverse of our matrix's indexing."""
+    rows = []
+    for rank_idx in reversed(range(BOARD_SIZE)):
+        row = ""
+        empty_run = 0
+        for file_idx in range(BOARD_SIZE):
+            label = matrix[rank_idx][file_idx]
+            if label is None:
+                empty_run += 1
+                continue
+            if empty_run:
+                row += str(empty_run)
+                empty_run = 0
+            row += _abbreviate(label)
+        if empty_run:
+            row += str(empty_run)
+        rows.append(row)
+    return "/".join(rows)

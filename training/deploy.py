@@ -5,7 +5,7 @@ src/main.py expects the model at ~/MicroChess/models/best_ncnn_model on the Pi.
 
 Usage:
     python training/deploy.py pi@raspberrypi.local
-    python training/deploy.py pi@192.168.1.42 --model-dir runs/detect/train/weights/best_ncnn_model
+    python training/deploy.py pi@192.168.1.42 --model-dir runs/detect/chessred_yolo26l/weights/best_ncnn_model
     python training/deploy.py pi@raspberrypi.local --dry-run
 """
 
@@ -15,7 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-DEFAULT_MODEL_DIR = Path("runs/detect/train/weights/best_ncnn_model")
+DEFAULT_MODEL_DIR = Path("runs/detect/chessred/weights/best_ncnn_model")
 
 
 def parse_args():

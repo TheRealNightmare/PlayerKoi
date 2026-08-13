@@ -29,7 +29,7 @@ def _normalize(name):
     return name.strip().lower().replace(" ", "-").replace("_", "-")
 
 
-def detect(model, frame, conf=0.4, imgsz=640):
+def detect(model, frame, conf=0.4, imgsz=480):
     """Runs inference on a single BGR frame. Returns a list of
     {"class": str, "confidence": float, "bbox": (x1, y1, x2, y2)}."""
     results = model.predict(frame, conf=conf, imgsz=imgsz, verbose=False)[0]

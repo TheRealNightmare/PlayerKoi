@@ -7,6 +7,8 @@ can confirm the camera is working and the whole board is in frame.
 """
 
 import sys
+import time
+from threading import Lock, Thread
 
 from picamera2 import Picamera2
 
@@ -36,6 +38,55 @@ class Camera:
 
     def __exit__(self, *exc_info):
         self.close()
+
+
+class CaptureStream:
+    """Runs Camera.read_frame() on a background thread so callers never
+    block on camera I/O -- get_latest() always returns immediately with
+    whatever frame is newest. This lets a fast, cheap motion-gate poll run
+    at its own pace instead of being throttled to the camera's own
+    capture latency, and lets slower work (classification, a full YOLO
+    rescan) happen on a separately-paced cadence without stalling capture.
+    """
+
+    def __init__(self, camera):
+        self._camera = camera
+        self._lock = Lock()
+        self._frame = None
+        self._timestamp = 0.0
+        self._running = False
+        self._thread = None
+
+    def start(self):
+        self._running = True
+        self._thread = Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return self
+
+    def _run(self):
+        while self._running:
+            frame = self._camera.read_frame()
+            with self._lock:
+                self._frame = frame
+                self._timestamp = time.monotonic()
+
+    def get_latest(self):
+        """Returns (frame, timestamp) for the most recently captured frame,
+        or (None, 0.0) if nothing has been captured yet."""
+        with self._lock:
+            return self._frame, self._timestamp
+
+    def stop(self):
+        self._running = False
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, *exc_info):
+        self.stop()
 
 
 if __name__ == "__main__":

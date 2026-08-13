@@ -15,6 +15,12 @@ Keys (window mode):
     q / Esc  quit                 s  save a snapshot
     + / -    adjust confidence    g  toggle the board grid
     b        print the board matrix to the terminal
+
+Runs capture + full-frame detection back-to-back with no throttle, by
+design -- this is a debug/aiming tool where continuous full detection is
+the point, not a bug. It is intentionally NOT the same code path as
+production: see src/tracking_loop.py, which only runs full detection on
+an event-gated fallback rather than every frame.
 """
 
 import argparse

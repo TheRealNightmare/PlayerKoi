@@ -27,8 +27,23 @@ guardrails for this project.
 
 ## 1. Get a dataset
 
-We need a public, bounding-box-labeled chess piece dataset in YOLO format
-covering the 12 standard classes:
+**The dataset actually used for the deployed models is [ChessReD](https://data.4tu.nl/datasets/99b5c721-280b-450b-b058-b2900b69a90f)**
+(`annotations.json` + the `chessred2k.zip` subset, unzipped so `training/datasets/chessred_raw/images/`
+exists). It's what both `training/prepare_chessred.py` (full-frame fallback
+detector) and `training/prepare_square_crops.py` (per-square classifier,
+see step 6 below) are built against -- prefer it over the generic Roboflow
+path below unless you have a specific reason not to:
+
+```bash
+python training/prepare_chessred.py \
+    --annotations training/datasets/chessred_raw/annotations.json \
+    --images-root training/datasets/chessred_raw \
+    --out training/datasets/chessred_yolo
+```
+
+The rest of this section describes the generic alternative: any public,
+bounding-box-labeled chess piece dataset in YOLO format covering the 12
+standard classes:
 
 ```
 white-king, white-queen, white-rook, white-bishop, white-knight, white-pawn
@@ -107,8 +122,41 @@ python training/deploy.py pi@<pi-hostname>
 # add --dry-run first to preview the scp command
 ```
 
-`src/main.py` expects it at `models/best_ncnn_model` by default (override
-with `--model` if you name it differently).
+`src/main.py`/`src/web_ui.py` expect it at `models/best_ncnn_model` by
+default (override with `--model` if you name it differently).
+
+## 6. Train the per-square classifier
+
+The fallback detector above is only used when the fast path can't resolve
+a move. Routine per-move recognition instead runs a small classifier on
+just the handful of square crops `src/roi_diff.py` flags as changed --
+much cheaper than a full-frame detection pass every move. It needs its
+own dataset and its own training run:
+
+```bash
+python training/prepare_square_crops.py \
+    --annotations training/datasets/chessred_raw/annotations.json \
+    --images-root training/datasets/chessred_raw \
+    --out training/datasets/chessred_squares
+
+python training/train_classifier.py --data training/datasets/chessred_squares
+
+python training/export_ncnn.py \
+    --weights runs/classify/train/weights/best.pt --imgsz 64
+```
+
+Deploy the resulting `best_ncnn_model/` directory to
+`models/square_classifier_ncnn_model` on the Pi (rename it on the way, or
+pass `--dest`/`--model-dir` to `deploy.py`).
+
+**Domain gap warning**: ChessReD is handheld smartphone photos from
+varied boards/angles/lighting; your Pi's camera is one fixed overhead
+rig. Expect a real accuracy gap on first deploy -- tune `min_conf` in
+`src/square_classifier.py`'s caller, and consider recording real,
+auto-labeled crops during play (every square, whenever `move_resolver`
+confidently accepts a move -- ground truth comes from the legal-move
+match, not manual labeling) for a periodic fine-tune pass on top of the
+ChessReD-trained weights.
 
 ## Expected accuracy caveat
 

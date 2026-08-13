@@ -10,6 +10,7 @@ training/datasets
 # Base pretrained checkpoints (auto-downloaded by ultralytics on demand,
 # no reason to version multi-tens-of-MB files that never change)
 /yolov8n.pt
+/yolov8n-cls.pt
 /yolo26n.pt
 /yolo26l.pt
 /yolo26x.pt

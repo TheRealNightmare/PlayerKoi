@@ -1,12 +1,17 @@
 # MicroChess
 
 Real-time chess piece detection on a Raspberry Pi 5: a fixed overhead
-IMX219 camera watches a physical chess board and maintains a live 8x8
-matrix of piece occupancy, printed/logged whenever it changes.
+IMX219 camera watches a physical chess board, tracks moves as real
+algebraic notation via python-chess, and serves a live board diagram +
+camera feed from a small built-in web UI.
 
-Scope of this version: raw board-state detection only (piece type + color
-per square). No move-legality checking, FEN, or game history yet, and no
-web UI -- terminal/log output only.
+The board starts at the standard position (verified, not detected -- see
+"How detection works" below), so per-move recognition only has to resolve
+*changes*: a cheap ML-free motion gate watches for a settled board, a
+per-square pixel diff narrows down which squares changed, and a small
+classifier is run on just those crops. A full-frame YOLO detector is kept
+only as a fallback for when that's ambiguous. See `src/tracking_loop.py`
+for the full flow.
 
 ## Hardware assumed
 
@@ -65,23 +70,34 @@ if your board has one).
 
 Re-run this any time the camera or board physically moves.
 
-### 3. Get a detection model
+### 3. Get two models
 
 Training doesn't happen on the Pi. See [`training/NOTES.md`](training/NOTES.md)
-for pulling a public dataset, training a YOLOv8n model, and exporting it
-to NCNN format (the fastest CPU inference backend on ARM). Copy the
-resulting `best_ncnn_model/` folder into `models/` on the Pi.
+for the full pipeline. You need both:
+
+- **Fallback detector** (`models/best_ncnn_model`): a YOLOv8n full-frame
+  detector, used only when the fast path below can't resolve a move.
+  `training/prepare_chessred.py` -> `training/train.py` -> `training/export_ncnn.py`.
+- **Per-square classifier** (`models/square_classifier_ncnn_model`): a
+  tiny classifier run on individual square crops for routine per-move
+  recognition. `training/prepare_square_crops.py` -> `training/train_classifier.py`
+  -> `training/export_ncnn.py`.
+
+Copy both exported folders into `models/` on the Pi with `training/deploy.py`.
 
 ### 4. Run
 
 ```bash
-python3 src/main.py
+python3 src/main.py                 # terminal/log output
+python3 src/web_ui.py               # + http://<this-pi>:8000/ board diagram and camera feed
 ```
 
-Prints the 8x8 board matrix to the terminal whenever it changes (default:
-checks every 0.75s, tune with `--interval`). Add `--log board.log` to
-also append changes to a file. Uppercase letters are white pieces,
-lowercase are black, `.` is empty:
+Prints/serves the 8x8 board matrix and the resolved move (e.g. `Nf3`)
+whenever the board settles into a new state. There's no fixed detection
+interval anymore -- `--poll-interval` (web_ui.py) just controls how often
+the cheap motion gate checks the ROI, not how often full detection runs.
+Add `--log board.log` to `main.py` to also append changes to a file.
+Uppercase letters are white pieces, lowercase are black, `.` is empty:
 
 ```
 8  r n b q k b n r
@@ -95,26 +111,59 @@ lowercase are black, `.` is empty:
    A B C D E F G H
 ```
 
+## How detection works
+
+The board is assumed to start at the standard chess position (a "Setup
+Verification" vision check against this assumption isn't built yet -- see
+below). From there, `src/tracking_loop.py` runs:
+
+1. `src/roi_diff.py`'s `BoardMotionGate` watches a cheap grayscale diff of
+   the board ROI, with no model involved, and fires once a hand has
+   entered and left the board (motion, then quiet).
+2. `diff_changed_squares` diffs the newly-settled frame against the last
+   known-stable frame, per square, to shortlist which squares plausibly
+   changed (usually 2-4; more than 6 is treated as unreliable).
+3. `src/square_classifier.py` classifies only those shortlisted crops
+   (empty + 6 piece types x 2 colors).
+4. `src/move_resolver.py` checks whether the resulting position matches
+   exactly one legal move from `python-chess`'s legal-move list. If so,
+   that move is accepted (this is also what supplies real algebraic
+   notation, not just a physical before/after description).
+5. If the diff was ambiguous, too large, hit a low-confidence crop, or
+   didn't resolve to a legal move, `src/detect.py`'s full-frame YOLO
+   detector re-scans the whole board as a fallback. If even that doesn't
+   resolve to a legal move, the board state is force-synced from the raw
+   scan and flagged in the web UI (castling/en-passant rights reset to
+   defaults in that case -- a known, accepted limitation of syncing from
+   a bare snapshot).
+
 ## Known limitations / next steps
 
-- **Accuracy depends on how close your board/lighting is to the public
-  training dataset.** Tune `--conf` in `main.py` against your real setup;
-  if that's not enough, fine-tune the model on a modest set of your own
-  captured images (not built yet, but `training/NOTES.md` describes the
-  point where this would slot in).
-- **CPU-only inference speed is untested until you actually run it** --
-  if frame rate is too low even for the ~1s turn-based cadence this is
-  built for, try a smaller `imgsz` in `src/detect.py`, or a longer
-  `--interval` in `main.py` (fine, since the use case is turn-based, not
-  continuous video).
-- Not yet built: FEN/`python-chess` integration and move legality, web
-  dashboard, non-overhead/angled camera support.
+- **No vision-based Setup Verification yet.** The tracker currently
+  *assumes* the physical board starts at the standard position rather
+  than confirming it via the camera; wire a startup scan against
+  `move_resolver.standard_starting_matrix()` before trusting a game.
+  There's also no "New Game" control wired up yet, though
+  `TrackingLoop.reset()` does everything needed for one.
+- **Classifier accuracy depends on how close your board/lighting is to
+  the ChessReD training photos** (handheld smartphone photos, not a fixed
+  overhead rig) -- expect a real domain gap on first deploy. Tune
+  `--conf`/classifier `min_conf` against your real setup; the design
+  supports periodically fine-tuning on real, auto-labeled crops recorded
+  during play (see `training/NOTES.md`).
+- **CPU-only inference speed on the fast path is untested on real
+  hardware** -- the per-square classifier and diff/motion-gate logic are
+  all unit-tested off-Pi, but ARM-specific timing needs validating on the
+  actual Pi 5.
+- Not yet built: puzzle mode, AI coach, past-match analysis, remote play.
 
 ## Repo layout
 
 ```
 config/       generated calibration data (git-ignored)
-models/       exported NCNN detection models (git-ignored, copied from training machine)
-src/          capture, calibration, detection, board-state tracking, main loop
+models/       exported NCNN models (git-ignored, copied from training machine):
+              best_ncnn_model/ (fallback detector), square_classifier_ncnn_model/ (per-square classifier)
+src/          capture, calibration, detection, board-state tracking, event-gated
+              tracking loop, legal-move resolution, web UI
 training/     dataset + training + export instructions (run off-Pi)
 ```
