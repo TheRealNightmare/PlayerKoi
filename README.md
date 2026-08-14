@@ -1,16 +1,20 @@
-# MicroChess
+# Plyer Koi
 
 Real-time chess piece detection on a Raspberry Pi 5: a fixed overhead
 IMX219 camera watches a physical chess board, tracks moves as real
 algebraic notation via python-chess, and serves a live board diagram +
 camera feed from a small built-in web UI.
 
-The board starts at the standard position (verified, not detected -- see
-"How detection works" below), so per-move recognition only has to resolve
-*changes*: a cheap ML-free motion gate watches for a settled board, a
-per-square pixel diff narrows down which squares changed, and a small
-classifier is run on just those crops. A full-frame YOLO detector is kept
-only as a fallback for when that's ambiguous. See `src/tracking_loop.py`
+The board starts at the standard position (assumed, not detected -- see
+"How detection works" below), and the tracker maintains full piece
+identity in software from there by applying resolved legal moves -- so
+vision never needs to recognize piece *type* at all, only occupancy and
+color (empty/white/black) per square. That's a classical-CV read (plain
+pixel-color comparisons against a calibration-time baseline, no model
+inference), gated by a cheap ML-free motion detector and cross-checked
+against every legal chess move. There is no automatic ML fallback: when a
+settle can't be resolved with confidence, the web UI flags it and offers a
+manual correction. See `src/tracking_loop.py` and `src/occupancy_color.py`
 for the full flow.
 
 ## Hardware assumed
@@ -68,24 +72,17 @@ clean, square 8x8 grid. If it looks skewed, re-run calibration and click
 more precisely on the actual board corners (not the outer frame/border,
 if your board has one).
 
-Re-run this any time the camera or board physically moves.
+Calibration then walks through two more steps: clear the board completely
+(for an empty-square color reference), then set up the standard starting
+position (for a white/black piece-color reference). It warns immediately
+if white/black contrast looks too low to read reliably -- fix lighting or
+piece contrast and re-run if so.
 
-### 3. Get two models
+Re-run this any time the camera, board, lighting, or piece set changes.
+There's no model to train or deploy -- see
+[`training/NOTES.md`](training/NOTES.md) for why.
 
-Training doesn't happen on the Pi. See [`training/NOTES.md`](training/NOTES.md)
-for the full pipeline. You need both:
-
-- **Fallback detector** (`models/best_ncnn_model`): a YOLOv8n full-frame
-  detector, used only when the fast path below can't resolve a move.
-  `training/prepare_chessred.py` -> `training/train.py` -> `training/export_ncnn.py`.
-- **Per-square classifier** (`models/square_classifier_ncnn_model`): a
-  tiny classifier run on individual square crops for routine per-move
-  recognition. `training/prepare_square_crops.py` -> `training/train_classifier.py`
-  -> `training/export_ncnn.py`.
-
-Copy both exported folders into `models/` on the Pi with `training/deploy.py`.
-
-### 4. Run
+### 3. Run
 
 ```bash
 python3 src/main.py                 # terminal/log output
@@ -113,57 +110,58 @@ Uppercase letters are white pieces, lowercase are black, `.` is empty:
 
 ## How detection works
 
-The board is assumed to start at the standard chess position (a "Setup
-Verification" vision check against this assumption isn't built yet -- see
-below). From there, `src/tracking_loop.py` runs:
+The board is assumed to start at the standard chess position. From there,
+the tracker maintains full piece identity purely in software -- it applies
+every resolved legal move to its own internal `chess.Board()`, so it
+always knows piece *type*, never needing to re-derive it from vision.
+`src/tracking_loop.py` runs:
 
 1. `src/roi_diff.py`'s `BoardMotionGate` watches a cheap grayscale diff of
    the board ROI, with no model involved, and fires once a hand has
    entered and left the board (motion, then quiet).
-2. `diff_changed_squares` diffs the newly-settled frame against the last
-   known-stable frame, per square, to shortlist which squares plausibly
-   changed (usually 2-4; more than 6 is treated as unreliable).
-3. `src/square_classifier.py` classifies only those shortlisted crops
-   (empty + 6 piece types x 2 colors).
-4. `src/move_resolver.py` checks whether the resulting position matches
-   exactly one legal move from `python-chess`'s legal-move list. If so,
-   that move is accepted (this is also what supplies real algebraic
-   notation, not just a physical before/after description).
-5. If the diff was ambiguous, too large, hit a low-confidence crop, or
-   didn't resolve to a legal move, `src/detect.py`'s full-frame YOLO
-   detector re-scans the whole board as a fallback. If even that doesn't
-   resolve to a legal move, the board state is force-synced from the raw
-   scan and flagged in the web UI (castling/en-passant rights reset to
-   defaults in that case -- a known, accepted limitation of syncing from
-   a bare snapshot).
+2. `src/occupancy_color.py` reads **all 64 squares** -- not a shortlist --
+   for occupancy and color only (empty / white / black), via plain
+   pixel-color comparisons against the baseline captured in `calibrate.py`.
+   Several frames are sampled and required to agree (consensus) before a
+   square's read is trusted; a boundary-line or inconsistent read returns
+   `UNRESOLVED` rather than a guess.
+3. The observed delta (every square whose confirmed color differs from the
+   tracked state) is matched against every legal move's expected delta in
+   `src/move_resolver.py`'s `resolve_from_deltas` -- computed by diffing
+   `python-chess`'s own board before/after each candidate move, so
+   captures/castling/en passant are handled correctly for free. A unique
+   match is accepted and applied (this also supplies real algebraic
+   notation, e.g. `Nf3`); pawn promotion always resolves to queen, since
+   color alone can't reveal the promoted piece type.
+4. If any square's read is unresolved, the delta doesn't match any legal
+   move, or it matches more than one, the board is **not** guessed at --
+   the loop leaves state untouched and flags it. The web UI's "Fix board"
+   control is the only recovery path: it lets you set each square's true
+   piece and side-to-move, which the tracker adopts (inferring which
+   castling rights still make sense from where the kings/rooks ended up).
 
 ## Known limitations / next steps
 
 - **No vision-based Setup Verification yet.** The tracker currently
   *assumes* the physical board starts at the standard position rather
-  than confirming it via the camera; wire a startup scan against
-  `move_resolver.standard_starting_matrix()` before trusting a game.
-  There's also no "New Game" control wired up yet, though
-  `TrackingLoop.reset()` does everything needed for one.
-- **Classifier accuracy depends on how close your board/lighting is to
-  the ChessReD training photos** (handheld smartphone photos, not a fixed
-  overhead rig) -- expect a real domain gap on first deploy. Tune
-  `--conf`/classifier `min_conf` against your real setup; the design
-  supports periodically fine-tuning on real, auto-labeled crops recorded
-  during play (see `training/NOTES.md`).
-- **CPU-only inference speed on the fast path is untested on real
-  hardware** -- the per-square classifier and diff/motion-gate logic are
-  all unit-tested off-Pi, but ARM-specific timing needs validating on the
-  actual Pi 5.
+  than confirming it via the camera. There's also no "New Game" control
+  wired up yet, though `TrackingLoop.reset()` does everything needed for
+  one.
+- **Occupancy/color threshold tuning is untested on real hardware.** The
+  classical-CV logic and consensus/delta-matching are unit-tested off-Pi
+  (see `tests/`), but real lighting, piece contrast, and camera exposure
+  drift need validating -- and re-calibrating against -- on the actual rig.
 - Not yet built: puzzle mode, AI coach, past-match analysis, remote play.
 
 ## Repo layout
 
 ```
-config/       generated calibration data (git-ignored)
-models/       exported NCNN models (git-ignored, copied from training machine):
-              best_ncnn_model/ (fallback detector), square_classifier_ncnn_model/ (per-square classifier)
-src/          capture, calibration, detection, board-state tracking, event-gated
-              tracking loop, legal-move resolution, web UI
-training/     dataset + training + export instructions (run off-Pi)
+config/       generated calibration data (git-ignored), including the
+              occupancy/color baseline captured by calibrate.py
+src/          capture, calibration, occupancy/color reading, board-state
+              helpers, event-gated tracking loop, legal-move resolution, web UI
+tests/        unit tests for move resolution, occupancy/color reading, and
+              the tracking loop's delta computation (no camera required)
+training/     orphaned full-frame detector training pipeline, kept for
+              reference -- see training/NOTES.md for why it's unused now
 ```
