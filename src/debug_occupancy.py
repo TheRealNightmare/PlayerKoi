@@ -46,6 +46,16 @@ def main():
     calibration_matrix = load_calibration(args.calibration)
     baseline = oc.load_baseline(calibration, args.calibration)
 
+    occ = calibration["occupancy_diff_threshold"]
+    color = calibration["piece_color_baseline"]
+    fg = calibration["foreground_pixel_diff_threshold"]
+    print("calibrated baseline:")
+    print(f"  occupancy: boundary={occ['boundary']:.2f} scale={occ['scale']:.2f}")
+    print(f"  color: white_mean={color['white_luminance_mean']:.2f} white_std={color['white_luminance_std']:.2f}  "
+          f"black_mean={color['black_luminance_mean']:.2f} black_std={color['black_luminance_std']:.2f}  "
+          f"threshold={color['threshold']:.2f} white_is_brighter={color['white_is_brighter']}")
+    print(f"  foreground_pixel_scale={fg['scale']:.2f}\n")
+
     with Camera() as cam:
         frame = cam.read_frame()
 
