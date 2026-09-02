@@ -5,6 +5,7 @@ final state for a single live frame, instead of just the generic
 
     python3 src/debug_occupancy.py
     python3 src/debug_occupancy.py --min-margin-std 1.5
+    python3 src/debug_occupancy.py --save-crops debug_masks
 
 Use this when the web UI is stuck flagging every settle. A margin below
 --min-margin-std (default matches occupancy_color.DEFAULT_MIN_MARGIN_STD)
@@ -13,12 +14,24 @@ borderline in the same direction, that points at a global mismatch
 (lighting/exposure drifted since calibration, or the calibration burst was
 too short to capture realistic noise) rather than a problem with any one
 square.
+
+--save-crops writes one PNG per square showing exactly what the color
+stage's background-subtraction mask is picking up -- the live crop, the
+calibrated background reference, and a visualization with everything
+*except* the pixels counted as "foreground" dimmed out. Useful for seeing
+whether the mask traces a clean piece silhouette or bleeds into a shadow.
+Since the Pi is usually headless, view the results with:
+
+    python3 -m http.server 8080 --directory debug_masks
+
+then open http://<pi-host>:8080/ from a browser on another machine.
 """
 
 import argparse
 import json
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 import occupancy_color as oc
@@ -35,10 +48,40 @@ def square_name(square):
     return f"{FILES[file_idx]}{rank_idx + 1}"
 
 
+def save_square_debug_image(square, frame, baseline, square_bboxes, pixel_threshold, out_dir):
+    """Writes <out_dir>/<square>.png: live crop | background reference |
+    mask visualization (live crop dimmed to 15% brightness everywhere
+    except pixels that pass pixel_threshold, restored to full brightness)
+    -- the same mask classify_square_occupancy's color stage would use,
+    made visible."""
+    x1, y1, x2, y2 = square_bboxes[square]
+    if x2 <= x1 or y2 <= y1:
+        return
+    body_crop = frame[y1:y2, x1:x2]
+    background_crop = baseline["background_crops"][square]
+    if body_crop.shape != background_crop.shape:
+        return
+
+    diff = oc._pixel_diff(body_crop, background_crop)
+    mask = diff > pixel_threshold
+
+    dimmed = (body_crop.astype(np.float64) * 0.15).astype(np.uint8)
+    mask_vis = dimmed.copy()
+    mask_vis[mask] = body_crop[mask]
+
+    separator = np.full((body_crop.shape[0], 2, 3), (0, 0, 255), dtype=np.uint8)
+    composite = np.hstack([body_crop, separator, background_crop, separator, mask_vis])
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(out_dir / f"{square_name(square)}.png"), composite)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--calibration", type=Path, default=DEFAULT_CALIBRATION)
     parser.add_argument("--min-margin-std", type=float, default=oc.DEFAULT_MIN_MARGIN_STD)
+    parser.add_argument("--save-crops", type=Path, default=None,
+                        help="directory to write one PNG per square visualizing the color mask")
     args = parser.parse_args()
 
     with open(args.calibration) as f:
@@ -64,6 +107,8 @@ def main():
     footprint_bboxes = square_pixel_bboxes(calibration_matrix, image_size, margin_up_px=0)
     baseline = oc.finalize_baseline(baseline, square_bboxes)
 
+    pixel_threshold = args.min_margin_std * baseline["foreground_pixel_scale"]
+
     unresolved = []
     occ_margins = []
     print(f"{'square':>7} {'state':>10} {'occ_margin':>11} {'margin':>8}")
@@ -81,6 +126,13 @@ def main():
             unresolved.append(square)
         label = "UNRESOLVED" if state is oc.UNRESOLVED else state
         print(f"{square_name(square):>7} {label:>10} {occ_margin:>11.2f} {margin:>8.2f}")
+
+        if args.save_crops:
+            save_square_debug_image(square, frame, baseline, square_bboxes, pixel_threshold, args.save_crops)
+
+    if args.save_crops:
+        print(f"\nSaved per-square crop/background/mask images to {args.save_crops}/ "
+              f"(view with: python3 -m http.server 8080 --directory {args.save_crops})")
 
     print(f"\n{len(unresolved)}/64 squares UNRESOLVED at --min-margin-std={args.min_margin_std}")
     if unresolved:
