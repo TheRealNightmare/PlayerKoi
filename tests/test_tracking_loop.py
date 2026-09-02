@@ -1,6 +1,6 @@
 """Tests for tracking_loop.TrackingLoop._handle_settle's delta computation
--- feeding it a synthetic full-board occupancy/color read (bypassing real
-camera/geometry by monkeypatching occupancy_color.read_settled_state) and
+-- feeding it a synthetic full-board classification (bypassing real
+camera/geometry by monkeypatching square_classifier.read_settled_state) and
 checking the observed delta it hands to MoveResolver.resolve_from_deltas is
 exactly the squares a known move touches, no more, no less.
 """
@@ -17,7 +17,7 @@ import numpy as np  # noqa: E402
 
 import tracking_loop  # noqa: E402
 from move_resolver import standard_starting_matrix  # noqa: E402
-from occupancy_color import ALL_SQUARES, BLACK, EMPTY, WHITE  # noqa: E402
+from square_classifier import ALL_SQUARES, BLACK, EMPTY, WHITE  # noqa: E402
 
 
 def _matrix_from_board(board):
@@ -40,7 +40,7 @@ def _matrix_state(matrix, square):
 
 def _consensus_for(matrix):
     """Full 64-square consensus dict matching `matrix` exactly -- as if
-    occupancy_color.read_settled_state read every square with full
+    square_classifier.read_settled_state classified every square with full
     confidence and it matched `matrix` precisely."""
     return {square: _matrix_state(matrix, square) for square in ALL_SQUARES}
 
@@ -63,15 +63,13 @@ class TestHandleSettleDelta(unittest.TestCase):
 
         # calibration_matrix/image_size only need to produce *some* bboxes
         # at construction time -- read_settled_state is monkeypatched in
-        # every test below, so real pixel geometry (and this baseline's
-        # contents) is never actually exercised. TrackingLoop.__init__
-        # still calls finalize_baseline() on it, which just needs a
-        # background_image to slice per-square crops from.
+        # every test below, so real pixel geometry (and the classifier
+        # model) is never actually exercised.
         self.loop = tracking_loop.TrackingLoop(
             capture_stream=self.capture_stream,
             calibration_matrix=np.eye(3),
             image_size=(10, 10),
-            occupancy_baseline={"background_image": np.zeros((10, 10, 3), dtype=np.uint8)},
+            classifier_model=None,
             on_update=on_update,
         )
 

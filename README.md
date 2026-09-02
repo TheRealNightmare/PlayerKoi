@@ -9,13 +9,14 @@ The board starts at the standard position (assumed, not detected -- see
 "How detection works" below), and the tracker maintains full piece
 identity in software from there by applying resolved legal moves -- so
 vision never needs to recognize piece *type* at all, only occupancy and
-color (empty/white/black) per square. That's a classical-CV read (plain
-pixel-color comparisons against a calibration-time baseline, no model
-inference), gated by a cheap ML-free motion detector and cross-checked
-against every legal chess move. There is no automatic ML fallback: when a
-settle can't be resolved with confidence, the web UI flags it and offers a
-manual correction. See `src/tracking_loop.py` and `src/occupancy_color.py`
-for the full flow.
+color (empty/white/black) per square. That's a small trained classifier
+(`src/square_classifier.py`, 3 classes, run over all 64 squares -- see
+`training/NOTES.md` for why this went through a classical-CV pixel-math
+phase first and came back to a model), gated by a cheap ML-free motion
+detector and cross-checked against every legal chess move. There is no
+automatic rescan fallback: when a settle can't be resolved with
+confidence, the web UI flags it and offers a manual correction. See
+`src/tracking_loop.py` for the full flow.
 
 ## Hardware assumed
 
@@ -72,17 +73,19 @@ clean, square 8x8 grid. If it looks skewed, re-run calibration and click
 more precisely on the actual board corners (not the outer frame/border,
 if your board has one).
 
-Calibration then walks through two more steps: clear the board completely
-(for an empty-square color reference), then set up the standard starting
-position (for a white/black piece-color reference). It warns immediately
-if white/black contrast looks too low to read reliably -- fix lighting or
-piece contrast and re-run if so.
+Re-run this any time the camera or board physically moves.
 
-Re-run this any time the camera, board, lighting, or piece set changes.
-There's no model to train or deploy -- see
-[`training/NOTES.md`](training/NOTES.md) for why.
+### 3. Get a classifier
 
-### 3. Run
+Training doesn't happen on the Pi. See
+[`training/NOTES.md`](training/NOTES.md) for the full pipeline:
+`src/collect_square_crops.py` (on the Pi, collects real training photos
+from your own board -- no public dataset, no legal chess position needed)
+-> `training/train_classifier.py` (on a GPU machine) ->
+`training/export_ncnn.py` -> `training/deploy.py` back to the Pi's
+`models/square_classifier_ncnn_model`.
+
+### 4. Run
 
 ```bash
 python3 src/main.py                 # terminal/log output
@@ -119,12 +122,12 @@ always knows piece *type*, never needing to re-derive it from vision.
 1. `src/roi_diff.py`'s `BoardMotionGate` watches a cheap grayscale diff of
    the board ROI, with no model involved, and fires once a hand has
    entered and left the board (motion, then quiet).
-2. `src/occupancy_color.py` reads **all 64 squares** -- not a shortlist --
-   for occupancy and color only (empty / white / black), via plain
-   pixel-color comparisons against the baseline captured in `calibrate.py`.
-   Several frames are sampled and required to agree (consensus) before a
-   square's read is trusted; a boundary-line or inconsistent read returns
-   `UNRESOLVED` rather than a guess.
+2. `src/square_classifier.py` classifies **all 64 squares** -- not a
+   shortlist -- for occupancy and color only (empty / white / black), via
+   a small trained model (see `training/NOTES.md`). Several frames are
+   sampled and required to agree (consensus) before a square's read is
+   trusted; a low-confidence or inconsistent read returns `UNRESOLVED`
+   rather than a guess.
 3. The observed delta (every square whose confirmed color differs from the
    tracked state) is matched against every legal move's expected delta in
    `src/move_resolver.py`'s `resolve_from_deltas` -- computed by diffing
@@ -147,21 +150,25 @@ always knows piece *type*, never needing to re-derive it from vision.
   than confirming it via the camera. There's also no "New Game" control
   wired up yet, though `TrackingLoop.reset()` does everything needed for
   one.
-- **Occupancy/color threshold tuning is untested on real hardware.** The
-  classical-CV logic and consensus/delta-matching are unit-tested off-Pi
-  (see `tests/`), but real lighting, piece contrast, and camera exposure
-  drift need validating -- and re-calibrating against -- on the actual rig.
+- **The classifier needs real training data from your own rig before any
+  of this works.** `src/collect_square_crops.py` hasn't shipped a
+  pretrained model -- see `training/NOTES.md` for the collection/training
+  pipeline. Consensus/delta-matching logic is unit-tested off-Pi with a
+  fake model (see `tests/`), but classifier accuracy itself can only be
+  judged after training on real photos.
 - Not yet built: puzzle mode, AI coach, past-match analysis, remote play.
 
 ## Repo layout
 
 ```
-config/       generated calibration data (git-ignored), including the
-              occupancy/color baseline captured by calibrate.py
-src/          capture, calibration, occupancy/color reading, board-state
+config/       generated calibration data (git-ignored)
+models/       exported NCNN classifier (git-ignored, copied from training
+              machine): square_classifier_ncnn_model/
+src/          capture, calibration, square classification, board-state
               helpers, event-gated tracking loop, legal-move resolution, web UI
-tests/        unit tests for move resolution, occupancy/color reading, and
-              the tracking loop's delta computation (no camera required)
-training/     orphaned full-frame detector training pipeline, kept for
-              reference -- see training/NOTES.md for why it's unused now
+tests/        unit tests for move resolution, the classifier's consensus
+              wrapper, and the tracking loop's delta computation (no
+              camera or trained model required -- fake models throughout)
+training/     dataset collection + training + export instructions (see
+              training/NOTES.md) -- most steps run off-Pi
 ```

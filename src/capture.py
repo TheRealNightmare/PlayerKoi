@@ -17,9 +17,10 @@ from picamera2 import Picamera2
 # converges independently -- without this, a frame grabbed right after
 # start() can be mid-convergence, and a long-running process can see AE
 # quietly drift mid-session (e.g. a hand briefly passing over the board
-# changes the scene's average brightness). Both looked like the likely
-# cause of occupancy_color.py's calibrated thresholds not matching live
-# reads on real hardware -- see debug_occupancy.py.
+# changes the scene's average brightness). Keeping exposure/color
+# consistent matters for square_classifier.py too: training photos
+# (src/collect_square_crops.py) and live inference frames should look as
+# similar as reasonably possible.
 DEFAULT_WARMUP_S = 2.0
 
 

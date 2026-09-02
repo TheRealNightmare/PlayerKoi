@@ -1,34 +1,35 @@
-"""Main loop: capture -> event-gated occupancy-read/delta/legal-move tracking -> print/log on change.
+"""Main loop: capture -> event-gated classify/delta/legal-move tracking -> print/log on change.
 
-    python3 src/main.py [--log board.log]
+    python3 src/main.py [--classifier models/square_classifier_ncnn_model]
 
-Requires config/calibration.json (run calibrate.py first) including the
-occupancy/color baseline captured by its empty-board and starting-position
-steps. See src/tracking_loop.py for how a settle is resolved: a full
-64-square classical-CV occupancy/color read (no model, see
-src/occupancy_color.py) plus legal-move matching -- there's no automatic
-full-frame rescan in this design, so an unresolved settle is printed as
-flagged and left for manual correction (the web UI, src/web_ui.py, is where
-that correction actually happens).
+Requires config/calibration.json (run calibrate.py first) and a trained,
+NCNN-exported empty/white/black classifier (see src/collect_square_crops.py
+and training/train_classifier.py). See src/tracking_loop.py for how a
+settle is resolved: a full 64-square classify pass plus legal-move
+matching -- there's no automatic full-frame rescan in this design, so an
+unresolved settle is printed as flagged and left for manual correction
+(the web UI, src/web_ui.py, is where that correction actually happens).
 """
 
 import argparse
 import datetime as dt
-import json
 from pathlib import Path
 
 from board_state import format_matrix, load_calibration
 from capture import Camera, CaptureStream
-from occupancy_color import load_baseline
+from square_classifier import load_classifier
 from tracking_loop import TrackingLoop
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CALIBRATION = REPO_ROOT / "config" / "calibration.json"
+DEFAULT_CLASSIFIER = REPO_ROOT / "models" / "square_classifier_ncnn_model"
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--calibration", type=Path, default=DEFAULT_CALIBRATION)
+    parser.add_argument("--classifier", type=Path, default=DEFAULT_CLASSIFIER, help="per-square classifier")
+    parser.add_argument("--min-conf", type=float, default=0.7, help="classifier confidence threshold")
     parser.add_argument(
         "--log", type=Path, default=None, help="optional path to append board-state changes to"
     )
@@ -40,18 +41,15 @@ def main():
 
     if not args.calibration.exists():
         raise SystemExit(f"No calibration found at {args.calibration} -- run calibrate.py first.")
-
-    with open(args.calibration) as f:
-        calibration = json.load(f)
-    if "empty_baseline" not in calibration or "foreground_pixel_diff_threshold" not in calibration:
+    if not args.classifier.exists():
         raise SystemExit(
-            f"{args.calibration} has no occupancy/color baseline -- re-run calibrate.py "
-            "(it now captures an empty-board and starting-position reference, and saves a "
-            "background-subtraction reference image, in addition to corners)."
+            f"No classifier model found at {args.classifier} -- see src/collect_square_crops.py "
+            "and training/train_classifier.py to train/export one."
         )
 
     calibration_matrix = load_calibration(args.calibration)
-    occupancy_baseline = load_baseline(calibration, args.calibration)
+    print("Loading classifier...")
+    classifier_model = load_classifier(str(args.classifier))
 
     log_file = open(args.log, "a") if args.log else None
 
@@ -76,8 +74,9 @@ def main():
                 capture_stream=stream,
                 calibration_matrix=calibration_matrix,
                 image_size=image_size,
-                occupancy_baseline=occupancy_baseline,
+                classifier_model=classifier_model,
                 on_update=on_update,
+                classifier_min_conf=args.min_conf,
             )
             loop.run_forever()
     except KeyboardInterrupt:

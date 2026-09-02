@@ -9,15 +9,16 @@ something has actually settled. Moves are real algebraic notation (SAN) via
 python-chess (src/move_resolver.py), not just a physical before/after
 description.
 
-There is no automatic ML rescan in this design -- when a settle can't be
+There is no automatic rescan in this design -- when a settle can't be
 resolved with confidence, the UI flags it and offers a manual "Fix board"
 correction affordance instead (POST /board/correct).
 
     python3 src/web_ui.py                      # http://<this-pi>:8000/
     python3 src/web_ui.py --port 9000
 
-Requires config/calibration.json, including the occupancy/color baseline
-saved by calibrate.py's baseline-capture steps.
+Requires config/calibration.json (run calibrate.py first) and a trained,
+NCNN-exported empty/white/black classifier (see src/collect_square_crops.py
+and training/train_classifier.py).
 """
 
 import argparse
@@ -31,11 +32,12 @@ import cv2
 
 from board_state import load_calibration, matrix_to_fen_placement
 from capture import Camera, CaptureStream
-from occupancy_color import load_baseline
+from square_classifier import load_classifier
 from tracking_loop import TrackingLoop
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CALIBRATION = REPO_ROOT / "config" / "calibration.json"
+DEFAULT_CLASSIFIER = REPO_ROOT / "models" / "square_classifier_ncnn_model"
 
 _VALID_LABELS = {
     f"{color}-{piece}"
@@ -455,6 +457,8 @@ def parse_args():
     parser.add_argument("--poll-interval", type=float, default=0.12,
                         help="seconds between cheap motion-gate polls (not a detection interval)")
     parser.add_argument("--calibration", type=Path, default=DEFAULT_CALIBRATION)
+    parser.add_argument("--classifier", type=Path, default=DEFAULT_CLASSIFIER, help="per-square classifier")
+    parser.add_argument("--min-conf", type=float, default=0.7, help="classifier confidence threshold")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--host", default="0.0.0.0")
     return parser.parse_args()
@@ -465,18 +469,15 @@ def main():
 
     if not args.calibration.exists():
         raise SystemExit(f"No calibration found at {args.calibration} -- run calibrate.py first.")
-
-    with open(args.calibration) as f:
-        calibration = json.load(f)
-    if "empty_baseline" not in calibration or "foreground_pixel_diff_threshold" not in calibration:
+    if not args.classifier.exists():
         raise SystemExit(
-            f"{args.calibration} has no occupancy/color baseline -- re-run calibrate.py "
-            "(it now captures an empty-board and starting-position reference, and saves a "
-            "background-subtraction reference image, in addition to corners)."
+            f"No classifier model found at {args.classifier} -- see src/collect_square_crops.py "
+            "and training/train_classifier.py to train/export one."
         )
 
     calibration_matrix = load_calibration(args.calibration)
-    occupancy_baseline = load_baseline(calibration, args.calibration)
+    print("Loading classifier...")
+    classifier_model = load_classifier(str(args.classifier))
 
     buffer = BoardBuffer()
     print("Running. Ctrl+C to stop.")
@@ -494,9 +495,10 @@ def main():
                 capture_stream=stream,
                 calibration_matrix=calibration_matrix,
                 image_size=image_size,
-                occupancy_baseline=occupancy_baseline,
+                classifier_model=classifier_model,
                 on_update=on_update,
                 poll_interval=args.poll_interval,
+                classifier_min_conf=args.min_conf,
             )
             buffer.set_board(loop.current_matrix, None, False, None)  # seed the UI before any move happens
 

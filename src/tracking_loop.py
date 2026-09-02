@@ -1,21 +1,21 @@
 """Event-gated board tracking loop.
 
 Drives this flow: motion-gate (cheap, ML-free) -> a full 64-square
-classical-CV occupancy/color read, sampled with multi-frame consensus (see
-occupancy_color.py) -> compute the observed delta against the tracker's own
-state -> match it against every legal chess move (see
+empty/white/black classification, sampled with multi-frame consensus (see
+square_classifier.py) -> compute the observed delta against the tracker's
+own state -> match it against every legal chess move (see
 move_resolver.MoveResolver.resolve_from_deltas) -> accept, or flag for
 manual correction via the web UI.
 
-There is deliberately no automatic ML rescan fallback in this design. Since
+There is deliberately no automatic rescan fallback in this design. Since
 vision only ever needs to answer empty/white/black per square (piece type
 comes from the tracker's own maintained state -- see move_resolver.py's
 docstring for why), a full-board read every settle is affordable, and both
-the occupancy/color read and the delta match refuse to guess rather than
-produce a wrong answer (see occupancy_color.py's precision safeguards).
+the classifier and the delta match refuse to guess rather than produce a
+wrong answer (see square_classifier.py's consensus/confidence handling).
 When something can't be resolved with confidence, the loop leaves state
 untouched and flags it; a human corrects it via the web UI
-(apply_manual_correction), which is now the sole recovery path.
+(apply_manual_correction), which is the sole recovery path.
 
 This mirrors the product's own designed flow ("Board Settles -> Image
 Captured -> Occupancy/Color Read -> Move Validated -> flag for manual
@@ -29,8 +29,8 @@ import threading
 import time
 
 from move_resolver import MoveResolver, standard_starting_matrix
-from occupancy_color import ALL_SQUARES, UNRESOLVED, finalize_baseline, read_settled_state
 from roi_diff import MAX_PLAUSIBLE_SQUARES, BoardMotionGate, to_gray_roi
+from square_classifier import UNRESOLVED, read_settled_state
 from square_geometry import board_roi_bbox, square_pixel_bboxes
 
 
@@ -48,12 +48,13 @@ class TrackingLoop:
         capture_stream,
         calibration_matrix,
         image_size,
-        occupancy_baseline,
+        classifier_model,
         on_update,
         poll_interval=0.12,
         consensus_samples=3,
         consensus_window_s=0.4,
-        min_margin_std=2.5,
+        classifier_imgsz=64,
+        classifier_min_conf=0.7,
     ):
         """on_update(matrix, move_text, frame, flagged, reason) is called
         whenever the stable board state changes. move_text is a SAN move
@@ -64,19 +65,16 @@ class TrackingLoop:
         manual correction arrives via apply_manual_correction()."""
         self._capture_stream = capture_stream
         self._calibration_matrix = calibration_matrix
+        self._classifier_model = classifier_model
         self._on_update = on_update
         self._poll_interval = poll_interval
         self._consensus_samples = consensus_samples
         self._consensus_window_s = consensus_window_s
-        self._min_margin_std = min_margin_std
+        self._classifier_imgsz = classifier_imgsz
+        self._classifier_min_conf = classifier_min_conf
 
         self._roi_bbox = board_roi_bbox(calibration_matrix, image_size)
         self._square_bboxes = square_pixel_bboxes(calibration_matrix, image_size)
-        self._footprint_bboxes = square_pixel_bboxes(calibration_matrix, image_size, margin_up_px=0)
-        # Slices the baseline's empty-board reference image into per-square
-        # crops now that square_bboxes is known -- see occupancy_color.py's
-        # finalize_baseline docstring.
-        self._occupancy_baseline = finalize_baseline(occupancy_baseline, self._square_bboxes)
         self._gate = BoardMotionGate()
         self._resolver = MoveResolver()
         # Reentrant: current_matrix (used internally by _handle_settle,
@@ -146,15 +144,14 @@ class TrackingLoop:
     def _handle_settle(self, frame):
         """Called with self._lock held."""
         consensus = read_settled_state(
+            self._classifier_model,
             self._capture_stream,
-            ALL_SQUARES,
-            self._footprint_bboxes,
             self._square_bboxes,
-            self._occupancy_baseline,
             initial_frame=frame,
             num_samples=self._consensus_samples,
             window_s=self._consensus_window_s,
-            min_margin_std=self._min_margin_std,
+            imgsz=self._classifier_imgsz,
+            min_conf=self._classifier_min_conf,
         )
 
         if any(state is UNRESOLVED for state in consensus.values()):

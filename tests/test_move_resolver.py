@@ -1,7 +1,7 @@
 """Tests for move_resolver.MoveResolver.resolve_from_deltas -- the core
 matching logic behind the occupancy/color redesign (see that module's
-docstring and src/occupancy_color.py). Runs entirely against python-chess,
-no camera/calibration/OpenCV required.
+docstring and src/square_classifier.py). Runs entirely against
+python-chess, no camera/calibration/OpenCV required.
 
 Castling and en-passant FEN fixtures below were independently checked
 against python-chess (is_valid() + the exact move present in legal_moves)

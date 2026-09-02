@@ -6,14 +6,14 @@ there, so there's no need to derive the start state from vision -- and
 resolves each settle event to a single legal move.
 
 resolve_from_deltas() is the hot path (see tracking_loop.py):
-occupancy_color.py's classical-CV reader only ever tells us which squares'
-*occupancy/color* (empty/white/black) changed, never full piece type, so
-matching happens against that lighter signal rather than a full-board FEN
-comparison. The piece type of whatever moved is never read from vision at
-all -- it comes from this resolver's own already-correct internal board
-state, which is exactly the redesign's central idea: since the tracker
-knows the full starting position and has applied every legal move since,
-it always knows piece identity in software.
+square_classifier.py only ever tells us which squares' *occupancy/color*
+(empty/white/black) changed, never full piece type, so matching happens
+against that lighter signal rather than a full-board FEN comparison. The
+piece type of whatever moved is never read from vision at all -- it comes
+from this resolver's own already-correct internal board state, which is
+exactly the redesign's central idea: since the tracker knows the full
+starting position and has applied every legal move since, it always
+knows piece identity in software.
 
 resolve() (full-matrix FEN matching) is kept as a standalone utility -- it's
 no longer called from the hot path, but is still the simplest way to
@@ -116,10 +116,10 @@ class MoveResolver:
 
     def resolve_from_deltas(self, observed_deltas):
         """observed_deltas: {(file_idx, rank_idx): "white"|"black"|"empty"}
-        for every square whose confirmed occupancy/color (as read by
-        occupancy_color.py's classical-CV scan) differs from this
-        resolver's own tracked state. Never full piece type -- vision
-        doesn't supply that under this design (see module docstring).
+        for every square whose confirmed occupancy/color (as classified by
+        square_classifier.py) differs from this resolver's own tracked
+        state. Never full piece type -- vision doesn't supply that under
+        this design (see module docstring).
 
         Enumerates every legal move and computes its expected delta via
         _expected_delta(). Promotion is the one case color alone can't
