@@ -50,8 +50,13 @@ EMPTY_BOARD_REFERENCE_PATH = REPO_ROOT / "config" / EMPTY_BOARD_REFERENCE_FILENA
 CORNER_LABELS = ["a1 corner", "h1 corner", "h8 corner", "a8 corner"]
 BOARD_SIZE = 8  # squares per side
 PREVIEW_PX = 800  # pixels per side of the warped preview
-BASELINE_BURST_FRAMES = 8
-BASELINE_BURST_INTERVAL_S = 0.15
+# Spread over several seconds (not ~1s) so the calibrated noise/threshold
+# statistics reflect realistic real-world variation (shot noise, minor
+# vibration) rather than an artificially quiet short window -- see
+# debug_occupancy.py and capture.py's exposure warm-up/lock for the related
+# real-hardware tuning this was built to address.
+BASELINE_BURST_FRAMES = 24
+BASELINE_BURST_INTERVAL_S = 0.2
 
 
 def collect_corners(frame):

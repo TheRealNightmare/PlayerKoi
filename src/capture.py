@@ -12,17 +12,48 @@ from threading import Lock, Thread
 
 from picamera2 import Picamera2
 
+# How long to let auto-exposure/auto-white-balance converge before freezing
+# them (see Camera._warm_up_and_lock). Every process that opens the camera
+# converges independently -- without this, a frame grabbed right after
+# start() can be mid-convergence, and a long-running process can see AE
+# quietly drift mid-session (e.g. a hand briefly passing over the board
+# changes the scene's average brightness). Both looked like the likely
+# cause of occupancy_color.py's calibrated thresholds not matching live
+# reads on real hardware -- see debug_occupancy.py.
+DEFAULT_WARMUP_S = 2.0
+
 
 class Camera:
-    def __init__(self, size=(1640, 1232)):
+    def __init__(self, size=(1640, 1232), warmup_s=DEFAULT_WARMUP_S):
         self._picam2 = Picamera2()
         config = self._picam2.create_still_configuration(
             main={"size": size, "format": "RGB888"}
         )
         self._picam2.configure(config)
+        self._warmup_s = warmup_s
 
     def open(self):
         self._picam2.start()
+        self._warm_up_and_lock()
+
+    def _warm_up_and_lock(self):
+        """Lets AE/AWB converge to current lighting, then freezes them at
+        whatever they converged to, so every frame from this point on in
+        this process uses consistent exposure/color -- not still adjusting,
+        and not silently drifting later in a long session."""
+        deadline = time.monotonic() + self._warmup_s
+        metadata = None
+        while time.monotonic() < deadline:
+            metadata = self._picam2.capture_metadata()  # blocks on a real frame, paces itself
+        if metadata is None:
+            return
+        self._picam2.set_controls({
+            "AeEnable": False,
+            "AwbEnable": False,
+            "ExposureTime": metadata["ExposureTime"],
+            "AnalogueGain": metadata["AnalogueGain"],
+            "ColourGains": metadata["ColourGains"],
+        })
 
     def read_frame(self):
         """Returns an HxWx3 numpy array in BGR order (OpenCV convention)."""
