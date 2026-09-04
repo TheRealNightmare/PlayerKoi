@@ -23,6 +23,7 @@ trusting a square's state at all.
 
 import os
 import time
+from collections import Counter
 
 from square_geometry import BOARD_SIZE
 
@@ -42,7 +43,13 @@ UNRESOLVED = object()
 
 ALL_SQUARES = [(file_idx, rank_idx) for rank_idx in range(BOARD_SIZE) for file_idx in range(BOARD_SIZE)]
 
-DEFAULT_MIN_CONF = 0.7
+# The trained model sits at 0.9-1.0 confidence on nearly every square, so
+# this mainly exists to reject genuinely ambiguous predictions. Kept
+# deliberately below the model's normal operating range: correct-but-
+# marginal reads (a real rig showed an empty square at 0.61) shouldn't be
+# discarded, since majority voting below and legal-move matching in
+# move_resolver.py both sit downstream as stronger guards.
+DEFAULT_MIN_CONF = 0.5
 
 
 def load_classifier(model_path):
@@ -89,10 +96,16 @@ def read_settled_state(
 ):
     """Samples num_samples frames (the first being initial_frame if given,
     the rest freshly captured spaced across window_s) and classifies every
-    square in each. A square's state is only reported as
-    EMPTY/WHITE/BLACK if every sample agreed and none of them were
-    UNRESOLVED -- otherwise it's reported as UNRESOLVED, forcing the
-    caller to flag rather than trust a transient or low-confidence read.
+    square in each, then takes a **majority vote** per square: a state is
+    reported only if it holds a strict majority of the samples (2 of 3),
+    otherwise UNRESOLVED.
+
+    Majority rather than unanimity because these are 64 squares x
+    num_samples predictions per settle -- demanding every one of them
+    agree means a single flaky frame anywhere unresolves a square, and
+    (before this) unresolved anywhere flagged the whole board. See
+    tracking_loop.MAX_UNRESOLVED_SQUARES for how unresolved squares are
+    tolerated downstream.
 
     Returns {square: state}.
     """
@@ -106,12 +119,12 @@ def read_settled_state(
 
     per_frame = [classify_board(model, frame, square_bboxes, imgsz=imgsz, min_conf=min_conf) for frame in frames]
 
+    needed = len(per_frame) // 2 + 1  # strict majority: 2 of 3, 3 of 4, 3 of 5
     consensus = {}
     for square in square_bboxes:
-        states = {result[square] for result in per_frame}
-        if len(states) == 1 and UNRESOLVED not in states:
-            (state,) = states
-            consensus[square] = state
-        else:
-            consensus[square] = UNRESOLVED
+        votes = Counter(
+            result[square] for result in per_frame if result[square] is not UNRESOLVED
+        )
+        winner, count = votes.most_common(1)[0] if votes else (UNRESOLVED, 0)
+        consensus[square] = winner if count >= needed else UNRESOLVED
     return consensus

@@ -32,7 +32,7 @@ import cv2
 
 from board_state import load_calibration, matrix_to_fen_placement
 from capture import Camera, CaptureStream
-from square_classifier import load_classifier
+from square_classifier import DEFAULT_MIN_CONF, load_classifier
 from tracking_loop import TrackingLoop
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -458,7 +458,8 @@ def parse_args():
                         help="seconds between cheap motion-gate polls (not a detection interval)")
     parser.add_argument("--calibration", type=Path, default=DEFAULT_CALIBRATION)
     parser.add_argument("--classifier", type=Path, default=DEFAULT_CLASSIFIER, help="per-square classifier")
-    parser.add_argument("--min-conf", type=float, default=0.7, help="classifier confidence threshold")
+    parser.add_argument("--min-conf", type=float, default=DEFAULT_MIN_CONF,
+                        help="classifier confidence threshold")
     parser.add_argument("--motion-thresh", type=float, default=None,
                         help="board-ROI motion threshold; tune with debug_classifier.py --watch")
     parser.add_argument("--port", type=int, default=8000)

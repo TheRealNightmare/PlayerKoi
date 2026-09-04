@@ -28,10 +28,32 @@ from vision.
 import threading
 import time
 
+from board_state import FILES
 from move_resolver import MoveResolver, standard_starting_matrix
 from roi_diff import MAX_PLAUSIBLE_SQUARES, BoardMotionGate, to_gray_roi
 from square_classifier import UNRESOLVED, read_settled_state
 from square_geometry import board_roi_bbox, square_pixel_bboxes
+
+
+# How many squares may come back UNRESOLVED before the whole settle is
+# treated as untrustworthy. A handful of marginal squares is normal and
+# harmless -- they're skipped when computing the delta, so they can only
+# cause a *missed* change, never a wrong one (a move touches >= 2 squares,
+# and an incomplete delta matches no legal move, so it flags anyway). Many
+# unresolved squares at once means something systematic is wrong (model
+# degraded, lighting changed, board moved), which is worth surfacing.
+MAX_UNRESOLVED_SQUARES = 8
+
+
+def _square_name(square):
+    file_idx, rank_idx = square
+    return f"{FILES[file_idx]}{rank_idx + 1}"
+
+
+def _describe(squares, limit=6):
+    names = sorted(_square_name(square) for square in squares)
+    shown = ", ".join(names[:limit])
+    return shown if len(names) <= limit else f"{shown}, +{len(names) - limit} more"
 
 
 def _matrix_color(matrix, square):
@@ -157,14 +179,25 @@ class TrackingLoop:
             min_conf=self._classifier_min_conf,
         )
 
-        if any(state is UNRESOLVED for state in consensus.values()):
-            self._flag_unresolved(frame, "low-confidence or inconsistent occupancy/color read on one or more squares")
+        unresolved = [square for square, state in consensus.items() if state is UNRESOLVED]
+        if len(unresolved) > MAX_UNRESOLVED_SQUARES:
+            self._flag_unresolved(
+                frame,
+                f"{len(unresolved)} squares had low-confidence reads ({_describe(unresolved)}) "
+                "-- check lighting, or re-check the classifier with debug_classifier.py",
+            )
             return
 
+        # Unresolved squares are skipped rather than blocking: they carry no
+        # information, so the tracker keeps its prior belief about them. A
+        # real move touches at least two squares, and resolve_from_deltas
+        # only accepts a delta matching exactly one legal move -- so if the
+        # moved square itself is unresolved, the delta comes out incomplete
+        # and flags below rather than resolving to something wrong.
         observed_deltas = {
             square: state
             for square, state in consensus.items()
-            if state != _matrix_color(self._stable_matrix, square)
+            if state is not UNRESOLVED and state != _matrix_color(self._stable_matrix, square)
         }
 
         if not observed_deltas:
@@ -176,13 +209,17 @@ class TrackingLoop:
 
         if len(observed_deltas) > MAX_PLAUSIBLE_SQUARES:
             self._flag_unresolved(
-                frame, f"{len(observed_deltas)} squares changed at once -- more than any legal move touches"
+                frame,
+                f"{len(observed_deltas)} squares changed at once ({_describe(observed_deltas)}) "
+                "-- more than any legal move touches",
             )
             return
 
         san, _move, patch = self._resolver.resolve_from_deltas(observed_deltas)
         if san is None:
-            self._flag_unresolved(frame, "no unique legal move explains the observed change")
+            self._flag_unresolved(
+                frame, f"no unique legal move explains the change on {_describe(observed_deltas)}"
+            )
             return
 
         for (file_idx, rank_idx), label in patch.items():

@@ -88,18 +88,38 @@ class TestReadSettledState(unittest.TestCase):
         )
         self.assertEqual(result[SQUARES[0]], sc.WHITE)
 
-    def test_disagreeing_sample_forces_unresolved(self):
-        # Two agree white, one says black -- consensus must reject rather
-        # than average the disagreement away.
+    def test_majority_wins_over_a_single_dissenting_sample(self):
+        # Two say white, one says black -- majority carries it. A single
+        # flaky frame shouldn't unresolve an otherwise-consistent square,
+        # since unresolved squares used to veto the entire board.
         model = _FakeModel([[(1, 0.9)], [(1, 0.9)], [(2, 0.9)]])
+        square_bboxes = {SQUARES[0]: BOX}
+        result = sc.read_settled_state(
+            model, _FakeCaptureStream(3), square_bboxes, num_samples=3, window_s=0.0, min_conf=0.7
+        )
+        self.assertEqual(result[SQUARES[0]], sc.WHITE)
+
+    def test_majority_survives_one_low_confidence_sample(self):
+        # The 0.4 sample is discarded as low-confidence; the remaining two
+        # agree, which is still a majority of 3.
+        model = _FakeModel([[(1, 0.9)], [(1, 0.4)], [(1, 0.9)]])
+        square_bboxes = {SQUARES[0]: BOX}
+        result = sc.read_settled_state(
+            model, _FakeCaptureStream(3), square_bboxes, num_samples=3, window_s=0.0, min_conf=0.7
+        )
+        self.assertEqual(result[SQUARES[0]], sc.WHITE)
+
+    def test_three_way_split_is_unresolved(self):
+        # No state holds a majority -- genuinely ambiguous, so don't guess.
+        model = _FakeModel([[(0, 0.9)], [(1, 0.9)], [(2, 0.9)]])
         square_bboxes = {SQUARES[0]: BOX}
         result = sc.read_settled_state(
             model, _FakeCaptureStream(3), square_bboxes, num_samples=3, window_s=0.0, min_conf=0.7
         )
         self.assertIs(result[SQUARES[0]], sc.UNRESOLVED)
 
-    def test_any_low_confidence_sample_forces_unresolved(self):
-        model = _FakeModel([[(1, 0.9)], [(1, 0.4)], [(1, 0.9)]])
+    def test_all_samples_low_confidence_is_unresolved(self):
+        model = _FakeModel([[(1, 0.3)], [(1, 0.2)], [(1, 0.4)]])
         square_bboxes = {SQUARES[0]: BOX}
         result = sc.read_settled_state(
             model, _FakeCaptureStream(3), square_bboxes, num_samples=3, window_s=0.0, min_conf=0.7

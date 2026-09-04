@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 import chess  # noqa: E402
 import numpy as np  # noqa: E402
 
+import square_classifier as sc  # noqa: E402
 import tracking_loop  # noqa: E402
 from move_resolver import standard_starting_matrix  # noqa: E402
 from square_classifier import ALL_SQUARES, BLACK, EMPTY, WHITE  # noqa: E402
@@ -126,6 +127,58 @@ class TestHandleSettleDelta(unittest.TestCase):
         # Flagging must leave the tracked state untouched (last trusted
         # state), not adopt the unexplained matrix.
         self.assertEqual(self.loop.current_matrix, standard_starting_matrix())
+
+    def test_unresolved_square_unrelated_to_the_move_does_not_block_it(self):
+        # The whole point of tolerating unresolved squares: a marginal
+        # read on some square the move never touched used to flag the
+        # entire board.
+        matrix = standard_starting_matrix()
+        matrix[1][4] = None  # e2 empties
+        matrix[3][4] = "white-pawn"  # e4 occupied
+
+        consensus = _consensus_for(matrix)
+        consensus[(1, 7)] = sc.UNRESOLVED  # b8, nowhere near the move
+        with mock.patch.object(tracking_loop, "read_settled_state", return_value=consensus):
+            self.loop._handle_settle(self.capture_stream.frame)
+
+        self.assertEqual(len(self.updates), 1)
+        _matrix, move_text, flagged, _reason = self.updates[0]
+        self.assertEqual(move_text, "e4")
+        self.assertFalse(flagged)
+
+    def test_unresolved_square_that_is_part_of_the_move_flags_rather_than_guessing(self):
+        # The safety argument: if the moved-to square is the unresolved
+        # one, the delta is incomplete (only e2 emptied), matches no legal
+        # move, and flags -- it must never resolve to something wrong.
+        matrix = standard_starting_matrix()
+        matrix[1][4] = None
+        matrix[3][4] = "white-pawn"
+
+        consensus = _consensus_for(matrix)
+        consensus[(4, 3)] = sc.UNRESOLVED  # e4, the destination square
+        with mock.patch.object(tracking_loop, "read_settled_state", return_value=consensus):
+            self.loop._handle_settle(self.capture_stream.frame)
+
+        self.assertEqual(len(self.updates), 1)
+        _matrix, move_text, flagged, reason = self.updates[0]
+        self.assertIsNone(move_text)
+        self.assertTrue(flagged)
+        self.assertIn("no unique legal move", reason)
+        self.assertEqual(self.loop.current_matrix, standard_starting_matrix())
+
+    def test_too_many_unresolved_squares_is_flagged(self):
+        matrix = standard_starting_matrix()
+        consensus = _consensus_for(matrix)
+        for square in ALL_SQUARES[: tracking_loop.MAX_UNRESOLVED_SQUARES + 1]:
+            consensus[square] = sc.UNRESOLVED
+        with mock.patch.object(tracking_loop, "read_settled_state", return_value=consensus):
+            self.loop._handle_settle(self.capture_stream.frame)
+
+        self.assertEqual(len(self.updates), 1)
+        _matrix, move_text, flagged, reason = self.updates[0]
+        self.assertIsNone(move_text)
+        self.assertTrue(flagged)
+        self.assertIn("low-confidence", reason)
 
     def test_too_many_changed_squares_is_flagged_without_calling_resolver(self):
         matrix = standard_starting_matrix()
