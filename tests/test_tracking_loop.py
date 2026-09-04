@@ -194,5 +194,69 @@ class TestHandleSettleDelta(unittest.TestCase):
         self.assertIn("squares changed at once", reason)
 
 
+class TestUndoAndPause(unittest.TestCase):
+    def setUp(self):
+        self.capture_stream = _FakeCaptureStream()
+        self.updates = []
+
+        def on_update(matrix, move_text, frame, flagged, reason):
+            self.updates.append((matrix, move_text, flagged, reason))
+
+        self.loop = tracking_loop.TrackingLoop(
+            capture_stream=self.capture_stream,
+            calibration_matrix=np.eye(3),
+            image_size=(10, 10),
+            classifier_model=None,
+            on_update=on_update,
+        )
+
+    def _settle_with(self, matrix):
+        consensus = _consensus_for(matrix)
+        with mock.patch.object(tracking_loop, "read_settled_state", return_value=consensus):
+            self.loop._handle_settle(self.capture_stream.frame)
+
+    def test_undo_restores_both_the_matrix_and_the_resolver_board(self):
+        before_matrix = standard_starting_matrix()
+        before_fen = self.loop._resolver.board.fen()
+
+        matrix = standard_starting_matrix()
+        matrix[1][4] = None
+        matrix[3][4] = "white-pawn"
+        self._settle_with(matrix)
+        self.assertEqual(self.updates[-1][1], "e4")
+
+        san = self.loop.undo_last_move()
+
+        self.assertEqual(san, "e4")
+        self.assertEqual(self.loop.current_matrix, before_matrix)
+        # The resolver's board must be restored too, not just the matrix --
+        # otherwise the next move would be judged against a stale position.
+        self.assertEqual(self.loop._resolver.board.fen(), before_fen)
+
+    def test_undo_with_no_history_returns_none(self):
+        self.assertIsNone(self.loop.undo_last_move())
+        self.assertEqual(self.updates, [])
+
+    def test_paused_tick_ignores_a_settle(self):
+        with mock.patch.object(self.loop._gate, "update", return_value="settled"), \
+             mock.patch.object(tracking_loop, "read_settled_state") as read:
+            self.loop.set_paused(True)
+            self.loop.tick()
+            read.assert_not_called()
+
+            self.loop.set_paused(False)
+            self.loop.tick()
+            read.assert_called_once()
+
+    def test_pause_lapses_so_a_closed_editor_cannot_strand_tracking(self):
+        self.loop.set_paused(True, lapse_s=0.0)
+        self.assertFalse(self.loop.is_paused)
+
+        with mock.patch.object(self.loop._gate, "update", return_value="settled"), \
+             mock.patch.object(tracking_loop, "read_settled_state") as read:
+            self.loop.tick()
+            read.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

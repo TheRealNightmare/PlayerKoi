@@ -29,7 +29,7 @@ import threading
 import time
 
 from board_state import FILES
-from move_resolver import MoveResolver, standard_starting_matrix
+from move_resolver import MoveResolver, matrix_from_board, standard_starting_matrix
 from roi_diff import MAX_PLAUSIBLE_SQUARES, BoardMotionGate, to_gray_roi
 from square_classifier import UNRESOLVED, read_settled_state
 from square_geometry import board_roi_bbox, square_pixel_bboxes
@@ -43,6 +43,13 @@ from square_geometry import board_roi_bbox, square_pixel_bboxes
 # unresolved squares at once means something systematic is wrong (model
 # degraded, lighting changed, board moved), which is worth surfacing.
 MAX_UNRESOLVED_SQUARES = 8
+
+# A pause (see set_paused) lapses on its own unless something keeps
+# refreshing it. The web UI pauses tracking while its board editor is open
+# and refreshes this on every poll; if the browser tab closes mid-edit,
+# nothing refreshes it and tracking resumes rather than staying silently
+# dead with no indication anywhere.
+PAUSE_LAPSE_S = 10.0
 
 
 def _square_name(square):
@@ -110,6 +117,38 @@ class TrackingLoop:
         self._stable_matrix = standard_starting_matrix()
         self._stable_frame = None
         self._flag_reason = None
+        self._pause_expires_at = 0.0
+        self._expected_move = None
+
+    @property
+    def board_copy(self):
+        """A snapshot of the resolver's position, for callers (the engine)
+        that need to reason about it without touching internals."""
+        with self._lock:
+            return self._resolver.board.copy()
+
+    @property
+    def expected_move(self):
+        with self._lock:
+            return self._expected_move
+
+    def set_expected_move(self, move):
+        """Constrains the next accepted settle to exactly `move` (an engine
+        has dictated it). Anything else physically played is rejected and
+        flagged rather than applied. None lifts the constraint."""
+        with self._lock:
+            self._expected_move = move
+
+    @property
+    def is_paused(self):
+        with self._lock:
+            return time.monotonic() < self._pause_expires_at
+
+    def set_paused(self, paused, lapse_s=PAUSE_LAPSE_S):
+        """Pauses/resumes applying settles. A pause lapses after lapse_s
+        unless refreshed by calling this again -- see PAUSE_LAPSE_S."""
+        with self._lock:
+            self._pause_expires_at = time.monotonic() + lapse_s if paused else 0.0
 
     @property
     def current_matrix(self):
@@ -140,7 +179,30 @@ class TrackingLoop:
             self._stable_matrix = [row[:] for row in matrix]
             self._stable_frame = frame
             self._flag_reason = None
+            self._expected_move = None  # position changed; the engine must re-think
             self._on_update(self.current_matrix, None, frame, False, None)
+
+    def undo_last_move(self, frame=None):
+        """Reverts the last accepted move, restoring both the tracked
+        matrix and the resolver's board exactly (unlike a manual
+        correction, which has to re-infer castling rights). Returns the
+        SAN of the undone move, or None when there's nothing to undo --
+        including right after a manual correction, since resync() starts a
+        fresh board with no history."""
+        with self._lock:
+            if not self._resolver.board.move_stack:
+                return None
+
+            move = self._resolver.board.pop()
+            # Legal again now that the position is the one before it, which
+            # is what san() needs to describe it.
+            san = self._resolver.board.san(move)
+
+            self._stable_matrix = matrix_from_board(self._resolver.board)
+            self._flag_reason = None
+            self._expected_move = None  # position changed; the engine must re-think
+            self._on_update(self.current_matrix, None, frame, False, None)
+            return san
 
     def run_forever(self):
         while True:
@@ -160,8 +222,15 @@ class TrackingLoop:
             if self._stable_frame is None:
                 self._stable_frame = frame
 
+            # Keep pumping the gate even while paused, so its reference
+            # frame stays current -- otherwise resuming would diff against
+            # a stale frame and fire a bogus settle immediately.
             roi_gray = to_gray_roi(frame, self._roi_bbox)
-            if self._gate.update(roi_gray) != "settled":
+            settled = self._gate.update(roi_gray) == "settled"
+
+            if time.monotonic() < self._pause_expires_at:
+                return
+            if not settled:
                 return
 
             self._handle_settle(frame)
@@ -215,11 +284,18 @@ class TrackingLoop:
             )
             return
 
-        san, _move, patch = self._resolver.resolve_from_deltas(observed_deltas)
+        san, _move, patch = self._resolver.resolve_from_deltas(
+            observed_deltas, only_move=self._expected_move
+        )
         if san is None:
-            self._flag_unresolved(
-                frame, f"no unique legal move explains the change on {_describe(observed_deltas)}"
-            )
+            if self._expected_move is not None:
+                reason = (
+                    f"expected the engine's move {self._expected_move.uci()}, "
+                    f"but saw a change on {_describe(observed_deltas)}"
+                )
+            else:
+                reason = f"no unique legal move explains the change on {_describe(observed_deltas)}"
+            self._flag_unresolved(frame, reason)
             return
 
         for (file_idx, rank_idx), label in patch.items():
@@ -227,6 +303,7 @@ class TrackingLoop:
 
         self._stable_frame = frame
         self._flag_reason = None
+        self._expected_move = None  # satisfied
         self._on_update(self.current_matrix, san, frame, False, None)
 
     def _flag_unresolved(self, frame, reason):

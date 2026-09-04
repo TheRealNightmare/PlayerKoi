@@ -25,13 +25,14 @@ import argparse
 import json
 import time
 from pathlib import Path
-from threading import Lock, Thread
+from threading import Event, Lock, Thread
 
 import chess
 import cv2
 
 from board_state import load_calibration, matrix_to_fen_placement
 from capture import Camera, CaptureStream
+from engine import DEFAULT_SKILL, DEFAULT_THINK_S, ChessEngine, describe_move
 from square_classifier import DEFAULT_MIN_CONF, load_classifier
 from tracking_loop import TrackingLoop
 
@@ -86,7 +87,22 @@ PAGE = """<!doctype html>
   button { background: #444; color: #eee; border: 1px solid #666; border-radius: 4px;
            padding: 6px 14px; font-size: 14px; cursor: pointer; }
   button:hover { background: #555; }
+  .expect-from { box-shadow: inset 0 0 0 4px #ffcc00; }
+  .expect-to   { box-shadow: inset 0 0 0 4px #4a9eff; }
+  #controls { display: flex; gap: 10px; }
+  #engineBox {
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+    background: #23282e; border: 1px solid #444; border-radius: 6px;
+    padding: 12px 18px; color: #eee; min-width: 300px;
+  }
+  #engineTitle { color: #888; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }
+  #engineMove { font-size: 30px; font-weight: bold; color: #4a9eff; min-height: 36px; letter-spacing: 2px; }
+  #engineExtra { color: #f0ad4e; font-size: 13px; text-align: center; max-width: 320px; }
+  #engineMsg { color: #888; font-size: 12px; text-align: center; max-width: 320px; }
+  #engineRow { display: flex; align-items: center; gap: 12px; font-size: 13px; color: #bbb; }
   #editControls { display: none; flex-direction: column; align-items: center; gap: 8px; }
+  #editShortcuts { display: flex; gap: 10px; }
+  #pausedNote { display: none; color: #f0ad4e; font-size: 13px; font-weight: bold; }
   #turnRow { display: flex; gap: 10px; align-items: center; color: #eee; font-size: 14px; }
   #saveCancelRow { display: flex; gap: 10px; }
   #picker {
@@ -103,13 +119,21 @@ PAGE = """<!doctype html>
     <div id="board"><div id="picker"></div></div>
     <div id="flagBox">
       <div id="flagReason"></div>
-      <button id="fixBtn">Fix board</button>
     </div>
+    <div id="controls">
+      <button id="editBtn">Edit board</button>
+      <button id="undoBtn">Undo last move</button>
+    </div>
+    <div id="pausedNote">tracking paused while editing</div>
     <div id="editControls">
       <div id="turnRow">
         Side to move:
         <label><input type="radio" name="turn" value="white" checked> White</label>
         <label><input type="radio" name="turn" value="black"> Black</label>
+      </div>
+      <div id="editShortcuts">
+        <button id="resetStartBtn">Reset to start</button>
+        <button id="clearBoardBtn">Clear board</button>
       </div>
       <div id="saveCancelRow">
         <button id="saveBtn">Save</button>
@@ -120,6 +144,17 @@ PAGE = """<!doctype html>
     <div id="lastMove"></div>
     <div id="moveLog"></div>
     <div id="status">connecting...</div>
+    <div id="engineBox">
+      <div id="engineTitle">Engine (Black)</div>
+      <div id="engineMove"></div>
+      <div id="engineExtra"></div>
+      <div id="engineMsg"></div>
+      <div id="engineRow">
+        <label><input type="checkbox" id="engineToggle"> on</label>
+        <label>skill <input type="range" id="engineSkill" min="0" max="20" step="1"></label>
+        <span id="engineSkillVal"></span>
+      </div>
+    </div>
   </div>
   <div class="col">
     <img id="stream" src="/stream.mjpg">
@@ -148,13 +183,25 @@ for (let rank = 7; rank >= 0; rank--) {
 let liveMatrix = null;   // last matrix received from the server
 let editMatrix = null;   // working copy while in edit mode, null when not editing
 
+let expectedUci = null;   // e.g. "d7d5" -- the engine move awaiting placement
+
+function squareName(file, rank) {
+  return "abcdefgh"[file] + (rank + 1);
+}
+
 function render(matrix) {
   for (const { el, rank, file } of cells) {
     const label = matrix[rank][file];
-    if (!label) { el.textContent = ""; el.className = el.className.replace(/ (white|black)-piece/, ""); continue; }
-    el.textContent = GLYPHS[label] || "?";
-    const colorClass = label.startsWith("white") ? "white-piece" : "black-piece";
-    el.className = el.className.replace(/ (white|black)-piece/, "") + " " + colorClass;
+    if (!label) { el.textContent = ""; el.className = el.className.replace(/ (white|black)-piece/, ""); }
+    else {
+      el.textContent = GLYPHS[label] || "?";
+      const colorClass = label.startsWith("white") ? "white-piece" : "black-piece";
+      el.className = el.className.replace(/ (white|black)-piece/, "") + " " + colorClass;
+    }
+    // Mark where the engine wants the piece taken from and put down.
+    const name = squareName(file, rank);
+    el.classList.toggle("expect-from", !!expectedUci && expectedUci.slice(0, 2) === name);
+    el.classList.toggle("expect-to", !!expectedUci && expectedUci.slice(2, 4) === name);
   }
 }
 
@@ -196,9 +243,48 @@ const moveLogEl = document.getElementById("moveLog");
 const flagBoxEl = document.getElementById("flagBox");
 const flagReasonEl = document.getElementById("flagReason");
 const editControlsEl = document.getElementById("editControls");
-const fixBtn = document.getElementById("fixBtn");
+const controlsEl = document.getElementById("controls");
+const pausedNoteEl = document.getElementById("pausedNote");
+const editBtn = document.getElementById("editBtn");
+const undoBtn = document.getElementById("undoBtn");
+const resetStartBtn = document.getElementById("resetStartBtn");
+const clearBoardBtn = document.getElementById("clearBoardBtn");
 const saveBtn = document.getElementById("saveBtn");
 const cancelBtn = document.getElementById("cancelBtn");
+
+const engineMoveEl = document.getElementById("engineMove");
+const engineExtraEl = document.getElementById("engineExtra");
+const engineMsgEl = document.getElementById("engineMsg");
+const engineToggle = document.getElementById("engineToggle");
+const engineSkill = document.getElementById("engineSkill");
+const engineSkillVal = document.getElementById("engineSkillVal");
+
+const BACK_RANK = ["rook", "knight", "bishop", "queen", "king", "bishop", "knight", "rook"];
+
+function emptyMatrix() {
+  return Array.from({ length: 8 }, () => Array(8).fill(null));
+}
+
+function startingMatrix() {
+  const m = emptyMatrix();
+  for (let file = 0; file < 8; file++) {
+    m[0][file] = "white-" + BACK_RANK[file];
+    m[1][file] = "white-pawn";
+    m[6][file] = "black-pawn";
+    m[7][file] = "black-" + BACK_RANK[file];
+  }
+  return m;
+}
+
+async function setPaused(paused) {
+  try {
+    await fetch("/board/pause", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paused }),
+    });
+  } catch (e) { /* the pause lapses on its own if this never lands */ }
+}
 let lastOk = Date.now();
 let lastMoveSeq = 0;
 
@@ -210,9 +296,12 @@ function logMove(text) {
 }
 
 function enterEditMode() {
-  editMatrix = liveMatrix.map(row => row.slice());
+  editMatrix = (liveMatrix || emptyMatrix()).map(row => row.slice());
   for (const { el } of cells) el.classList.add("editable");
   editControlsEl.style.display = "flex";
+  controlsEl.style.display = "none";
+  pausedNoteEl.style.display = "block";
+  setPaused(true);   // held open by the ?editing=1 poll below
   render(editMatrix);
 }
 
@@ -221,11 +310,48 @@ function exitEditMode() {
   closePicker();
   for (const { el } of cells) el.classList.remove("editable");
   editControlsEl.style.display = "none";
-  render(liveMatrix);
+  controlsEl.style.display = "flex";
+  pausedNoteEl.style.display = "none";
+  setPaused(false);
+  if (liveMatrix) render(liveMatrix);
 }
 
-fixBtn.onclick = enterEditMode;
+editBtn.onclick = enterEditMode;
 cancelBtn.onclick = exitEditMode;
+resetStartBtn.onclick = () => { editMatrix = startingMatrix(); render(editMatrix); };
+clearBoardBtn.onclick = () => { editMatrix = emptyMatrix(); render(editMatrix); };
+
+async function postEngine(payload) {
+  try {
+    await fetch("/engine", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (e) { /* next poll re-syncs the displayed state */ }
+}
+
+engineToggle.onchange = () => postEngine({ enabled: engineToggle.checked });
+engineSkill.oninput = () => { engineSkillVal.textContent = engineSkill.value; };
+engineSkill.onchange = () => postEngine({ skill: Number(engineSkill.value) });
+
+undoBtn.onclick = async () => {
+  undoBtn.disabled = true;
+  try {
+    const res = await fetch("/board/undo", { method: "POST" });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      alert(body.error || res.statusText);
+      return;
+    }
+    logMove("(undid " + body.undone + ")");
+    lastMoveEl.textContent = "";
+  } catch (e) {
+    alert("Could not undo: " + e);
+  } finally {
+    undoBtn.disabled = false;
+  }
+};
 
 saveBtn.onclick = async () => {
   const turn = document.querySelector('input[name="turn"]:checked').value;
@@ -251,9 +377,26 @@ saveBtn.onclick = async () => {
 
 async function poll() {
   try {
-    const res = await fetch("/board.json", { cache: "no-store" });
+    // ?editing=1 refreshes the server-side pause while the editor is open;
+    // if this tab goes away, the pause lapses and tracking resumes.
+    const res = await fetch("/board.json" + (editMatrix ? "?editing=1" : ""), { cache: "no-store" });
     const data = await res.json();
     liveMatrix = data.matrix;
+
+    const eng = data.engine || {};
+    expectedUci = eng.expected_uci || null;
+    engineMoveEl.textContent = eng.thinking ? "thinking..." : (eng.instruction || "");
+    engineExtraEl.textContent = eng.thinking ? "" : (eng.extra || "");
+    engineMsgEl.textContent = eng.message || (eng.available ? "" : "engine unavailable");
+    // Don't fight the user mid-drag of the slider or mid-click of the toggle.
+    if (document.activeElement !== engineToggle) engineToggle.checked = !!eng.enabled;
+    if (document.activeElement !== engineSkill && eng.skill !== undefined) {
+      engineSkill.value = eng.skill;
+      engineSkillVal.textContent = eng.skill;
+    }
+    engineToggle.disabled = !eng.available;
+    engineSkill.disabled = !eng.available;
+
     if (!editMatrix) render(liveMatrix);
 
     if (data.move_seq > lastMoveSeq) {
@@ -267,12 +410,13 @@ async function poll() {
     }
     lastMoveSeq = data.move_seq;
 
-    if (data.flagged && !editMatrix) {
+    // The flag box is informational only -- the editor is reachable at any
+    // time from #controls, since a wrongly-accepted move raises no flag.
+    if (data.flagged) {
       flagBoxEl.style.display = "flex";
       flagReasonEl.textContent = data.flag_reason || "Board state could not be resolved automatically.";
-    } else if (!data.flagged) {
+    } else {
       flagBoxEl.style.display = "none";
-      if (editMatrix) exitEditMode();
     }
 
     const turnRadio = document.querySelector('input[name="turn"][value="' + data.turn + '"]');
@@ -335,6 +479,98 @@ class BoardBuffer:
             return self._jpeg
 
 
+class EngineController:
+    """Runs the engine on its own thread and publishes the move to place.
+
+    Deliberately not driven inline from TrackingLoop.on_update: that fires
+    with the loop's lock held, so a ~0.5s search there would stall every
+    /board.json poll. on_update just pokes the event; this thread does the
+    thinking.
+    """
+
+    def __init__(self, loop, engine, think_s=DEFAULT_THINK_S):
+        self._loop = loop
+        self._engine = engine
+        self._think_s = think_s
+        self._lock = Lock()
+        self._wake = Event()
+        self._enabled = False
+        self._thinking = False
+        self._headline = None
+        self._extra = None
+        self._message = None if engine.available else engine.error
+        Thread(target=self._run, daemon=True).start()
+
+    def state(self):
+        with self._lock:
+            expected = self._loop.expected_move
+            return {
+                "available": self._engine.available,
+                "enabled": self._enabled,
+                "thinking": self._thinking,
+                "instruction": self._headline,
+                "extra": self._extra,
+                "expected_uci": expected.uci() if expected is not None else None,
+                "skill": self._engine.skill,
+                "message": self._message,
+            }
+
+    def configure(self, enabled=None, skill=None):
+        with self._lock:
+            if skill is not None:
+                self._engine.set_skill(skill)
+            if enabled is not None and enabled != self._enabled:
+                self._enabled = bool(enabled) and self._engine.available
+                if not self._enabled:
+                    self._headline = self._extra = None
+                    self._loop.set_expected_move(None)
+        self.notify()
+
+    def notify(self):
+        self._wake.set()
+
+    def _run(self):
+        while True:
+            self._wake.wait(timeout=1.0)
+            self._wake.clear()
+            try:
+                self._maybe_move()
+            except Exception as exc:
+                with self._lock:
+                    self._thinking = False
+                    self._message = f"engine error: {exc}"
+
+    def _maybe_move(self):
+        with self._lock:
+            if not self._enabled or not self._engine.available:
+                return
+        # Engine plays Black, and only when nothing is already pending.
+        if self._loop.turn != "black" or self._loop.expected_move is not None:
+            return
+
+        board = self._loop.board_copy
+        if board.is_game_over():
+            with self._lock:
+                self._headline, self._extra = None, None
+                self._message = "no legal moves -- game over"
+            return
+
+        with self._lock:
+            self._thinking = True
+            self._message = None
+        move = self._engine.best_move(board, self._think_s)
+        headline, extra = describe_move(board, move) if move is not None else (None, None)
+
+        with self._lock:
+            self._thinking = False
+            self._headline, self._extra = headline, extra
+        if move is not None:
+            self._loop.set_expected_move(move)
+
+    def close(self):
+        self._engine.close()
+
+
 def _validate_correction(body):
     """Returns an error string, or None if body is well-formed enough to
     attempt (matrix shape/labels valid, turn valid, and the resulting
@@ -364,19 +600,25 @@ def _validate_correction(body):
     return None
 
 
-def start_server(host, port, buffer, loop, capture_stream):
+def start_server(host, port, buffer, loop, capture_stream, engine_controller):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            if self.path == "/":
+            path, _, query = self.path.partition("?")
+            if path == "/":
                 body = PAGE.encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
-            elif self.path == "/board.json":
+            elif path == "/board.json":
+                # The UI polls with ?editing=1 while its board editor is
+                # open; that refreshes the pause so tracking stays held.
+                # Stop polling (close the tab) and the pause lapses.
+                if "editing=1" in query:
+                    loop.set_paused(True)
                 matrix, updated_at, last_move, move_seq, flagged, flag_reason = buffer.get_board()
                 rows = matrix if matrix is not None else [[None] * 8 for _ in range(8)]
                 body = json.dumps(
@@ -388,6 +630,8 @@ def start_server(host, port, buffer, loop, capture_stream):
                         "flagged": flagged,
                         "flag_reason": flag_reason,
                         "turn": loop.turn,
+                        "paused": loop.is_paused,
+                        "engine": engine_controller.state(),
                     }
                 ).encode("utf-8")
                 self.send_response(200)
@@ -395,7 +639,7 @@ def start_server(host, port, buffer, loop, capture_stream):
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
-            elif self.path == "/stream.mjpg":
+            elif path == "/stream.mjpg":
                 self.send_response(200)
                 self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
                 self.end_headers()
@@ -415,16 +659,38 @@ def start_server(host, port, buffer, loop, capture_stream):
                 self.send_error(404)
 
         def do_POST(self):
-            if self.path != "/board/correct":
+            path, _, _query = self.path.partition("?")
+            if path not in ("/board/correct", "/board/undo", "/board/pause", "/engine"):
                 self.send_error(404)
                 return
 
             length = int(self.headers.get("Content-Length", 0))
             raw = self.rfile.read(length) if length else b""
             try:
-                body = json.loads(raw)
+                body = json.loads(raw) if raw else {}
             except json.JSONDecodeError:
                 self._send_json(400, {"error": "invalid JSON body"})
+                return
+
+            if path == "/engine":
+                engine_controller.configure(
+                    enabled=body.get("enabled"), skill=body.get("skill")
+                )
+                self._send_json(200, {"ok": True, "engine": engine_controller.state()})
+                return
+
+            if path == "/board/pause":
+                loop.set_paused(bool(body.get("paused")))
+                self._send_json(200, {"ok": True, "paused": loop.is_paused})
+                return
+
+            if path == "/board/undo":
+                frame, _timestamp = capture_stream.get_latest()
+                san = loop.undo_last_move(frame)
+                if san is None:
+                    self._send_json(400, {"error": "nothing to undo"})
+                else:
+                    self._send_json(200, {"ok": True, "undone": san})
                 return
 
             error = _validate_correction(body)
@@ -434,6 +700,8 @@ def start_server(host, port, buffer, loop, capture_stream):
 
             frame, _timestamp = capture_stream.get_latest()
             loop.apply_manual_correction(body["matrix"], body["turn"], frame)
+            # Saving the editor ends the edit session, so lift the pause.
+            loop.set_paused(False)
             self._send_json(200, {"ok": True})
 
         def _send_json(self, status, payload):
@@ -462,6 +730,12 @@ def parse_args():
                         help="classifier confidence threshold")
     parser.add_argument("--motion-thresh", type=float, default=None,
                         help="board-ROI motion threshold; tune with debug_classifier.py --watch")
+    parser.add_argument("--engine-command", default="stockfish",
+                        help="UCI engine binary for the Black side")
+    parser.add_argument("--engine-skill", type=int, default=DEFAULT_SKILL,
+                        help="Stockfish Skill Level 0-20 (adjustable live in the UI)")
+    parser.add_argument("--engine-think", type=float, default=DEFAULT_THINK_S,
+                        help="seconds the engine may think per move")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--host", default="0.0.0.0")
     return parser.parse_args()
@@ -482,7 +756,11 @@ def main():
     print("Loading classifier...")
     classifier_model = load_classifier(str(args.classifier))
 
+    engine = ChessEngine(command=args.engine_command, skill=args.engine_skill)
+    print("Engine: Stockfish ready." if engine.available else f"Engine: {engine.error}")
+
     buffer = BoardBuffer()
+    engine_controller = None
     print("Running. Ctrl+C to stop.")
     try:
         with Camera() as cam, CaptureStream(cam) as stream:
@@ -493,6 +771,10 @@ def main():
 
             def on_update(matrix, move_text, frame, flagged, reason):
                 buffer.set_board(matrix, move_text, flagged, reason)
+                # Just a poke -- the engine thinks on its own thread, since
+                # this runs with TrackingLoop's lock held.
+                if engine_controller is not None:
+                    engine_controller.notify()
 
             loop = TrackingLoop(
                 capture_stream=stream,
@@ -506,7 +788,8 @@ def main():
             )
             buffer.set_board(loop.current_matrix, None, False, None)  # seed the UI before any move happens
 
-            start_server(args.host, args.port, buffer, loop, stream)
+            engine_controller = EngineController(loop, engine, think_s=args.engine_think)
+            start_server(args.host, args.port, buffer, loop, stream, engine_controller)
             print(f"Serving at http://<this-pi>:{args.port}/")
 
             while True:
@@ -517,6 +800,8 @@ def main():
                 time.sleep(args.poll_interval)
     except KeyboardInterrupt:
         print("Stopped.")
+    finally:
+        engine.close()  # don't leave the Stockfish subprocess behind
 
 
 if __name__ == "__main__":

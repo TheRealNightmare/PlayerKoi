@@ -39,17 +39,24 @@ def _color_name(color):
     return "white" if color == chess.WHITE else "black"
 
 
-def standard_starting_matrix():
+def matrix_from_board(board):
     """Returns board_state's matrix[rank_idx][file_idx] representation of
-    the standard chess starting position -- used to seed a tracker without
-    needing vision to derive it, since the physical board is guaranteed to
-    start there (see the product's own Setup Verification step)."""
+    any chess.Board position -- the inverse of matrix_to_fen_placement, and
+    how the tracker re-derives its matrix after changing the board directly
+    (see TrackingLoop.undo_last_move)."""
     matrix = [[None] * BOARD_SIZE for _ in range(BOARD_SIZE)]
-    for square, piece in chess.Board().piece_map().items():
+    for square, piece in board.piece_map().items():
         file_idx = chess.square_file(square)
         rank_idx = chess.square_rank(square)
         matrix[rank_idx][file_idx] = f"{_color_name(piece.color)}-{_PIECE_NAMES[piece.piece_type]}"
     return matrix
+
+
+def standard_starting_matrix():
+    """The standard chess starting position as a board matrix -- used to
+    seed a tracker without needing vision to derive it, since the physical
+    board is guaranteed to start there."""
+    return matrix_from_board(chess.Board())
 
 
 class MoveResolver:
@@ -114,7 +121,7 @@ class MoveResolver:
                 delta[key] = after_color
         return delta
 
-    def resolve_from_deltas(self, observed_deltas):
+    def resolve_from_deltas(self, observed_deltas, only_move=None):
         """observed_deltas: {(file_idx, rank_idx): "white"|"black"|"empty"}
         for every square whose confirmed occupancy/color (as classified by
         square_classifier.py) differs from this resolver's own tracked
@@ -135,6 +142,14 @@ class MoveResolver:
         matches: ambiguous or unexplained, the caller must not guess and
         should flag this for manual correction instead.
 
+        `only_move` restricts the candidates to a single expected move --
+        used when an engine has dictated the move (see engine.py): the
+        delta must match *that* move or nothing resolves, so a wrongly
+        placed piece is rejected without ever mutating the board. It also
+        preserves underpromotions, which the normal path can't, since
+        vision alone can't distinguish them (hence the queen-collapsing
+        below).
+
         On a match, plays the move for real and returns (san, move,
         patch), where patch is {(file_idx, rank_idx): "{color}-{piece}" |
         None} for exactly the delta squares -- built by reading this
@@ -142,11 +157,14 @@ class MoveResolver:
         comes from the resolver's already-correct internal state, never
         from vision.
         """
-        groups = {}
-        for move in self.board.legal_moves:
-            key = (move.from_square, move.to_square, self.board.is_en_passant(move), self.board.is_castling(move))
-            if key not in groups or move.promotion == chess.QUEEN:
-                groups[key] = move
+        if only_move is not None:
+            groups = {0: only_move} if only_move in self.board.legal_moves else {}
+        else:
+            groups = {}
+            for move in self.board.legal_moves:
+                key = (move.from_square, move.to_square, self.board.is_en_passant(move), self.board.is_castling(move))
+                if key not in groups or move.promotion == chess.QUEEN:
+                    groups[key] = move
 
         matches = [move for move in groups.values() if self._expected_delta(move) == observed_deltas]
         if len(matches) != 1:

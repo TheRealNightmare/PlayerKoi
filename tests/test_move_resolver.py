@@ -131,6 +131,54 @@ class TestSpecialMoves(unittest.TestCase):
         self.assertEqual(patch, {sq(0, 6): None, sq(0, 7): "white-queen"})
 
 
+class TestOnlyMove(unittest.TestCase):
+    """only_move is how an engine-dictated move is enforced: anything else
+    physically played must be rejected without touching the board."""
+
+    def setUp(self):
+        self.resolver = MoveResolver()
+
+    def test_accepts_the_expected_move(self):
+        expected = chess.Move.from_uci("e2e4")
+        san, move, patch = self.resolver.resolve_from_deltas(
+            {sq(4, 1): "empty", sq(4, 3): "white"}, only_move=expected
+        )
+        self.assertEqual(san, "e4")
+        self.assertEqual(move, expected)
+        self.assertEqual(patch, {sq(4, 1): None, sq(4, 3): "white-pawn"})
+
+    def test_rejects_a_different_legal_move_without_touching_the_board(self):
+        # d2d4 is perfectly legal, but the engine asked for e2e4.
+        before = self.resolver.board.fen()
+        san, move, patch = self.resolver.resolve_from_deltas(
+            {sq(3, 1): "empty", sq(3, 3): "white"}, only_move=chess.Move.from_uci("e2e4")
+        )
+        self.assertIsNone(san)
+        self.assertIsNone(move)
+        self.assertIsNone(patch)
+        # Critically: nothing was pushed and then rolled back -- the
+        # position must be untouched.
+        self.assertEqual(self.resolver.board.fen(), before)
+
+    def test_rejects_an_illegal_expected_move(self):
+        san, _move, _patch = self.resolver.resolve_from_deltas(
+            {sq(4, 1): "empty", sq(4, 3): "white"}, only_move=chess.Move.from_uci("e2e5")
+        )
+        self.assertIsNone(san)
+
+    def test_honours_underpromotion_which_the_normal_path_cannot(self):
+        # Without only_move, every promotion collapses to queen because
+        # vision can't tell them apart. With the engine dictating, the
+        # exact move must survive.
+        self.resolver.board = chess.Board("1nbqkbnr/P1pppppp/8/8/8/8/1PPPPPPP/RNBQKBNR w KQk - 0 5")
+        san, move, patch = self.resolver.resolve_from_deltas(
+            {sq(0, 6): "empty", sq(0, 7): "white"}, only_move=chess.Move.from_uci("a7a8n")
+        )
+        self.assertEqual(san, "a8=N")
+        self.assertEqual(move.promotion, chess.KNIGHT)
+        self.assertEqual(patch[sq(0, 7)], "white-knight")
+
+
 class TestResync(unittest.TestCase):
     def test_infers_surviving_castling_rights_from_home_squares(self):
         resolver = MoveResolver()

@@ -32,6 +32,10 @@ confidence, the web UI flags it and offers a manual correction. See
 sudo apt update
 sudo apt install -y python3-picamera2 python3-opencv
 
+# optional: the engine opponent (web UI plays Black). Without it everything
+# still works, the engine box just reports it isn't installed.
+sudo apt install -y stockfish
+
 # Create a venv that can still see the apt-installed picamera2/opencv
 python3 -m venv --system-site-packages .venv
 source .venv/bin/activate
@@ -110,6 +114,20 @@ Uppercase letters are white pieces, lowercase are black, `.` is empty:
 1  R N B Q K B N R
    A B C D E F G H
 ```
+
+## Playing against the engine
+
+With `stockfish` installed, the box at the bottom of the web UI plays the
+Black side. Toggle it on, set the skill slider (0-20; start low), and play
+your White move physically. The engine replies with the move to place,
+e.g. `d7 → d5`, highlighting both squares on the diagram, and spelling out
+the extra physical action for castling ("ALSO move the rook h8 → f8"), en
+passant ("ALSO remove the pawn on d4") and promotion.
+
+While an engine move is pending it's the *only* move the tracker will
+accept -- place something else and it says so rather than quietly applying
+it. Undo and Edit board still override everything if you want to deviate
+deliberately.
 
 ## How detection works
 
