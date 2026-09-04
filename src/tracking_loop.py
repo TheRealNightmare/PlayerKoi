@@ -55,6 +55,7 @@ class TrackingLoop:
         consensus_window_s=0.4,
         classifier_imgsz=64,
         classifier_min_conf=0.7,
+        motion_thresh=None,
     ):
         """on_update(matrix, move_text, frame, flagged, reason) is called
         whenever the stable board state changes. move_text is a SAN move
@@ -75,7 +76,9 @@ class TrackingLoop:
 
         self._roi_bbox = board_roi_bbox(calibration_matrix, image_size)
         self._square_bboxes = square_pixel_bboxes(calibration_matrix, image_size)
-        self._gate = BoardMotionGate()
+        # motion_thresh=None keeps BoardMotionGate's own tuned default --
+        # see its docstring for why this needs re-tuning per rig.
+        self._gate = BoardMotionGate() if motion_thresh is None else BoardMotionGate(motion_thresh=motion_thresh)
         self._resolver = MoveResolver()
         # Reentrant: current_matrix (used internally by _handle_settle,
         # apply_manual_correction, etc. while already holding the lock) and

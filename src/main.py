@@ -30,6 +30,8 @@ def parse_args():
     parser.add_argument("--calibration", type=Path, default=DEFAULT_CALIBRATION)
     parser.add_argument("--classifier", type=Path, default=DEFAULT_CLASSIFIER, help="per-square classifier")
     parser.add_argument("--min-conf", type=float, default=0.7, help="classifier confidence threshold")
+    parser.add_argument("--motion-thresh", type=float, default=None,
+                        help="board-ROI motion threshold; tune with debug_classifier.py --watch")
     parser.add_argument(
         "--log", type=Path, default=None, help="optional path to append board-state changes to"
     )
@@ -77,6 +79,7 @@ def main():
                 classifier_model=classifier_model,
                 on_update=on_update,
                 classifier_min_conf=args.min_conf,
+                motion_thresh=args.motion_thresh,
             )
             loop.run_forever()
     except KeyboardInterrupt:

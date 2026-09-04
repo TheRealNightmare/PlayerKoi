@@ -104,7 +104,7 @@ def one_shot(args):
 
 def watch(args):
     calibration_matrix = load_calibration(args.calibration)
-    gate = BoardMotionGate()
+    gate = BoardMotionGate() if args.motion_thresh is None else BoardMotionGate(motion_thresh=args.motion_thresh)
 
     print("Watching the motion gate. Move a piece and see whether it reports 'moving' then")
     print(f"'settled'. Scores at or below the gate's threshold ({gate._motion_thresh}) count as quiet.")
@@ -146,6 +146,8 @@ def main():
     parser.add_argument("--min-conf", type=float, default=0.7)
     parser.add_argument("--imgsz", type=int, default=64)
     parser.add_argument("--poll-interval", type=float, default=0.12)
+    parser.add_argument("--motion-thresh", type=float, default=None,
+                        help="try a candidate motion threshold in --watch mode")
     parser.add_argument("--watch", action="store_true", help="watch the motion gate instead of classifying")
     args = parser.parse_args()
 

@@ -459,6 +459,8 @@ def parse_args():
     parser.add_argument("--calibration", type=Path, default=DEFAULT_CALIBRATION)
     parser.add_argument("--classifier", type=Path, default=DEFAULT_CLASSIFIER, help="per-square classifier")
     parser.add_argument("--min-conf", type=float, default=0.7, help="classifier confidence threshold")
+    parser.add_argument("--motion-thresh", type=float, default=None,
+                        help="board-ROI motion threshold; tune with debug_classifier.py --watch")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--host", default="0.0.0.0")
     return parser.parse_args()
@@ -499,6 +501,7 @@ def main():
                 on_update=on_update,
                 poll_interval=args.poll_interval,
                 classifier_min_conf=args.min_conf,
+                motion_thresh=args.motion_thresh,
             )
             buffer.set_board(loop.current_matrix, None, False, None)  # seed the UI before any move happens
 

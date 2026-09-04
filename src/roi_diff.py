@@ -35,10 +35,20 @@ class BoardMotionGate:
       "settled" -- diff just dropped back down after being elevated for at
                    least min_moving_frames frames, and has now stayed quiet
                    for settle_frames frames -- fires exactly once per move.
-                   This is the signal to run per-square diffing/detection.
+                   This is the signal to run per-square classification.
+
+    motion_thresh is a mean absolute pixel difference across the *whole*
+    board ROI, so a hand moving one piece is diluted over ~a million
+    pixels and scores far lower than intuition suggests. Measured on the
+    real rig: quiet frames sit around 0.4-1.7, an actual piece move peaks
+    around 7.6 -- hence a default well below that, but clear of the quiet
+    floor. A too-high threshold is fatal (the gate never fires, so the
+    board looks frozen); a too-low one is cheap (a spurious settle
+    classifies, finds no delta, and returns silently). Err low, and re-tune
+    per rig with `python3 src/debug_classifier.py --watch`.
     """
 
-    def __init__(self, motion_thresh=12.0, settle_frames=3, min_moving_frames=1):
+    def __init__(self, motion_thresh=3.0, settle_frames=3, min_moving_frames=1):
         self._motion_thresh = motion_thresh
         self._settle_frames = settle_frames
         self._min_moving_frames = min_moving_frames
