@@ -83,6 +83,45 @@ python training/deploy.py pi@<pi-hostname> --model-dir runs/classify/train/weigh
 `models/square_classifier_ncnn_model` by default (override with
 `--classifier`).
 
+## Changing the board (or the lighting)
+
+The crops the classifier learns from include the board surface as
+background, so a **different board is a different problem** -- a model
+trained on one board is guessing on another. Same goes for a big lighting
+change. When that happens:
+
+1. `python3 src/calibrate.py` -- the physical corners moved.
+2. `python3 src/collect_square_crops.py --session <name> --rounds 12` --
+   collect on the new board. The `--session` label (or an automatic
+   timestamp) keeps these files from colliding with earlier runs, so this
+   **adds** to the dataset rather than replacing it.
+3. Fine-tune from what you already have, rather than starting over:
+
+```bash
+python training/train_classifier.py --data training/datasets/squares \
+    --model runs/classify/train/weights/best.pt
+```
+
+Keeping both boards' crops in one dataset gives you one model that handles
+both. Watch the per-epoch top-1 accuracy ultralytics prints against the
+`val/` split to confirm it actually learned the new board.
+
+## Growing the dataset by playing
+
+`python3 src/web_ui.py --harvest` saves labelled crops for all 64 squares
+every time a move resolves -- the tracker knows the true board state at
+that moment, so the labels come free.
+
+These land in `training/datasets/harvested/`, deliberately *not* mixed
+into the curated set: auto-labels are only as good as the tracker was that
+day, so merging them in is a decision you make, and a bad run can just be
+deleted. When you're happy with a batch, copy it into
+`training/datasets/squares/` and fine-tune again.
+
+Note it only harvests on a *resolved move*. Undo is excluded on purpose --
+it reports the reverted position while the physical board still shows the
+post-move one, which would write confidently mislabelled crops.
+
 ## Orphaned scripts (not part of the current pipeline)
 
 `training/prepare_chessred.py`, `train.py`, `val.py`, `prepare_dataset.py`,

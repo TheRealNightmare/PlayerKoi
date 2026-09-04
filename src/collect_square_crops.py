@@ -19,6 +19,7 @@ directory to your training PC and run training/train_classifier.py.
 """
 
 import argparse
+import datetime as dt
 import random
 import time
 from pathlib import Path
@@ -26,7 +27,6 @@ from pathlib import Path
 import cv2
 
 from board_state import FILES, load_calibration
-from capture import Camera
 from square_classifier import ALL_SQUARES, BLACK, EMPTY, WHITE
 from square_geometry import square_pixel_bboxes
 
@@ -68,7 +68,18 @@ def capture_burst(cam, num_frames=BURST_FRAMES, interval_s=BURST_INTERVAL_S):
     return frames
 
 
-def save_crops(frames, squares, label, square_bboxes, split_dir, round_idx):
+def dataset_counts(out_dir):
+    """Per-class file counts already on disk, so a run makes it obvious
+    it's adding to an existing dataset rather than replacing it."""
+    counts = {}
+    for split in ("train", "val"):
+        for label in (EMPTY, WHITE, BLACK):
+            directory = out_dir / split / label
+            counts[f"{split}/{label}"] = len(list(directory.glob("*.jpg"))) if directory.is_dir() else 0
+    return counts
+
+
+def save_crops(frames, squares, label, square_bboxes, split_dir, session, round_idx):
     out_dir = split_dir / label
     out_dir.mkdir(parents=True, exist_ok=True)
     saved = 0
@@ -78,7 +89,10 @@ def save_crops(frames, squares, label, square_bboxes, split_dir, round_idx):
             continue
         for frame_idx, frame in enumerate(frames):
             crop = frame[y1:y2, x1:x2]
-            path = out_dir / f"r{round_idx:03d}_{square_name(square)}_{frame_idx}.jpg"
+            # The session prefix is what makes repeat collection additive:
+            # round_idx restarts at 0 every run, so without it a second
+            # session silently overwrites the first one's files.
+            path = out_dir / f"{session}_r{round_idx:03d}_{square_name(square)}_{frame_idx}.jpg"
             cv2.imwrite(str(path), crop)
             saved += 1
     return saved
@@ -90,10 +104,25 @@ def main():
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     parser.add_argument("--rounds", type=int, default=12)
     parser.add_argument("--seed", type=int, default=None, help="for reproducible round layouts")
+    parser.add_argument("--session", default=None,
+                        help="label for this collection run (default: a timestamp). Keeps repeat "
+                             "runs from overwriting each other -- e.g. --session greenboard")
     args = parser.parse_args()
 
     if not args.calibration.exists():
         raise SystemExit(f"No calibration found at {args.calibration} -- run calibrate.py first.")
+
+    session = args.session or dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    existing = dataset_counts(args.out)
+    if any(existing.values()):
+        print(f"Adding to the existing dataset at {args.out}:")
+        for key, value in existing.items():
+            print(f"  {key}: {value}")
+    print(f"Session id: {session}\n")
+
+    # Imported here, not at module scope, so the pure crop-saving logic
+    # stays importable (and testable) on machines without picamera2.
+    from capture import Camera
 
     calibration_matrix = load_calibration(args.calibration)
     rng = random.Random(args.seed)
@@ -118,9 +147,9 @@ def main():
 
             frames = capture_burst(cam)
             split_dir = args.out / split
-            counts[WHITE] += save_crops(frames, white_squares, WHITE, square_bboxes, split_dir, round_idx)
-            counts[BLACK] += save_crops(frames, black_squares, BLACK, square_bboxes, split_dir, round_idx)
-            counts[EMPTY] += save_crops(frames, empty_squares, EMPTY, square_bboxes, split_dir, round_idx)
+            counts[WHITE] += save_crops(frames, white_squares, WHITE, square_bboxes, split_dir, session, round_idx)
+            counts[BLACK] += save_crops(frames, black_squares, BLACK, square_bboxes, split_dir, session, round_idx)
+            counts[EMPTY] += save_crops(frames, empty_squares, EMPTY, square_bboxes, split_dir, session, round_idx)
 
     print(f"\nSaved to {args.out}/")
     print(f"  empty: {counts[EMPTY]}  white: {counts[WHITE]}  black: {counts[BLACK]}")

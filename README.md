@@ -168,6 +168,13 @@ always knows piece *type*, never needing to re-derive it from vision.
   than confirming it via the camera. There's also no "New Game" control
   wired up yet, though `TrackingLoop.reset()` does everything needed for
   one.
+- **Changing the board or the lighting means retraining.** The classifier
+  sees the board surface as background, so a different board is a
+  different problem. Recalibrate, collect a new session
+  (`--session <name>`, which adds to the dataset rather than replacing
+  it), and fine-tune from your existing weights -- see
+  [`training/NOTES.md`](training/NOTES.md). Running
+  `web_ui.py --harvest` grows the dataset automatically as you play.
 - **The classifier needs real training data from your own rig before any
   of this works.** `src/collect_square_crops.py` hasn't shipped a
   pretrained model -- see `training/NOTES.md` for the collection/training

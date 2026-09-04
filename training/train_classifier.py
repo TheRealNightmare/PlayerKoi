@@ -10,9 +10,18 @@ src/square_classifier.py's inference size).
 Usage:
     python training/train_classifier.py --data training/datasets/squares
 
+    # fine-tune from an existing model (faster, keeps what it learned --
+    # the right choice when adding data, e.g. a second board)
+    python training/train_classifier.py --data training/datasets/squares \
+        --model runs/classify/train/weights/best.pt
+
 `--data` is the dataset *directory* (not a data.yaml) -- ultralytics'
 classify task expects train/<class>/*.jpg and val/<class>/*.jpg
 subfolders, exactly what src/collect_square_crops.py produces.
+
+Augmentation defaults are tuned for this task (see the flags below), but
+augmentation is not a substitute for real crops: a new board or new
+lighting needs a real collection run.
 
 Training output lands in runs/classify/train/weights/best.pt (ultralytics
 default). Pass --name to label separate runs.
@@ -45,6 +54,24 @@ def parse_args():
         action="store_true",
         help="continue an interrupted run from runs/classify/<name>/weights/last.pt",
     )
+    # Augmentation, tuned for this task rather than left at library
+    # defaults. Brightness jitter matters most here -- lighting variation
+    # has been this project's main source of misreads. Rotation/scale/
+    # translate absorb slight camera or board shifts so minor calibration
+    # drift doesn't wreck accuracy. Both flips are safe: a piece is the
+    # same colour whichever way it's flipped, and flipud (off by default
+    # in ultralytics) pushes the model to decide on colour and presence
+    # rather than on where in the crop the piece happens to sit -- which
+    # matters because pieces of different heights fill the crop
+    # differently.
+    parser.add_argument("--hsv-v", type=float, default=0.4, help="brightness jitter")
+    parser.add_argument("--hsv-s", type=float, default=0.7, help="saturation jitter")
+    parser.add_argument("--hsv-h", type=float, default=0.015, help="hue jitter")
+    parser.add_argument("--degrees", type=float, default=10.0, help="random rotation, degrees")
+    parser.add_argument("--scale", type=float, default=0.2, help="random scale gain")
+    parser.add_argument("--translate", type=float, default=0.1, help="random translation fraction")
+    parser.add_argument("--fliplr", type=float, default=0.5, help="horizontal flip probability")
+    parser.add_argument("--flipud", type=float, default=0.5, help="vertical flip probability")
     return parser.parse_args()
 
 
@@ -94,6 +121,14 @@ def main():
             device="cpu" if (args.device == "cpu" or not cuda_ok) else int(args.device),
             name=args.name,
             workers=args.workers,
+            hsv_h=args.hsv_h,
+            hsv_s=args.hsv_s,
+            hsv_v=args.hsv_v,
+            degrees=args.degrees,
+            scale=args.scale,
+            translate=args.translate,
+            fliplr=args.fliplr,
+            flipud=args.flipud,
         )
 
     best = Path("runs/classify") / args.name / "weights" / "best.pt"

@@ -33,12 +33,15 @@ import cv2
 from board_state import load_calibration, matrix_to_fen_placement
 from capture import Camera, CaptureStream
 from engine import DEFAULT_SKILL, DEFAULT_THINK_S, ChessEngine, describe_move
+from harvest import CropHarvester
 from square_classifier import DEFAULT_MIN_CONF, load_classifier
+from square_geometry import square_pixel_bboxes
 from tracking_loop import TrackingLoop
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CALIBRATION = REPO_ROOT / "config" / "calibration.json"
 DEFAULT_CLASSIFIER = REPO_ROOT / "models" / "square_classifier_ncnn_model"
+DEFAULT_HARVEST = REPO_ROOT / "training" / "datasets" / "harvested"
 
 _VALID_LABELS = {
     f"{color}-{piece}"
@@ -736,6 +739,9 @@ def parse_args():
                         help="Stockfish Skill Level 0-20 (adjustable live in the UI)")
     parser.add_argument("--engine-think", type=float, default=DEFAULT_THINK_S,
                         help="seconds the engine may think per move")
+    parser.add_argument("--harvest", type=Path, nargs="?", const=DEFAULT_HARVEST, default=None,
+                        help="save labelled crops from every resolved move, to grow the training "
+                             f"set as you play (default dir: {DEFAULT_HARVEST})")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--host", default="0.0.0.0")
     return parser.parse_args()
@@ -769,8 +775,21 @@ def main():
                 frame, _timestamp = stream.get_latest()
             image_size = (frame.shape[1], frame.shape[0])
 
+            harvester = None
+            if args.harvest is not None:
+                harvester = CropHarvester(
+                    args.harvest, square_pixel_bboxes(calibration_matrix, image_size)
+                )
+                print(f"Harvesting labelled crops to {args.harvest}")
+
             def on_update(matrix, move_text, frame, flagged, reason):
                 buffer.set_board(matrix, move_text, flagged, reason)
+                # Only a resolved move is trustworthy ground truth. Undo
+                # reports the reverted position while the physical board
+                # still shows the post-move one, so harvesting there would
+                # write mislabelled crops -- see harvest.py.
+                if harvester is not None and move_text is not None and not flagged:
+                    harvester.record(matrix, frame)
                 # Just a poke -- the engine thinks on its own thread, since
                 # this runs with TrackingLoop's lock held.
                 if engine_controller is not None:
