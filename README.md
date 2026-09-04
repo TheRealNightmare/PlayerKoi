@@ -18,6 +18,10 @@ automatic rescan fallback: when a settle can't be resolved with
 confidence, the web UI flags it and offers a manual correction. See
 `src/tracking_loop.py` for the full flow.
 
+**[RUNBOOK.md](RUNBOOK.md)** has the copy-pasteable command sequences for
+retraining, deploying, and swapping boards -- start there for day-to-day
+operation.
+
 ## Hardware assumed
 
 - Raspberry Pi 5 (8GB), CPU-only inference (no Coral/Hailo accelerator)
@@ -154,12 +158,20 @@ always knows piece *type*, never needing to re-derive it from vision.
    match is accepted and applied (this also supplies real algebraic
    notation, e.g. `Nf3`); pawn promotion always resolves to queen, since
    color alone can't reveal the promoted piece type.
-4. If any square's read is unresolved, the delta doesn't match any legal
-   move, or it matches more than one, the board is **not** guessed at --
-   the loop leaves state untouched and flags it. The web UI's "Fix board"
-   control is the only recovery path: it lets you set each square's true
-   piece and side-to-move, which the tracker adopts (inferring which
-   castling rights still make sense from where the kings/rooks ended up).
+4. A few unresolved squares are tolerated -- they carry no information,
+   so the tracker keeps its prior belief about them and they're skipped
+   when computing the delta. Since a move touches at least two squares,
+   an unresolved square that *was* part of the move yields an incomplete
+   delta that matches nothing, and flags. Only a systematic failure (more
+   than `MAX_UNRESOLVED_SQUARES`) flags on unresolved reads alone.
+5. If the delta matches no legal move, or more than one, the board is
+   **not** guessed at -- the loop leaves state untouched and flags it,
+   naming the squares involved. Recovery is manual: **Undo last move**
+   reverts one bad move exactly (restoring castling/en-passant rights),
+   and **Edit board** sets each square's true piece and side-to-move
+   (inferring which castling rights still make sense from where the
+   kings/rooks ended up). Both are always available, not just when
+   flagged.
 
 ## Known limitations / next steps
 

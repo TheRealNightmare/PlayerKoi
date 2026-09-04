@@ -131,7 +131,13 @@ def main():
             flipud=args.flipud,
         )
 
-    best = Path("runs/classify") / args.name / "weights" / "best.pt"
+    # Ultralytics auto-increments the run directory when --name is already
+    # taken (train, train-2, ...), so ask the trainer where it actually
+    # saved instead of rebuilding the path from --name and printing a
+    # command that points at the previous run's weights.
+    save_dir = Path(getattr(getattr(model, "trainer", None), "save_dir", None)
+                    or Path("runs/classify") / args.name)
+    best = save_dir / "weights" / "best.pt"
     print(f"\nDone. Best weights: {best.resolve() if best.exists() else best}")
     print(f"Next: python training/export_ncnn.py --weights {best} --imgsz {args.imgsz}")
     return 0
