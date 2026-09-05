@@ -34,6 +34,8 @@ from board_state import load_calibration, matrix_to_fen_placement
 from capture import Camera, CaptureStream
 from engine import DEFAULT_SKILL, DEFAULT_THINK_S, ChessEngine, describe_move
 from harvest import CropHarvester
+from robot import GantryError, RobotController, open_gantry
+from robot_moves import DEFAULT_TOPPLE_DELAY_S
 from square_classifier import DEFAULT_MIN_CONF, load_classifier
 from square_geometry import square_pixel_bboxes
 from tracking_loop import TrackingLoop
@@ -103,6 +105,20 @@ PAGE = """<!doctype html>
   #engineExtra { color: #f0ad4e; font-size: 13px; text-align: center; max-width: 320px; }
   #engineMsg { color: #888; font-size: 12px; text-align: center; max-width: 320px; }
   #engineRow { display: flex; align-items: center; gap: 12px; font-size: 13px; color: #bbb; }
+  #robotBox {
+    display: none; flex-direction: column; align-items: center; gap: 6px;
+    background: #23282e; border: 1px solid #444; border-radius: 6px;
+    padding: 12px 18px; color: #eee; min-width: 300px;
+  }
+  #robotBox.halted { border-color: #d9534f; background: #3a2a2a; }
+  #robotTitle { color: #888; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }
+  #robotState { font-size: 16px; font-weight: bold; }
+  #robotNote { color: #bbb; font-size: 13px; text-align: center; min-height: 18px; }
+  #robotPrompt { color: #f0ad4e; font-size: 14px; font-weight: bold; text-align: center; max-width: 320px; }
+  #robotMsg { color: #d9534f; font-size: 12px; text-align: center; max-width: 320px; }
+  #robotRow { display: flex; gap: 10px; }
+  #haltBtn { background: #8a2b2b; border-color: #d9534f; }
+  #haltBtn:hover { background: #a33; }
   #editControls { display: none; flex-direction: column; align-items: center; gap: 8px; }
   #editShortcuts { display: flex; gap: 10px; }
   #pausedNote { display: none; color: #f0ad4e; font-size: 13px; font-weight: bold; }
@@ -156,6 +172,17 @@ PAGE = """<!doctype html>
         <label><input type="checkbox" id="engineToggle"> on</label>
         <label>skill <input type="range" id="engineSkill" min="0" max="20" step="1"></label>
         <span id="engineSkillVal"></span>
+      </div>
+    </div>
+    <div id="robotBox">
+      <div id="robotTitle">Robot arm</div>
+      <div id="robotState"></div>
+      <div id="robotNote"></div>
+      <div id="robotPrompt"></div>
+      <div id="robotMsg"></div>
+      <div id="robotRow">
+        <button id="haltBtn">HALT</button>
+        <button id="homeBtn">Home / re-enable</button>
       </div>
     </div>
   </div>
@@ -261,6 +288,13 @@ const engineMsgEl = document.getElementById("engineMsg");
 const engineToggle = document.getElementById("engineToggle");
 const engineSkill = document.getElementById("engineSkill");
 const engineSkillVal = document.getElementById("engineSkillVal");
+const robotBox = document.getElementById("robotBox");
+const robotStateEl = document.getElementById("robotState");
+const robotNoteEl = document.getElementById("robotNote");
+const robotPromptEl = document.getElementById("robotPrompt");
+const robotMsgEl = document.getElementById("robotMsg");
+const haltBtn = document.getElementById("haltBtn");
+const homeBtn = document.getElementById("homeBtn");
 
 const BACK_RANK = ["rook", "knight", "bishop", "queen", "king", "bishop", "knight", "rook"];
 
@@ -338,6 +372,49 @@ engineToggle.onchange = () => postEngine({ enabled: engineToggle.checked });
 engineSkill.oninput = () => { engineSkillVal.textContent = engineSkill.value; };
 engineSkill.onchange = () => postEngine({ skill: Number(engineSkill.value) });
 
+async function postRobot(payload, button) {
+  if (button) button.disabled = true;
+  try {
+    const res = await fetch("/robot", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) alert(body.error || res.statusText);
+  } catch (e) {
+    alert("Robot command failed: " + e);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+haltBtn.onclick = () => postRobot({ halt: true }, haltBtn);
+homeBtn.onclick = () => {
+  if (confirm("Home the gantry? It will cross the whole board -- keep hands clear.")) {
+    postRobot({ home: true }, homeBtn);
+  }
+};
+
+function renderRobot(bot) {
+  if (!bot) { robotBox.style.display = "none"; return; }
+  robotBox.style.display = "flex";
+  robotBox.classList.toggle("halted", !!bot.halted);
+
+  let state = "ready";
+  let color = "#5cb85c";
+  if (bot.halted) { state = "HALTED"; color = "#d9534f"; }
+  else if (bot.busy) { state = "moving"; color = "#4a9eff"; }
+  else if (!bot.homed) { state = "not homed"; color = "#f0ad4e"; }
+  robotStateEl.textContent = state + " (" + bot.port + ")";
+  robotStateEl.style.color = color;
+
+  robotNoteEl.textContent = bot.note || "";
+  robotPromptEl.textContent = bot.prompt || "";
+  robotMsgEl.textContent = bot.message || "";
+  haltBtn.disabled = bot.halted;
+}
+
 undoBtn.onclick = async () => {
   undoBtn.disabled = true;
   try {
@@ -385,6 +462,8 @@ async function poll() {
     const res = await fetch("/board.json" + (editMatrix ? "?editing=1" : ""), { cache: "no-store" });
     const data = await res.json();
     liveMatrix = data.matrix;
+
+    renderRobot(data.robot);
 
     const eng = data.engine || {};
     expectedUci = eng.expected_uci || null;
@@ -491,10 +570,11 @@ class EngineController:
     thinking.
     """
 
-    def __init__(self, loop, engine, think_s=DEFAULT_THINK_S):
+    def __init__(self, loop, engine, think_s=DEFAULT_THINK_S, robot=None):
         self._loop = loop
         self._engine = engine
         self._think_s = think_s
+        self._robot = robot
         self._lock = Lock()
         self._wake = Event()
         self._enabled = False
@@ -567,8 +647,20 @@ class EngineController:
         with self._lock:
             self._thinking = False
             self._headline, self._extra = headline, extra
-        if move is not None:
-            self._loop.set_expected_move(move)
+        if move is None:
+            return
+
+        # Arm verification before the arm moves: whatever ends up on the
+        # board next -- robot or human -- must match this move or it flags.
+        self._loop.set_expected_move(move)
+
+        if self._robot is not None and self._robot.ready:
+            # Blocking, but this is the engine's own thread with no lock
+            # held, which is exactly why the search lives here too.
+            ok, error = self._robot.execute(board, move)
+            if not ok:
+                with self._lock:
+                    self._message = f"robot stopped: {error}"
 
     def close(self):
         self._engine.close()
@@ -603,7 +695,7 @@ def _validate_correction(body):
     return None
 
 
-def start_server(host, port, buffer, loop, capture_stream, engine_controller):
+def start_server(host, port, buffer, loop, capture_stream, engine_controller, robot_controller=None):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     class Handler(BaseHTTPRequestHandler):
@@ -635,6 +727,7 @@ def start_server(host, port, buffer, loop, capture_stream, engine_controller):
                         "turn": loop.turn,
                         "paused": loop.is_paused,
                         "engine": engine_controller.state(),
+                        "robot": robot_controller.state() if robot_controller is not None else None,
                     }
                 ).encode("utf-8")
                 self.send_response(200)
@@ -663,7 +756,7 @@ def start_server(host, port, buffer, loop, capture_stream, engine_controller):
 
         def do_POST(self):
             path, _, _query = self.path.partition("?")
-            if path not in ("/board/correct", "/board/undo", "/board/pause", "/engine"):
+            if path not in ("/board/correct", "/board/undo", "/board/pause", "/engine", "/robot"):
                 self.send_error(404)
                 return
 
@@ -680,6 +773,29 @@ def start_server(host, port, buffer, loop, capture_stream, engine_controller):
                     enabled=body.get("enabled"), skill=body.get("skill")
                 )
                 self._send_json(200, {"ok": True, "engine": engine_controller.state()})
+                return
+
+            if path == "/robot":
+                if robot_controller is None:
+                    self._send_json(400, {"error": "no robot attached -- start with --robot"})
+                    return
+                if body.get("halt"):
+                    robot_controller.halt()
+                    self._send_json(200, {"ok": True, "robot": robot_controller.state()})
+                    return
+                if body.get("home"):
+                    # Homing crosses the board, so it must not race a settle.
+                    loop.set_paused(True, lapse_s=60.0)
+                    try:
+                        ok, error = robot_controller.home()
+                    finally:
+                        loop.set_paused(False)
+                    if not ok:
+                        self._send_json(400, {"error": error, "robot": robot_controller.state()})
+                        return
+                    self._send_json(200, {"ok": True, "robot": robot_controller.state()})
+                    return
+                self._send_json(400, {"error": "expected {\"home\": true} or {\"halt\": true}"})
                 return
 
             if path == "/board/pause":
@@ -739,6 +855,13 @@ def parse_args():
                         help="Stockfish Skill Level 0-20 (adjustable live in the UI)")
     parser.add_argument("--engine-think", type=float, default=DEFAULT_THINK_S,
                         help="seconds the engine may think per move")
+    parser.add_argument("--robot", default=None, metavar="PORT",
+                        help="serial port of the gantry Arduino (e.g. /dev/ttyACM0), or "
+                             "'mock' for a dry run. Omitted: no arm, you place Black's "
+                             "moves by hand as before")
+    parser.add_argument("--topple-delay", type=float, default=DEFAULT_TOPPLE_DELAY_S,
+                        help="seconds to wait after toppling a captured piece, for you "
+                             "to lift it off the board")
     parser.add_argument("--harvest", type=Path, nargs="?", const=DEFAULT_HARVEST, default=None,
                         help="save labelled crops from every resolved move, to grow the training "
                              f"set as you play (default dir: {DEFAULT_HARVEST})")
@@ -765,8 +888,19 @@ def main():
     engine = ChessEngine(command=args.engine_command, skill=args.engine_skill)
     print("Engine: Stockfish ready." if engine.available else f"Engine: {engine.error}")
 
+    robot = None
+    if args.robot:
+        try:
+            robot = open_gantry(args.robot, topple_delay_s=args.topple_delay)
+            print(f"Robot: gantry on {robot.port}.")
+        except GantryError as exc:
+            raise SystemExit(f"Robot: {exc}")
+        except ImportError:
+            raise SystemExit("Robot: pyserial is missing -- pip install -r requirements.txt")
+
     buffer = BoardBuffer()
     engine_controller = None
+    robot_controller = None
     print("Running. Ctrl+C to stop.")
     try:
         with Camera() as cam, CaptureStream(cam) as stream:
@@ -790,6 +924,11 @@ def main():
                 # write mislabelled crops -- see harvest.py.
                 if harvester is not None and move_text is not None and not flagged:
                     harvester.record(matrix, frame)
+                # An unresolvable settle right after the arm moved means the
+                # physical board and the tracked position have diverged.
+                # Stop the arm before it stacks another move on top.
+                if flagged and robot_controller is not None:
+                    robot_controller.note_flag(reason)
                 # Just a poke -- the engine thinks on its own thread, since
                 # this runs with TrackingLoop's lock held.
                 if engine_controller is not None:
@@ -807,8 +946,18 @@ def main():
             )
             buffer.set_board(loop.current_matrix, None, False, None)  # seed the UI before any move happens
 
-            engine_controller = EngineController(loop, engine, think_s=args.engine_think)
-            start_server(args.host, args.port, buffer, loop, stream, engine_controller)
+            if robot is not None:
+                robot_controller = RobotController(robot, loop)
+                print("Homing the gantry -- keep hands clear...")
+                ok, error = robot_controller.home()
+                print("Robot: homed and ready." if ok else f"Robot: {error}")
+
+            engine_controller = EngineController(
+                loop, engine, think_s=args.engine_think, robot=robot_controller
+            )
+            start_server(
+                args.host, args.port, buffer, loop, stream, engine_controller, robot_controller
+            )
             print(f"Serving at http://<this-pi>:{args.port}/")
 
             while True:
@@ -821,6 +970,10 @@ def main():
         print("Stopped.")
     finally:
         engine.close()  # don't leave the Stockfish subprocess behind
+        if robot_controller is not None:
+            robot_controller.close()  # drops the coil, closes the port
+        elif robot is not None:
+            robot.close()
 
 
 if __name__ == "__main__":

@@ -20,7 +20,10 @@ confidence, the web UI flags it and offers a manual correction. See
 
 **[RUNBOOK.md](RUNBOOK.md)** has the copy-pasteable command sequences for
 retraining, deploying, and swapping boards -- start there for day-to-day
-operation.
+operation. **[docs/DESIGN.md](docs/DESIGN.md)** is the full system
+document: architecture, hardware, geometry, protocols, the reasoning behind
+each decision, and the open risks. **[docs/HARDWARE.md](docs/HARDWARE.md)**
+is the robot arm's circuit and bring-up procedure.
 
 ## Hardware assumed
 
@@ -133,6 +136,56 @@ accept -- place something else and it says so rather than quietly applying
 it. Undo and Edit board still override everything if you want to deviate
 deliberately.
 
+## The robot arm
+
+With the gantry built (see **[docs/HARDWARE.md](docs/HARDWARE.md)** for the
+full circuit and bring-up), the engine plays its own moves: a CoreXY frame
+under the board drags an electromagnet along the gaps between squares, an
+Arduino Uno drives it, and the Pi sends it where to go.
+
+```bash
+python3 src/web_ui.py --robot /dev/ttyACM0    # the real gantry
+python3 src/web_ui.py --robot mock            # dry run: logs commands, moves nothing
+```
+
+The arm homes on startup, then plays automatically whenever the engine
+decides on a move. It is off unless `--robot` is given, so nothing here
+changes the hand-played setup above.
+
+The split is deliberate: the Arduino knows no chess at all. It takes
+`GOTO`/`MAG`/`PULSE`/`TOPPLE` on a serial line and nothing else, while every
+decision about *which* squares to visit is made in
+[`src/robot_moves.py`](src/robot_moves.py) from python-chess -- so captures,
+castling, en passant and knight routing are worked out where they can be
+unit-tested (`tests/test_robot_moves.py`) rather than on a microcontroller.
+
+What it does physically:
+
+- **Ordinary moves** slide centre to centre. Chess legality already
+  guarantees a sliding piece has a clear path.
+- **Knights**, and the **castling rook** (which has to get past the king
+  that just jumped over it), ride the lattice lines *between* squares
+  instead, at reduced magnet power -- and not down the middle of the gap:
+  on 30mm squares the midline is only 15mm from the pieces either side, so
+  the route shifts toward whichever flank it can prove is empty.
+- **Captures** topple the piece in place, then the arm retreats to the
+  corner and waits `--topple-delay` seconds (default 5) for you to lift it
+  off before sliding its own piece in. En passant topples the pawn beside
+  the destination, not on it.
+- **Promotion** moves the pawn and then asks you to swap in a queen. The
+  arm can't fetch one, and vision can't tell a queen from a pawn anyway --
+  the tracked state already records the promotion, so the board just has to
+  be made to match.
+
+**Every robot move is confirmed by camera before it counts.** Tracking is
+held still while the gantry moves, then a full 64-square read has to match
+the move the engine intended -- the same `set_expected_move` mechanism that
+polices a hand-played move. A slipped belt, a dropped piece or a hand in the
+way flags and **halts the arm** rather than stacking another move on top of
+a position that isn't real. Recovery is Edit board / Undo, then **Home /
+re-enable** in the UI. There's also a **HALT** button, and pulling the 7.5 V
+jack stops everything instantly.
+
 ## How detection works
 
 The board is assumed to start at the standard chess position. From there,
@@ -193,19 +246,42 @@ always knows piece *type*, never needing to re-derive it from vision.
   pipeline. Consensus/delta-matching logic is unit-tested off-Pi with a
   fake model (see `tests/`), but classifier accuracy itself can only be
   judged after training on real photos.
+- **The arm's captures need a human.** A toppled piece is left lying on its
+  own square and cleared by hand within `--topple-delay`; there's no
+  graveyard area, because the gantry's travel is exactly the 8x8 board. The
+  delay is fixed rather than vision-gated -- if it elapses and the piece is
+  still there, the incoming move disturbs it and the settle flags.
+- **30mm squares leave very little routing clearance, and that's the
+  arm's real limitation.** The midline between two pieces is 15mm from each,
+  against 13-15mm piece bases and a 25mm magnet whose edge comes within
+  2.5mm of them. Routing shifts toward an empty flank wherever it can (about
+  two moves in three, taking the worst point to 17.4mm), but when both
+  flanks are occupied -- a knight leaving the back rank past the opening
+  pawn wall, most of all -- 15mm is the geometric maximum and no routing
+  fixes it. Test that specific move before playing a real game; see
+  [`docs/HARDWARE.md`](docs/HARDWARE.md). If it catches, the remedies are a
+  weaker `MAG_EDGE`, narrower piece bases, or a smaller coil.
 - Not yet built: puzzle mode, AI coach, past-match analysis, remote play.
 
 ## Repo layout
 
 ```
 config/       generated calibration data (git-ignored)
+docs/         DESIGN.md -- the full system document (architecture, geometry,
+              protocols, decisions, risks)
+              HARDWARE.md -- robot arm circuit, wiring, bring-up
+firmware/     chess_gantry/ -- the Arduino Uno sketch (CoreXY + magnet).
+              Knows no chess; takes GOTO/MAG/PULSE/TOPPLE over serial
 models/       exported NCNN classifier (git-ignored, copied from training
               machine): square_classifier_ncnn_model/
 src/          capture, calibration, square classification, board-state
-              helpers, event-gated tracking loop, legal-move resolution, web UI
+              helpers, event-gated tracking loop, legal-move resolution,
+              web UI, and the robot arm (robot_moves.py plans a move's
+              gantry path, robot.py drives and verifies it)
 tests/        unit tests for move resolution, the classifier's consensus
-              wrapper, and the tracking loop's delta computation (no
-              camera or trained model required -- fake models throughout)
+              wrapper, the tracking loop's delta computation, and the
+              robot's path planning + halt-on-mismatch behaviour (no
+              camera, gantry or trained model required -- fakes throughout)
 training/     dataset collection + training + export instructions (see
               training/NOTES.md) -- most steps run off-Pi
 ```

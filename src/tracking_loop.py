@@ -204,6 +204,30 @@ class TrackingLoop:
             self._on_update(self.current_matrix, None, frame, False, None)
             return san
 
+    def force_settle(self, frame=None):
+        """Runs a full settle read right now, without waiting for the motion
+        gate to fire.
+
+        This exists for the robot arm. tick() keeps pumping the gate while
+        paused (so its reference frame stays current -- see the comment
+        there), which means the gantry's own motion-then-quiet is consumed
+        *during* the pause and dropped. Unpausing afterwards leaves a board
+        that is already static, so the gate would never fire again and the
+        robot's move would never be verified. Calling this once the gantry
+        reports done removes the race entirely.
+
+        Returns True if the read resolved to a move, False if it flagged or
+        found nothing changed.
+        """
+        with self._lock:
+            if frame is None:
+                frame, _timestamp = self._capture_stream.get_latest()
+            if frame is None:
+                return False
+            before = self._resolver.board.move_stack[:]
+            self._handle_settle(frame)
+            return self._resolver.board.move_stack[:] != before
+
     def run_forever(self):
         while True:
             self.tick()

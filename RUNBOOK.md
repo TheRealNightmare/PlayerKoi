@@ -168,7 +168,63 @@ and Edit board override that if you want to deviate.
 
 ---
 
-## E. Gotchas that have actually bitten
+## E. Playing with the robot arm
+
+Full circuit and first-time bring-up: **[docs/HARDWARE.md](docs/HARDWARE.md)**.
+This section is the day-to-day sequence once it's built and calibrated.
+
+**1. Power up in this order** — USB first, barrel jack second.
+
+```bash
+ls /dev/ttyACM*                      # confirm the Uno enumerated
+```
+
+**2. First time on a rebuilt/re-flashed rig,** verify the geometry and the
+clearance before anything touches a real game — `GOTO 7 0` must travel exactly
+210 mm, and a knight must leave the back rank without catching the pawns
+either side. Both procedures are in
+[docs/HARDWARE.md](docs/HARDWARE.md#bring-up-and-calibration), steps 4 and 7.
+
+**3. Dry run if anything changed** (firmware, wiring, the code):
+
+```bash
+python3 src/web_ui.py --robot mock   # logs every gantry command, moves nothing
+```
+
+**4. Then for real.** It homes on startup — keep hands clear.
+
+```bash
+python3 src/web_ui.py --robot /dev/ttyACM0 --harvest
+```
+
+Toggle the engine on as usual. From then on it plays its own moves: you move
+White, the arm answers.
+
+**When it captures**, it topples the piece, retreats to the corner, and waits
+5 seconds (`--topple-delay`) for you to lift it off. Take it off promptly —
+if it's still lying there when the arm comes back, the incoming piece shoves
+it and the settle flags.
+
+**When it promotes**, the UI asks you to swap a queen in. Do it; the software
+already thinks it's a queen.
+
+**If it halts** (red box), the camera didn't agree with what the arm did.
+Fix the physical board with **Edit board** or **Undo last move**, then press
+**Home / re-enable**. It will not move again until you do.
+
+**Bench console** for poking the gantry directly, without any chess:
+
+```bash
+python3 src/robot.py --port /dev/ttyACM0 --console
+gantry> HOME
+gantry> GOTO 3.5 4
+gantry> MAG 170
+gantry> OFF
+```
+
+---
+
+## F. Gotchas that have actually bitten
 
 **Run directory is `train-2`, not `train2`.** Ultralytics auto-increments
 with a hyphen. Follow the path the training script prints — don't guess.
@@ -187,7 +243,7 @@ have to merge and retrain.
 
 ---
 
-## F. Tuning knobs
+## G. Tuning knobs
 
 | Problem | Knob |
 |---|---|
@@ -196,6 +252,18 @@ have to merge and retrain.
 | Wrong moves accepted | Raise `--min-conf`, or collect more data for the squares that misread |
 | Engine too strong | Skill slider in the UI (0–20; 0 is genuinely beatable) |
 | Board diagram wrong | **Undo last move** for one bad move; **Edit board** for a full resync |
+| Arm drops pieces mid-drag | Raise `MAG_HOLD`/`MAG_EDGE` in `src/robot_moves.py` (the firmware clamps at `MAG_MAX_PWM`) |
+| **Neighbouring pieces dragged along as the arm passes** | Lower `MAG_EDGE`. On 30 mm squares the magnet's edge comes within 2.5 mm of a flanking piece's centre — see Clearances in [docs/HARDWARE.md](docs/HARDWARE.md) |
+| **Knight catches pieces leaving the back rank** | The opening pawn wall is the one case routing can't improve on (15 mm each side). Narrower bases or a smaller coil; no software fix |
+| Magnet coil getting hot | Lower `MAG_MAX_PWM` in the sketch, or feed the DRV8872 from a 5 V buck |
+| Pieces land off-centre | Tune `PULSE_REVERSE_MS`/`PULSE_HOLD_MS` in the sketch |
+| Piece knocked off the board when toppled | Lower `TOPPLE_MS` in the sketch |
+| Arm drifts a bit further off every move | `STEPS_PER_SQUARE` should be exactly 600 — verify `GOTO 7 0` travels 210 mm. If it does, the motors are stalling: lower `MAX_SPEED` |
+| Arm too slow | `MAX_SPEED` 1500 → 2500 steps/s (75 → 125 mm/s), once the belts are tensioned |
+| Motors buzz but don't turn | `MAX_SPEED` too high to start from rest (no acceleration in `MultiStepper`), or Vref too low |
+| An axis homes away from its switch | Swap one coil pair on that motor — no code change |
+| Not enough time to clear a captured piece | `web_ui.py --topple-delay 10` |
+| Arm halts constantly | The camera is disagreeing with it — check `debug_classifier.py` before blaming the gantry |
 
 Diagnostics:
 
