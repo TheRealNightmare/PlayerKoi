@@ -86,15 +86,24 @@ if your board has one).
 
 Re-run this any time the camera or board physically moves.
 
+If you use more than one setup -- different room, lighting, camera height,
+board or piece set -- give each one a tag: `python3 src/calibrate.py --env 2`
+writes `config/calibration-env2.json` and leaves the others alone.
+
 ### 3. Get a classifier
 
-Training doesn't happen on the Pi. See
-[`training/NOTES.md`](training/NOTES.md) for the full pipeline:
-`src/collect_square_crops.py` (on the Pi, collects real training photos
-from your own board -- no public dataset, no legal chess position needed)
--> `training/train_classifier.py` (on a GPU machine) ->
-`training/export_ncnn.py` -> `training/deploy.py` back to the Pi's
-`models/square_classifier_ncnn_model`.
+Training doesn't happen on the Pi, and nothing is trained from scratch:
+the pipeline fine-tunes ImageNet-pretrained `yolov8n-cls` on crops from
+your own rig, which is why ~12 collection rounds per setup is enough. It
+only ever learns three classes -- empty / white / black -- never piece
+type. [`WORKFLOW.md`](WORKFLOW.md) walks the whole cycle end to end;
+[`training/NOTES.md`](training/NOTES.md) explains why. The pipeline:
+`src/collect_square_crops.py --env <tag>` (on the Pi, collects real
+training photos from your own board -- no public dataset, no legal chess
+position needed) -> `training/train_classifier.py` (on a GPU machine) ->
+`training/eval_by_env.py` (per-environment accuracy, tells you which
+setup needs more data) -> `training/export_ncnn.py` ->
+`training/deploy.py` back to the Pi's `models/square_classifier_ncnn_model`.
 
 ### 4. Run
 

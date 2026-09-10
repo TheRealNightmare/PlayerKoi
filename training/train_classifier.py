@@ -17,7 +17,11 @@ Usage:
 
 `--data` is the dataset *directory* (not a data.yaml) -- ultralytics'
 classify task expects train/<class>/*.jpg and val/<class>/*.jpg
-subfolders, exactly what src/collect_square_crops.py produces.
+subfolders, exactly what src/collect_square_crops.py produces. If a
+test/<class>/ split is also present it is scored once at the end, on
+rounds the model never trained or early-stopped against. Run
+training/eval_by_env.py afterwards to break that number down by
+environment.
 
 Augmentation defaults are tuned for this task (see the flags below), but
 augmentation is not a substitute for real crops: a new board or new
@@ -138,6 +142,24 @@ def main():
     save_dir = Path(getattr(getattr(model, "trainer", None), "save_dir", None)
                     or Path("runs/classify") / args.name)
     best = save_dir / "weights" / "best.pt"
+
+    # val/ steers training (best.pt is picked on it), so it flatters the
+    # model. test/ is the honest number -- score it whenever it exists.
+    if args.data is not None and (args.data / "test").is_dir():
+        print("\nScoring the held-out test split...")
+        metrics = YOLO(str(best) if best.exists() else str(checkpoint)).val(
+            data=str(args.data.resolve()),
+            split="test",
+            imgsz=args.imgsz,
+            device="cpu" if (args.device == "cpu" or not cuda_ok) else int(args.device),
+        )
+        print(f"Test top-1: {metrics.top1:.4f}   top-5: {metrics.top5:.4f}")
+        print(f"Per-environment breakdown: python training/eval_by_env.py "
+              f"--data {args.data} --weights {best}")
+    else:
+        print("\nNo test/ split in the dataset -- collect with the current "
+              "src/collect_square_crops.py to get one.")
+
     print(f"\nDone. Best weights: {best.resolve() if best.exists() else best}")
     print(f"Next: python training/export_ncnn.py --weights {best} --imgsz {args.imgsz}")
     return 0

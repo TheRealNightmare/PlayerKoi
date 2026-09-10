@@ -1,8 +1,12 @@
 # Runbook
 
-Copy-pasteable command sequences for the things you actually do. For *why*
-any of this works the way it does, see [README.md](README.md) and
-[training/NOTES.md](training/NOTES.md).
+Copy-pasteable command sequences for the things you actually do — a quick
+reference, assuming you know the pipeline already.
+
+- Following the whole collect → train → deploy cycle start to finish, with
+  every step explained → [WORKFLOW.md](WORKFLOW.md)
+- *Why* any of this works the way it does → [README.md](README.md) and
+  [training/NOTES.md](training/NOTES.md)
 
 ## Machines
 
@@ -82,24 +86,31 @@ ssh nightmare@192.168.0.106 'rm -rf ~/C/PlayerKoi/training/datasets/harvested'
 
 ---
 
-## B. New board, or a big lighting change
+## B. Add an environment (new board, room, lighting, or camera position)
 
 The classifier sees the board surface as background, so a different board
-is a different problem. Same for a major lighting change.
+is a different problem. Same for a major lighting or camera-position
+change. Each such setup is an **environment** with its own `--env` tag —
+run this whole section once per environment, using a new tag each time.
 
 **1. On the Pi** — set the board up physically first
 
 ```bash
-python3 src/calibrate.py                     # corners moved
-python3 src/collect_square_crops.py --session <name> --rounds 20
+python3 src/calibrate.py --env 3             # its own board geometry
+python3 src/collect_square_crops.py --env 3 --rounds 20 \
+    --notes "spare room, ceiling light, glass set"
 ```
 
-`--session` keeps this run from overwriting earlier ones, so it **adds**
-to the dataset. It prints existing counts on startup — confirm it's
-growing.
+The env prefix keeps this run from overwriting earlier ones, so it
+**adds** to the dataset. It prints existing counts on startup — confirm
+it's growing — and appends a line to `training/datasets/squares/manifest.jsonl`.
+
+Rounds are split whole into `train/` / `val/` / `test/`; never re-split
+these by file, or burst frames leak across splits and the accuracy
+becomes a lie.
 
 Collection doesn't use the model at all, only calibration, so it's fine
-that the current model is useless on the new board.
+that the current model is useless in the new environment.
 
 **2. On the training PC**
 
@@ -109,10 +120,15 @@ rsync -av nightmare@192.168.0.106:~/C/PlayerKoi/training/datasets/squares/ \
 
 python training/train_classifier.py --data training/datasets/squares \
     --model runs/classify/train-2/weights/best.pt
+
+python training/eval_by_env.py --data training/datasets/squares \
+    --weights runs/classify/<the run it just printed>/weights/best.pt
 ```
 
-Keeping both boards' crops in one dataset gives one model that handles
-both.
+Keeping every environment's crops in one dataset gives one model that
+handles all of them. Read the per-env table: the new row should be high,
+**and the older rows must not have dropped**. A weak row means more
+rounds in that environment.
 
 **3.** Export and deploy — [section C](#c-export-and-deploy).
 
@@ -234,9 +250,11 @@ with a hyphen. Follow the path the training script prints — don't guess.
 creates `square_classifier_ncnn_model/square_classifier_ncnn_model` and
 the model fails to load. Always `rm -rf` the old one first.
 
-**Collection filenames need `--session`.** Without it they'd collide
-across runs. It defaults to a timestamp, so it's safe either way, but a
-label (`--session greenboard`) makes batches traceable and removable.
+**Collect with `--env`.** Filenames are prefixed with the env tag, which is
+what makes a batch traceable, removable, and scoreable by
+`eval_by_env.py`. Without it the crops still land safely (the session id
+defaults to a timestamp, so nothing collides) but they show up forever as
+`untagged` and can't be attributed to a setup.
 
 **`--harvest` never fixes anything by itself.** It only writes crops. You
 have to merge and retrain.

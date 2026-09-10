@@ -25,19 +25,44 @@ with more thresholds. `src/move_resolver.py` still only ever needs
 occupancy+color from vision, not type -- piece type is maintained purely
 in software by applying resolved legal moves.
 
-## 1. Calibrate
+**Nothing here trains a model from scratch.** `yolov8n-cls.pt` is an
+ImageNet-pretrained classifier; `train_classifier.py` fine-tunes it on
+your own 64x64 square crops. That is why 12 collection rounds is enough
+where a from-scratch model would need orders of magnitude more. It is
+also why it stays small (~2.9 MB) and exports cleanly to NCNN for the Pi.
+
+## Environments
+
+Everything below is done **per environment**. An "environment" is any
+combination of room, lighting, camera height/position, board and piece
+set -- change any of those and the crops look different enough that a
+model which has only seen the old one is guessing.
+
+Each environment gets:
+
+- its own calibration (`config/calibration-env<tag>.json`) -- camera
+  position is part of what varies, so board geometry can't be shared;
+- an `env<tag>-` prefix on every crop it contributes, which is what lets
+  `training/eval_by_env.py` tell you *which* environment is weakest.
+
+All environments' crops live in **one** dataset and train **one** model.
+Collecting env 2 never touches env 1's images.
+
+## 1. Calibrate (once per environment)
 
 ```bash
-python3 src/calibrate.py
+python3 src/calibrate.py --env 1
 ```
 
-Just the 4-corner perspective step now -- no baseline capture needed for
-an ML classifier.
+Just the 4-corner perspective step -- no baseline capture needed for an
+ML classifier. Check `config/calibration-env1_preview.jpg` is a clean 8x8
+grid. Re-running for an env that already has a calibration refuses unless
+you pass `--force`, so one environment can't silently clobber another.
 
 ## 2. Collect training data (on the Pi)
 
 ```bash
-python3 src/collect_square_crops.py --out training/datasets/squares --rounds 12
+python3 src/collect_square_crops.py --env 1 --rounds 12 --notes "desk lamp, wooden set"
 ```
 
 Each round randomly assigns some squares "white", some "black" -- place
@@ -45,10 +70,17 @@ Each round randomly assigns some squares "white", some "black" -- place
 does), leave the rest empty, press Enter. This collects real photos from
 your actual camera/board/lighting rather than a public dataset, which is
 what caused the domain-gap problems the original 13-class classifier had.
-More rounds = more data; spreading rounds across different times of
-day/lighting helps the model generalize instead of overfitting to one
-lighting condition. Copy the resulting `training/datasets/squares/`
-directory to your training PC.
+
+Rounds are split **whole** into `train/` / `val/` / `test/` (~70/15/15) --
+never per-frame, because the 6 frames in a round's burst are near
+duplicates and splitting them apart would leak the answer across splits
+and inflate your accuracy. Each run appends a line to
+`training/datasets/squares/manifest.jsonl` recording the env, session,
+calibration, counts and your `--notes`, so a 6-environment dataset stays
+auditable months later.
+
+Repeat for each environment (`--env 2`, `--env 3`, ...). Then copy
+`training/datasets/squares/` to your training PC.
 
 ## 3. Train (on your GPU machine)
 
@@ -63,6 +95,26 @@ Wraps `yolo classify train` -- `yolov8n-cls.pt` base, `imgsz=64`,
 `src/square_classifier.py`'s inference size. A 3-class problem this small
 trains fast even on a modest GPU. Aborts if CUDA isn't available (pass
 `--allow-cpu` to override).
+
+`best.pt` is selected on `val/`, so the val number flatters the model.
+When a `test/` split exists the script scores it once at the end -- that's
+the honest number. Then break it down by environment:
+
+```bash
+python training/eval_by_env.py --data training/datasets/squares \
+    --weights runs/classify/train/weights/best.pt
+```
+
+```
+env           images  accuracy   worst confusions
+-------------------------------------------------
+1               1920    99.1%   empty->black x9
+2               1856    91.4%   white->empty x71, empty->white x40
+```
+
+A row like env 2 means **collect more rounds in env 2** -- augmentation
+can't invent a lighting condition the model has never seen. Crops from
+before tagging existed are grouped as `untagged`.
 
 ## 4. Export to NCNN
 
@@ -83,18 +135,19 @@ python training/deploy.py pi@<pi-hostname> --model-dir runs/classify/train/weigh
 `models/square_classifier_ncnn_model` by default (override with
 `--classifier`).
 
-## Changing the board (or the lighting)
+## Adding a new environment
 
 The crops the classifier learns from include the board surface as
 background, so a **different board is a different problem** -- a model
 trained on one board is guessing on another. Same goes for a big lighting
-change. When that happens:
+or camera-position change. When that happens, add it as a new environment
+rather than replacing the old one:
 
-1. `python3 src/calibrate.py` -- the physical corners moved.
-2. `python3 src/collect_square_crops.py --session <name> --rounds 12` --
-   collect on the new board. The `--session` label (or an automatic
-   timestamp) keeps these files from colliding with earlier runs, so this
-   **adds** to the dataset rather than replacing it.
+1. `python3 src/calibrate.py --env 3` -- new geometry, kept alongside the
+   existing ones.
+2. `python3 src/collect_square_crops.py --env 3 --rounds 12 --notes "..."` --
+   the env-prefixed filenames keep these from colliding with earlier runs,
+   so this **adds** to the dataset rather than replacing it.
 3. Fine-tune from what you already have, rather than starting over:
 
 ```bash
@@ -102,9 +155,11 @@ python training/train_classifier.py --data training/datasets/squares \
     --model runs/classify/train/weights/best.pt
 ```
 
-Keeping both boards' crops in one dataset gives you one model that handles
-both. Watch the per-epoch top-1 accuracy ultralytics prints against the
-`val/` split to confirm it actually learned the new board.
+Keeping every environment's crops in one dataset gives you one model that
+handles all of them. Confirm with `eval_by_env.py` that the new
+environment scores well **and** that the older ones didn't regress -- a
+drop in an old row means the model is trading environments off against
+each other, and that one needs more rounds too.
 
 ## Growing the dataset by playing
 
@@ -129,5 +184,5 @@ post-move one, which would write confidently mislabelled crops.
 detector (`src/detect.py`, removed during the original occupancy/color
 redesign). They're left in place in case a full-frame detector is ever
 wanted again, but nothing in `src/` currently imports their output.
-`export_ncnn.py`, `deploy.py`, and `setup.sh` are still actively used by
-the classifier pipeline above.
+`export_ncnn.py`, `deploy.py`, `eval_by_env.py` and `setup.sh` are still
+actively used by the classifier pipeline above.

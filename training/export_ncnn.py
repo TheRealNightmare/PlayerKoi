@@ -2,7 +2,7 @@
 """Export trained weights to NCNN -- the fastest CPU inference backend on the Pi.
 
 Usage:
-    python training/export_ncnn.py --weights runs/detect/train/weights/best.pt
+    python training/export_ncnn.py --weights runs/classify/train/weights/best.pt
 
 Produces a `best_ncnn_model/` directory (a .param + .bin pair) next to the
 weights. Copy that whole directory to the Pi with training/deploy.py.
@@ -15,8 +15,8 @@ from pathlib import Path
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--weights", type=Path, default=Path("runs/detect/train/weights/best.pt"))
-    parser.add_argument("--imgsz", type=int, default=480, help="must match src/detect.py's imgsz")
+    parser.add_argument("--weights", type=Path, default=Path("runs/classify/train/weights/best.pt"))
+    parser.add_argument("--imgsz", type=int, default=64, help="must match src/square_classifier.py's imgsz")
     return parser.parse_args()
 
 

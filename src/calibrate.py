@@ -19,23 +19,24 @@ gather training data using this same calibration.
 
 Re-run this any time the camera or board physically moves.
 
-Requires a display (HDMI or VNC) to click on the preview window.
+Each environment (different room, lighting, camera height, board) needs its
+own calibration, so pass --env to keep them side by side instead of
+overwriting one another:
 
-    python3 src/calibrate.py
+    python3 src/calibrate.py                 # config/calibration.json
+    python3 src/calibrate.py --env 2         # config/calibration-env2.json
+
+Requires a display (HDMI or VNC) to click on the preview window.
 """
 
+import argparse
 import json
-from pathlib import Path
 
 import cv2
 import numpy as np
 
+from board_state import CONFIG_DIR, calibration_paths
 from capture import Camera
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-CALIBRATION_PATH = REPO_ROOT / "config" / "calibration.json"
-PREVIEW_PATH = REPO_ROOT / "config" / "calibration_preview.jpg"
-REFERENCE_FRAME_PATH = REPO_ROOT / "config" / "reference_frame.jpg"
 
 CORNER_LABELS = ["a1 corner", "h1 corner", "h8 corner", "a8 corner"]
 BOARD_SIZE = 8  # squares per side
@@ -87,7 +88,7 @@ def compute_transform(corners):
     return cv2.getPerspectiveTransform(src, dst)
 
 
-def save_preview(frame, matrix):
+def save_preview(frame, matrix, preview_path):
     scale = PREVIEW_PX / BOARD_SIZE
     scaled_matrix = np.diag([scale, scale, 1.0]) @ matrix
     warped = cv2.warpPerspective(frame, scaled_matrix, (PREVIEW_PX, PREVIEW_PX))
@@ -97,32 +98,60 @@ def save_preview(frame, matrix):
         cv2.line(warped, (pos, 0), (pos, PREVIEW_PX), (0, 255, 0), 1)
         cv2.line(warped, (0, pos), (PREVIEW_PX, pos), (0, 255, 0), 1)
 
-    cv2.imwrite(str(PREVIEW_PATH), warped)
+    cv2.imwrite(str(preview_path), warped)
     return warped
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--env", default=None,
+                        help="environment tag (e.g. 1, 2, kitchen). Each environment -- "
+                             "different room, lighting, camera height or board -- needs its "
+                             "own calibration. Omit for the default config/calibration.json")
+    parser.add_argument("--force", action="store_true",
+                        help="overwrite an existing calibration for this environment")
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
+    calibration_path, preview_path, reference_path = calibration_paths(args.env)
+
+    # Camera position is one of the things that varies per environment, so an
+    # accidental re-run used to silently destroy another environment's board
+    # geometry.
+    if calibration_path.exists() and not args.force:
+        raise SystemExit(
+            f"{calibration_path} already exists -- pass --force to overwrite it, "
+            "or use a different --env tag."
+        )
+
     with Camera() as cam:
         frame = cam.read_frame()
 
-    cv2.imwrite(str(REFERENCE_FRAME_PATH), frame)
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(reference_path), frame)
 
     corners = collect_corners(frame)
     matrix = compute_transform(corners)
-    save_preview(frame, matrix)
+    save_preview(frame, matrix, preview_path)
 
     calibration = {
+        "env": args.env,
         "corners_image_px": corners,
         "board_size_squares": BOARD_SIZE,
         "perspective_matrix": matrix.tolist(),
         "image_size": [frame.shape[1], frame.shape[0]],
     }
-    CALIBRATION_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(CALIBRATION_PATH, "w") as f:
+    with open(calibration_path, "w") as f:
         json.dump(calibration, f, indent=2)
 
-    print(f"Saved calibration to {CALIBRATION_PATH}")
-    print(f"Saved warped preview to {PREVIEW_PATH} -- check it looks like a clean 8x8 grid")
+    print(f"Saved calibration to {calibration_path}")
+    print(f"Saved warped preview to {preview_path} -- check it looks like a clean 8x8 grid")
+    if args.env is not None:
+        print(f"\nNext: python3 src/collect_square_crops.py --env {args.env}")
 
 
 if __name__ == "__main__":

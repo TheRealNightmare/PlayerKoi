@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
 """Copy an exported NCNN model directory to the Raspberry Pi over scp.
 
-src/main.py expects the model at ~/MicroChess/models/best_ncnn_model on the Pi.
+src/main.py, src/web_ui.py and src/debug_classifier.py all default to
+models/square_classifier_ncnn_model on the Pi, so rename the exported
+best_ncnn_model/ directory to that before deploying (or pass --classifier
+to each of them).
+
+Delete any existing model directory on the Pi first -- `scp -r` copies
+*into* a directory of the same name, producing a nested
+square_classifier_ncnn_model/square_classifier_ncnn_model/ that fails to
+load.
 
 Usage:
     python training/deploy.py pi@raspberrypi.local
-    python training/deploy.py pi@192.168.1.42 --model-dir runs/detect/chessred_yolo26l/weights/best_ncnn_model
+    python training/deploy.py pi@192.168.1.42 --model-dir runs/classify/train/weights/best_ncnn_model
     python training/deploy.py pi@raspberrypi.local --dry-run
 """
 
@@ -15,7 +23,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-DEFAULT_MODEL_DIR = Path("runs/detect/chessred/weights/best_ncnn_model")
+DEFAULT_MODEL_DIR = Path("runs/classify/train/weights/best_ncnn_model")
 
 
 def parse_args():
@@ -50,8 +58,8 @@ def main():
 
     dest = args.dest.rstrip("/") + "/" + args.model_dir.name
     print(f"\nCopied to {args.target}:{dest}")
-    print("On the Pi, run it with:")
-    print(f"  python3 src/main.py --model {dest}")
+    print("On the Pi, check it before trusting it:")
+    print(f"  python3 src/debug_classifier.py --classifier {dest}")
     return 0
 
 
