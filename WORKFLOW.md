@@ -6,7 +6,8 @@ project long enough to have forgotten it.
 
 - For *why* any of this is designed the way it is → [training/NOTES.md](training/NOTES.md)
 - For the terse "just the commands for task X" version → [RUNBOOK.md](RUNBOOK.md)
-- For runtime tuning knobs (thresholds, robot arm) → [RUNBOOK.md § G](RUNBOOK.md#g-tuning-knobs)
+  (its **How the scripts find your model** section covers path resolution)
+- For runtime tuning knobs (thresholds, robot arm) → [RUNBOOK.md § I](RUNBOOK.md#i-tuning-knobs)
 
 **The two machines**
 
@@ -23,6 +24,10 @@ cd ~/C/PlayerKoi && source .venv/bin/activate
 # Training PC
 cd ~/MicroChess && source .venv-train/bin/activate
 ```
+
+New to a room and not sure whether the current model already handles it?
+Skip to [step 9](#9-testing-a-new-environment-before-training) —
+it's a 2-minute check that can save you a whole collection session.
 
 Data is collected on the **Pi** (that's where the camera is), training happens
 on the **PC** (that's where the GPU is), and the finished model goes back to
@@ -64,8 +69,10 @@ setup is enough. The backbone already knows edges, shadows, texture and gloss;
 you are only teaching it *your* board's three answers. From scratch this would
 need orders of magnitude more images.
 
-The current deployed model was trained to **98.1% top-1**. Anything much below
-~97% on a setup you've collected for means that setup needs more data.
+Reference points from real runs on this rig: **96.9%** test top-1 after only
+3 epochs on a single 12-round environment, **98.1%** after a full 50-epoch run
+on a larger set. Anything much below ~97% on a setup you've actually collected
+for means that setup needs more data, not more epochs.
 
 ---
 
@@ -87,13 +94,21 @@ The current deployed model was trained to **98.1% top-1**. Anything much below
 | Path | What |
 |---|---|
 | `training/datasets/squares/` | the merged dataset, pulled from the Pi in step 4 |
-| `runs/classify/train-N/weights/best.pt` | trained weights (step 5) |
-| `runs/classify/train-N/weights/best_ncnn_model/` | export output (step 6) |
-| `runs/classify/train-N/results.csv` | per-epoch accuracy history |
+| `runs/classify/<run>/weights/best.pt` | trained weights (step 5); `<run>` is `train`, then `train-2`, … |
+| `runs/classify/<run>/weights/best_ncnn_model/` | export output (step 6) |
+| `runs/classify/<run>/results.csv` | per-epoch accuracy history |
 
-> ⚠️ `training/datasets/`, `runs/` and `*.pt` are **git-ignored**. They exist
-> only on disk. The rsync in step 4 is the only copy of your collected images
-> that lives on two machines — nothing else backs them up.
+> ⚠️ `training/datasets/`, `runs/` and `*.pt` are **git-ignored** — they exist
+> only on disk, and `git checkout` will not bring them back.
+>
+> A trained `best.pt` lives in exactly one place: this PC's `runs/`. The Pi
+> holds only an NCNN export, and **NCNN cannot be converted back to `.pt`**.
+> Clearing `runs/` therefore destroys that model permanently. This has already
+> happened once here.
+>
+> Weights are cheap — retraining takes seconds. **The dataset is what's
+> irreplaceable**: 30 rounds of collection cannot be regenerated. The rsync in
+> step 4 is what keeps it on two machines. Nothing else backs it up.
 
 An image filename encodes everything about itself:
 
@@ -169,6 +184,22 @@ Recorded this run in .../training/datasets/squares/manifest.jsonl
 **Check before continuing:** all three splits got images. `train`, `val` and
 `test` should each be non-zero.
 
+The manifest line it appends is your record of that run — this is a real one:
+
+```json
+{"env": "1", "session": "env1-20260911-133146", "rounds": 12,
+ "calibration": ".../config/calibration-env1.json",
+ "round_splits": ["val","train","train","train","val","train","train",
+                  "train","train","train","test","test"],
+ "notes": "miraz basha day",
+ "counts": {"train/empty": 2136, "train/white": 438, "train/black": 498,
+            "val/empty": 570, "val/white": 78, "val/black": 120,
+            "test/empty": 588, "test/white": 96, "test/black": 84}}
+```
+
+Note `empty` outnumbers the two piece classes about 4:1. That's inherent —
+only ~10 of 64 squares hold a piece per round — and it's expected, not a bug.
+
 Notes on what's happening:
 
 - Whole **rounds** go to train/val/test (~70/15/15), never individual frames.
@@ -184,6 +215,68 @@ Notes on what's happening:
 > condition — 15 now and 15 this evening is worth more than 30 now.
 
 Repeat 3a + 3b for `--env 2`, `--env 3`, … as you add setups.
+
+### 3c. How much data do I need?
+
+**"Perfect everywhere" is not a reachable target** — it's an asymptote, not a
+number of images. Here's why, and what to aim for instead.
+
+A move only resolves if **all 64 squares** read correctly, so per-square
+accuracy compounds:
+
+| Per-square accuracy | Chance the whole board reads right | Moves between failures |
+|---|---|---|
+| 98% | 27% | ~1 |
+| 99% | 53% | ~2 |
+| 99.5% | 73% | ~4 |
+| 99.9% | 94% | ~16 |
+| 99.99% | 99.4% | ~157 |
+
+To never miss across a 40-move game you'd need ~99.996% per square. Don't
+chase that.
+
+**What saves you is that failure is safe.** `resolve_from_deltas` requires an
+*exact* match against exactly one legal move, so a misread never produces a
+wrong move — it produces no match, and the UI asks you to correct it. Squares
+below `--min-conf` are skipped rather than trusted, and the 3-frame majority
+vote discards random noise. So the real question is "how often do I click
+Undo?", not "is it perfect."
+
+> The consensus vote only fixes **random** error. A square with permanent
+> glare or a hard shadow reads wrong in all 3 frames, so voting does nothing
+> for it. Systematic errors like that are exactly what more data fixes.
+
+**Count rounds, not images.** Each round writes 64 squares × 6 burst frames =
+384 files, but those 6 frames are near-identical — about 64 genuinely new
+observations. A 15,000-image dataset is really ~2,500 unique square views,
+roughly 40 rounds.
+
+| Per environment | Rounds | Images | What you get |
+|---|---|---|---|
+| Bare minimum | 12 | ~4,600 | ~97–98%, frequent corrections |
+| **Recommended** | **25–30** | **~10–11k** | **~99%+, occasional correction** |
+| Diminishing returns past | ~50 | ~19k | more rounds stop helping |
+
+Also note only ~10 of 64 squares hold a piece each round, so 12 rounds gives
+only ~120 piece views spread across 64 squares — under 2 per square. That
+under-coverage is why individual squares misread, and it's why round count
+matters more than it first appears.
+
+**How many environments?** 5–6 is genuinely enough — *if they differ*. Two
+setups that vary only by time of day teach almost nothing new. Spread them
+across the axes that actually break the model, in this order: lighting
+direction and intensity (the worst offender by far), camera height, board and
+piece set, then background.
+
+Split rounds across sittings too. 15 rounds in daylight plus 15 under
+lamplight beats 30 in one sitting, because one sitting is one lighting
+condition no matter how many rounds it contains.
+
+**Don't collect blind toward a target.** Collect 12 rounds, train, run
+`eval_by_env.py` (step 5), and give another 10 rounds to any environment
+below ~99%. Stop when every row is ≥99% and the overall test number stops
+moving. `--harvest` during play then grows the set for free.
+
 
 ---
 
@@ -223,24 +316,40 @@ that before training, not after.
 
 ## 5. Train — on the PC
 
+**First, check what weights you actually have:**
+
 ```bash
-python training/train_classifier.py --data training/datasets/squares \
-    --model runs/classify/train-2/weights/best.pt
+ls runs/classify/*/weights/best.pt
 ```
 
-Point `--model` at your **current best weights**, not at `yolov8n-cls.pt`.
-Fine-tuning from what already works keeps everything the model learned about
-your other environments; starting over throws it away for no benefit.
+That output decides which of the two commands you run.
 
-(First time only, with no previous run to build on, omit `--model` — it
-defaults to `yolov8n-cls.pt`.)
+**If it lists something** — fine-tune from your current best:
+
+```bash
+python training/train_classifier.py --data training/datasets/squares \
+    --model runs/classify/train/weights/best.pt
+```
+
+Fine-tuning from what already works keeps everything the model learned about
+your other environments; starting over throws that away for no benefit.
+
+**If it lists nothing** — a fresh machine, or `runs/` was cleared — omit
+`--model` entirely:
+
+```bash
+python training/train_classifier.py --data training/datasets/squares
+```
+
+It then starts from the pretrained `yolov8n-cls.pt`, which is correct. Don't
+pass a `--model` path that doesn't exist; it will fail rather than fall back.
 
 It aborts if CUDA isn't available rather than silently crawling on CPU. It
 then prints per-epoch top-1 against `val/`, and at the end:
 
 ```
 Scoring the held-out test split...
-Test top-1: 0.9814   top-5: 1.0000
+Test top-1: 0.9688   top-5: 1.0000
 
 Done. Best weights: /home/nightmare/MicroChess/runs/classify/train-3/weights/best.pt
 ```
@@ -256,11 +365,15 @@ Done. Best weights: /home/nightmare/MicroChess/runs/classify/train-3/weights/bes
 hyphen — `train-2` becomes `train-3` — and every remaining step needs that
 exact path. Don't guess it.
 
+**You don't need to retype that path.** Every step below resolves it for you:
+`export_ncnn.py`, `eval_by_env.py` and `deploy.py` default to the newest run
+and print which one they picked. Pass `--run NAME` to target an older run, or
+`--yes` to skip the confirmation prompt.
+
 ### Then break the score down per environment
 
 ```bash
-python training/eval_by_env.py --data training/datasets/squares \
-    --weights runs/classify/train-3/weights/best.pt
+python training/eval_by_env.py --data training/datasets/squares
 ```
 
 ```
@@ -291,7 +404,7 @@ fix the data. Don't deploy it.
 ## 6. Export to NCNN — on the PC
 
 ```bash
-python training/export_ncnn.py --weights runs/classify/train-3/weights/best.pt --imgsz 64
+python training/export_ncnn.py --imgsz 64
 ```
 
 `--imgsz 64` must match what you trained at, or inference will be subtly
@@ -301,8 +414,8 @@ weights.
 Rename it to the name the Pi expects:
 
 ```bash
-mv runs/classify/train-3/weights/best_ncnn_model \
-   runs/classify/train-3/weights/square_classifier_ncnn_model
+mv runs/classify/train/weights/best_ncnn_model \
+   runs/classify/train/weights/square_classifier_ncnn_model
 ```
 
 `src/main.py`, `src/web_ui.py` and `src/debug_classifier.py` all default to
@@ -328,9 +441,7 @@ fails to load. This has actually happened.
 Then copy:
 
 ```bash
-python training/deploy.py nightmare@192.168.0.106 \
-    --model-dir runs/classify/train-3/weights/square_classifier_ncnn_model \
-    --dest ~/C/PlayerKoi/models/
+python training/deploy.py nightmare@192.168.0.106 --dest ~/C/PlayerKoi/models/
 ```
 
 Add `--dry-run` first if you want to see the `scp` command without running it.
@@ -371,27 +482,139 @@ python3 src/web_ui.py --harvest
 Open <http://192.168.0.106:8000/>.
 
 **Rolling back:** the previous run directory is still on the PC. Redeploy it
-by repeating steps 6–7 with the older `train-N`. Nothing is destroyed by a bad
+by repeating steps 6–7 with `--run <older run>`. Nothing is destroyed by a bad
 deploy.
 
 ---
 
-## 9. Which path do I take?
+## 9. Testing a new environment before training
+
+You've moved to a new room, or swapped the board, and you don't yet know
+whether the existing model copes. Run this **before** committing to 25 rounds
+of collection. Two tiers: the first takes two minutes, the second gives you a
+number.
+
+### Tier 1 — eyeball it (2 minutes, no data collected)
+
+Calibrate the new setup, then point the *current* model at it.
+
+```bash
+# on the Pi
+python3 src/calibrate.py --env 5
+python3 src/debug_classifier.py --calibration config/calibration-env5.json
+```
+
+Set up a position you can check by eye. You get a grid plus:
+
+```
+predicted: empty=52 white=6 black=6
+3/64 below --min-conf=0.5
+    e4  white  0.41
+```
+
+Read it like this:
+
+| What you see | Verdict |
+|---|---|
+| Grid matches reality, 0–2 squares below min-conf | Probably fine — go to Tier 2 to confirm |
+| Grid matches but 5–15 squares low-confidence | Marginal. It'll work but flag often — Tier 2 |
+| Any square shows the **wrong** colour, or >15 low-conf | Training needed. Skip Tier 2, go collect |
+
+Try 2–3 different positions, including pieces on both light and dark squares
+and a few in corners. A single lucky position proves nothing.
+
+If it fails badly here, you've saved yourself the trouble — go straight to
+step 3b with a fresh `--env` tag.
+
+### Tier 2 — measure it (15 minutes, gives a real number)
+
+Tier 1 is a vibe. To get an actual accuracy figure you need labelled images,
+so collect a few rounds into a **throwaway directory** rather than the real
+dataset:
+
+```bash
+# on the Pi
+python3 src/collect_square_crops.py --env 5 --rounds 4 \
+    --out training/datasets/probe-env5 \
+    --notes "PROBE: spare room, ceiling light"
+```
+
+Four rounds is ~1,500 images and takes about ten minutes. Pull it to the PC
+and score the **current deployed model** against it:
+
+```bash
+# on the training PC
+rsync -av nightmare@192.168.0.106:~/C/PlayerKoi/training/datasets/probe-env5/ \
+          training/datasets/probe-env5/
+
+python training/eval_by_env.py --data training/datasets/probe-env5 --split train
+```
+
+Use `--split train` — it's the largest share of a 4-round probe. Repeat with
+`--split val` / `--split test` if you want the rest; with so few rounds the
+splits are tiny and noisy individually.
+
+Point `--weights` at the model **currently deployed on the Pi**, not at
+something newer. The question is "does what I already have cope here?"
+
+### Decide
+
+| Probe accuracy | Verdict | Do this |
+|---|---|---|
+| **≥ 99%** | No training needed | Keep the calibration, play. Delete the probe dir |
+| **97 – 99%** | Borderline | Collect 10–12 rounds in this env, fine-tune (steps 3b → 8) |
+| **< 97%** | Genuinely new environment | Collect the full 25–30 rounds, fine-tune |
+| **< 90%** | Something is broken, not just unfamiliar | Check the calibration preview first — a skewed grid crops the wrong pixels and looks exactly like a model failure |
+
+Also read the confusion column, not just the percentage. `white->empty` in
+bulk usually means the pieces are under-lit or the exposure lock caught a
+different brightness; `empty->white` in bulk often means glare on the board
+surface. Both are worth fixing physically before fixing with data — moving a
+lamp is cheaper than 30 rounds.
+
+### Don't waste the probe
+
+If you decide to train for this environment, fold the probe images into the
+real dataset rather than recollecting them — they're already labelled and
+already tagged `env5-`:
+
+```bash
+rsync -av training/datasets/probe-env5/ training/datasets/squares/
+rm -rf training/datasets/probe-env5
+```
+
+Then collect the remaining rounds normally (step 3b, same `--env 5`) and
+continue from step 4.
+
+If you decide **not** to train, just delete the probe directory. Keep the
+calibration file — it costs nothing and you'll want it next time you're in
+that room.
+
+> A probe that passes is not permanent. Lighting drifts with the seasons and
+> the time of day. If a setup that used to be fine starts flagging, re-probe
+> it before assuming the model has degraded — it's usually the room, not the
+> weights.
+
+---
+
+## 10. Which path do I take?
 
 | Situation | Do this |
 |---|---|
-| New room, lighting, board, piece set, or camera moved | New environment: step 3 with a fresh `--env` tag, then 4–8 |
+| Moved somewhere new, unsure if it needs training | **Probe it first — step 9.** Don't collect 30 rounds on a hunch |
+| Probe says it needs training | New environment: step 3 with a fresh `--env` tag, then 4–8 |
 | Misreads in a setup you've already collected for | More rounds in **that** env (step 3b, same tag), then 4–8 |
-| Want more data for free | Run `web_ui.py --harvest` while playing, then [RUNBOOK § A](RUNBOOK.md#a-retrain-from-harvested-play-data) to merge |
-| Accuracy dropped after deploying | Redeploy the previous `train-N` (steps 6–7), then investigate |
+| Want more data for free | Run `web_ui.py --harvest` while playing, then [RUNBOOK § D](RUNBOOK.md#d-harvest-from-play) to merge |
+| Accuracy dropped after deploying | Redeploy the previous run: steps 6–7 with `--run <older run>` |
 | One square consistently wrong | Collect more rounds — that square is under-covered (~10 of 64 per round) |
 | Board diagram disagrees with reality | **Undo last move** / **Edit board** in the UI. Not a training problem |
 | Moves never detected | Motion gate, not the model — `debug_classifier.py --watch`, lower `--motion-thresh` |
 | Tempted to retrain from scratch | Don't. Always `--model <current best>` |
+| Unsure how many rounds/environments to aim for | [Step 3c](#3c-how-much-data-do-i-need) |
 
 ---
 
-## 10. Troubleshooting
+## 11. Troubleshooting
 
 **`No calibration found at config/calibration-env1.json`**
 You skipped step 3a for that env tag, or you're using a different tag than you
@@ -430,4 +653,4 @@ Those crops were collected before `--env` existed. Still perfectly usable for
 training — you just can't attribute them to a setup.
 
 For runtime behaviour (thresholds, engine, robot arm) see
-[RUNBOOK § G](RUNBOOK.md#g-tuning-knobs).
+[RUNBOOK § I](RUNBOOK.md#i-tuning-knobs).

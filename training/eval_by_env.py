@@ -12,6 +12,10 @@ has never seen.
 Usage:
     python training/eval_by_env.py --data training/datasets/squares
     python training/eval_by_env.py --data training/datasets/squares --split val
+    python training/eval_by_env.py --data training/datasets/squares --run train-2
+
+With no --weights or --run it scores the most recent run under runs/classify/
+and asks you to confirm (--yes skips the prompt).
 
 Crops with no env prefix (collected before tagging existed) are grouped
 under "untagged".
@@ -21,6 +25,8 @@ import argparse
 import sys
 from collections import defaultdict
 from pathlib import Path
+
+import run_paths
 
 CLASSES = ("empty", "white", "black")
 UNTAGGED = "untagged"
@@ -84,7 +90,7 @@ def format_report(stats):
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data", type=Path, required=True, help="dataset directory")
-    parser.add_argument("--weights", type=Path, default=Path("runs/classify/train/weights/best.pt"))
+    run_paths.add_arguments(parser, "--weights", "path to best.pt (default: the newest run)")
     parser.add_argument("--split", default="test", choices=("test", "val", "train"))
     parser.add_argument("--imgsz", type=int, default=64, help="keep in sync with training")
     parser.add_argument("--device", default="0", help="CUDA device index, or 'cpu'")
@@ -98,8 +104,7 @@ def main():
     split_dir = args.data / args.split
     if not split_dir.is_dir():
         raise SystemExit(f"No {args.split}/ split at {split_dir}")
-    if not args.weights.exists():
-        raise SystemExit(f"weights not found: {args.weights} (train first)")
+    weights = run_paths.resolve(args.weights, args.run, kind="pt", assume_yes=args.yes)
 
     items = collect_images(split_dir)
     if not items:
@@ -110,7 +115,7 @@ def main():
     os.environ.setdefault("ULTRALYTICS_SKIP_REQUIREMENTS_CHECKS", "1")
     from ultralytics import YOLO
 
-    model = YOLO(str(args.weights), task="classify")
+    model = YOLO(str(weights), task="classify")
     names = model.names
 
     stats = defaultdict(lambda: defaultdict(int))
@@ -128,7 +133,7 @@ def main():
         print(f"  scored {min(start + args.batch, len(items))}/{len(items)}", end="\r")
 
     print(" " * 40, end="\r")
-    print(f"\n{args.split}/ split, {args.weights}\n")
+    print(f"\n{args.split}/ split, {weights}\n")
     print(format_report(stats))
     return 0
 

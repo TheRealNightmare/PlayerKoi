@@ -101,8 +101,7 @@ When a `test/` split exists the script scores it once at the end -- that's
 the honest number. Then break it down by environment:
 
 ```bash
-python training/eval_by_env.py --data training/datasets/squares \
-    --weights runs/classify/train/weights/best.pt
+python training/eval_by_env.py --data training/datasets/squares
 ```
 
 ```
@@ -119,16 +118,16 @@ before tagging existed are grouped as `untagged`.
 ## 4. Export to NCNN
 
 ```bash
-python training/export_ncnn.py --weights runs/classify/train/weights/best.pt --imgsz 64
+python training/export_ncnn.py --imgsz 64
 ```
 
-Same generic export script the old detector/classifier pipelines used --
-no changes needed, it's task-agnostic.
+With no `--weights` it exports the newest run under `runs/classify/` after
+asking you to confirm; `--run NAME` picks an older one.
 
 ## 5. Deploy to the Pi
 
 ```bash
-python training/deploy.py pi@<pi-hostname> --model-dir runs/classify/train/weights/best_ncnn_model --dest ~/MicroChess/models/square_classifier_ncnn_model
+python training/deploy.py pi@<pi-hostname> --dest ~/MicroChess/models/square_classifier_ncnn_model
 ```
 
 `src/main.py`/`src/web_ui.py` expect the classifier at
