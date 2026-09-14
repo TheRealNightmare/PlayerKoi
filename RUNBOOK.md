@@ -416,11 +416,17 @@ and Edit board override that if you want to deviate.
 Full circuit and first-time bring-up: **[docs/HARDWARE.md](docs/HARDWARE.md)**.
 This section is the day-to-day sequence once it's built and calibrated.
 
-**1. Power up in this order** — USB first, barrel jack second.
+**1. Power up in this order** — USB first, barrel jack second, with the
+carriage hand-parked on the **a8** corner.
 
 ```bash
 ls /dev/ttyACM*                      # confirm the Uno enumerated
 ```
+
+The firmware calls that corner `h1`; the board is seated 180 degrees round from
+what the sketch assumes, so `rig.ORIGIN_SQUARE = "a8"` rotates every square on
+its way to the Arduino. If the arm reaches for the wrong colour's pieces, that
+constant is wrong — try the others with `--board-origin`.
 
 **2. First time on a rebuilt/re-flashed rig,** verify the geometry and the
 clearance before anything touches a real game — `GOTO 7 0` must travel exactly
@@ -481,8 +487,9 @@ it is played into a position that no longer exists.
 **1. Set the board up completely.** All 32 pieces, standard position, White at
 the a1 end. This is assumed, never checked.
 
-**2. Park the carriage on h1** by hand. No limit switches — `HOME` drives to
-the assumed origin rather than finding it.
+**2. Park the carriage on the a8 corner** by hand. No limit switches — `HOME`
+drives to the assumed origin rather than finding it. (The firmware calls that
+corner h1; see section G.)
 
 **3. Dry run first** if anything changed:
 
@@ -499,6 +506,13 @@ python3 src/web_ui.py --ai-vs-ai --robot /dev/ttyACM0 \
 
 Open the UI and press **play**. `--move-delay` is the pause between moves;
 keep it generous the first few games so you have time to reach **HALT**.
+
+**It plays like a beginner on purpose.** Pawn moves are preferred, and it will
+only move a knight or castle when nothing else is legal — those are the two
+moves that make the arm weave along the gridlines at reduced magnet duty, which
+is where pieces get dropped. Over a full game that takes knight weaves from
+roughly 15% of moves to zero. Pass `--no-noob` to play normally. It costs two
+engine searches per move, so budget ~2x `--engine-think`.
 
 **Captures still stop and wait for you** — same blocking prompt as section G,
 with no time limit. Press **Done — piece removed**.

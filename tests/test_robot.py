@@ -28,7 +28,27 @@ import robot_moves_legacy  # noqa: E402
 import tracking_loop  # noqa: E402
 from move_resolver import standard_starting_matrix  # noqa: E402
 from robot import RobotController  # noqa: E402
+import rig  # noqa: E402
 from square_classifier import ALL_SQUARES, BLACK, EMPTY, WHITE  # noqa: E402
+
+
+def setUpModule():
+    """Pin the identity orientation for this whole file.
+
+    rig.ORIGIN_SQUARE says how the board is seated under the gantry and
+    rotates every square bound for the firmware (see rig.orient). That is a
+    property of the machine, not of a plan, so these tests neutralise it and
+    go on asserting the geometry they were written for. The rotation itself
+    is tested in test_rig.py.
+    """
+    global _saved_origin
+    _saved_origin = rig.ORIGIN_SQUARE
+    rig.ORIGIN_SQUARE = "h1"
+
+
+def tearDownModule():
+    rig.ORIGIN_SQUARE = _saved_origin
+
 
 
 def _matrix_state(matrix, square):

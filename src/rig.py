@@ -80,6 +80,69 @@ BAUD = 115200
 READY_BANNER = "READY ChessBot-V1"
 
 
+# ---------------------------------------------------------------- orientation
+#
+# The one value in this file that is NOT mirrored from the firmware, because
+# the firmware has no concept of it: chessbot_v1 parses square names
+# arithmetically (charAt(0) - 'a') and assumes the carriage parks on h1.
+#
+# On this machine it doesn't. The corner the gantry actually rests on -- the
+# origin, (0, 0) -- is a8, so the whole machine is rotated 180 degrees against
+# every square name it is sent. Uncorrected, asking for e2 drives to d7, which
+# is why the arm reached for Black's pieces on White's turn.
+#
+# Correcting it here rather than in the sketch keeps the geometry measurements
+# and the orientation separable: the mm constants above stay true of the
+# hardware, and this stays true of how the board is seated under it.
+#
+# The four values are the real square the carriage parks on:
+#
+#     "h1"   what the firmware assumes -- no correction
+#     "a8"   rotated 180 degrees: file AND rank flip     <- this rig
+#     "h8"   ranks flip, files don't (a mirror, from a reversed Y axis)
+#     "a1"   files flip, ranks don't
+ORIGIN_SQUARE = "a8"
+
+# (flip_file, flip_rank) for each supported origin.
+_ORIENTATIONS = {
+    "h1": (False, False),
+    "a8": (True, True),
+    "h8": (False, True),
+    "a1": (True, False),
+}
+
+SUPPORTED_ORIGINS = tuple(_ORIENTATIONS)
+
+
+def orient(file_, rank, origin=None):
+    """(file, rank) as chess means it -> (file, rank) as the machine means it.
+
+    Its own inverse for every supported origin, so a round trip is the
+    identity and the helper can be used in either direction.
+    """
+    origin = ORIGIN_SQUARE if origin is None else origin
+    try:
+        flip_file, flip_rank = _ORIENTATIONS[origin]
+    except KeyError:
+        raise ValueError(
+            f"unknown board origin {origin!r} -- expected one of {', '.join(_ORIENTATIONS)}"
+        )
+    return (7 - file_ if flip_file else file_, 7 - rank if flip_rank else rank)
+
+
+def orient_square(name, origin=None):
+    """"e2" -> "d7" on this rig. For square names bound for the firmware."""
+    file_, rank = orient(ord(name[0]) - ord("a"), int(name[1]) - 1, origin)
+    return f"{chr(ord('a') + file_)}{rank + 1}"
+
+
+def orient_uci(uci, origin=None):
+    """"e2e4" -> "d7d5". Only the four square characters -- a promotion
+    suffix is dropped, since MOVE/KNIGHT take squares and the firmware has no
+    idea what a promotion is."""
+    return orient_square(uci[:2], origin) + orient_square(uci[2:4], origin)
+
+
 def square_to_mm(file_, rank):
     """(file, rank) in 0..7 -> (x, y) in machine mm. Fractions are fine.
 

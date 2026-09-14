@@ -30,8 +30,12 @@ def prompts(steps):
     return [step for step in steps if step.kind == "prompt"]
 
 
-def plan_uci(board, uci):
-    return legacy.plan(board, chess.Move.from_uci(uci))
+def plan_uci(board, uci, origin_square="h1"):
+    """Plans with the identity orientation by default, so these tests keep
+    asserting chess rules rather than how the board happens to be seated
+    under the gantry. The rotation itself is tested in TestOrientation and
+    in test_rig.py."""
+    return legacy.plan(board, chess.Move.from_uci(uci), origin_square=origin_square)
 
 
 class TestQuietMoves(unittest.TestCase):
@@ -222,6 +226,76 @@ class TestEveryLegalMovePlans(unittest.TestCase):
                     captures += 1
                 board.push(move)
         self.assertGreater(captures, 100, "sanity: the sweep should cover many captures")
+
+
+class TestOrientation(unittest.TestCase):
+    """Only Step.command is rotated into machine orientation.
+
+    Step.note and Step.prompt are read by a human looking at the real board,
+    where the pieces are laid out normally -- it is the gantry that is
+    rotated, not the game. Telling the human "take the pawn off d5" when the
+    pawn is on e4 would be worse than the original bug.
+    """
+
+    def test_the_command_is_rotated(self):
+        self.assertEqual(
+            commands(plan_uci(chess.Board(), "e2e4", origin_square="a8")),
+            ["MOVE d7d5"],
+        )
+
+    def test_a_knight_command_is_rotated_too(self):
+        self.assertEqual(
+            commands(plan_uci(chess.Board(), "b1c3", origin_square="a8")),
+            ["KNIGHT g8f6"],
+        )
+
+    def test_the_note_stays_in_real_notation(self):
+        steps = plan_uci(chess.Board(), "e2e4", origin_square="a8")
+        self.assertIn("e2", steps[0].note)
+        self.assertIn("e4", steps[0].note)
+        self.assertNotIn("d7", steps[0].note)
+
+    def test_the_capture_prompt_stays_in_real_notation(self):
+        board = chess.Board("rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2")
+        steps = plan_uci(board, "e4d5", origin_square="a8")
+        prompt = prompts(steps)[0]
+        self.assertIn("d5", prompt.prompt)
+        self.assertNotIn("e4", prompt.prompt)
+
+    def test_castling_rotates_both_commands(self):
+        board = chess.Board("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1")
+        self.assertEqual(
+            commands(plan_uci(board, "e1g1", origin_square="a8")),
+            ["MOVE d8b8", "KNIGHT a8c8"],
+        )
+
+    def test_the_default_origin_is_the_rig_constant(self):
+        """plan() with no origin must use the machine's measured seating,
+        not the firmware's assumption -- otherwise the fix never reaches the
+        arm."""
+        import rig
+
+        self.assertEqual(
+            legacy.plan(chess.Board(), chess.Move.from_uci("e2e4"))[0].command,
+            f"MOVE {rig.orient_uci('e2e4')}",
+        )
+
+    def test_every_legal_move_still_names_real_squares(self):
+        """Sweep: a rotated command must always be a valid square pair, and
+        never accidentally leak into the human-facing text."""
+        board = chess.Board()
+        random.seed(11)
+        for _ in range(200):
+            if board.is_game_over():
+                board = chess.Board()
+            move = random.choice(list(board.legal_moves))
+            for step in legacy.plan(board, move, origin_square="a8"):
+                if step.kind == "command":
+                    squares = step.command.split()[1]
+                    self.assertEqual(len(squares), 4)
+                    self.assertTrue(all(c in "abcdefgh" for c in squares[::2]))
+                    self.assertTrue(all(c in "12345678" for c in squares[1::2]))
+            board.push(move)
 
 
 class TestInterchangeableWithTheNativePlanner(unittest.TestCase):

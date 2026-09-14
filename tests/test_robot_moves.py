@@ -20,7 +20,27 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import chess  # noqa: E402
 
+import rig  # noqa: E402
 import robot_moves  # noqa: E402
+
+
+def setUpModule():
+    """Pin the identity orientation for this whole file.
+
+    rig.ORIGIN_SQUARE says how the board is seated under the gantry and
+    rotates every square bound for the firmware (see rig.orient). That is a
+    property of the machine, not of a plan, so these tests neutralise it and
+    go on asserting the geometry they were written for. The rotation itself
+    is tested in test_rig.py.
+    """
+    global _saved_origin
+    _saved_origin = rig.ORIGIN_SQUARE
+    rig.ORIGIN_SQUARE = "h1"
+
+
+def tearDownModule():
+    rig.ORIGIN_SQUARE = _saved_origin
+
 
 
 def _park_command():

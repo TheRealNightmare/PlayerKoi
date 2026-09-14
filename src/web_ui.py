@@ -33,6 +33,7 @@ import cv2
 from board_state import load_calibration, matrix_to_fen_placement
 from engine import DEFAULT_SKILL, DEFAULT_THINK_S, ChessEngine, describe_move
 from headless_loop import HeadlessLoop, NullStream
+import move_policy
 import rig
 from robot import GantryError, RobotController, open_gantry
 from robot_moves import DEFAULT_TOPPLE_DELAY_S
@@ -628,7 +629,7 @@ class EngineController:
     """
 
     def __init__(self, loop, engine, think_s=DEFAULT_THINK_S, robot=None,
-                 both_sides=False, move_delay_s=0.0):
+                 both_sides=False, move_delay_s=0.0, noob=False):
         self._loop = loop
         self._engine = engine
         self._think_s = think_s
@@ -638,6 +639,12 @@ class EngineController:
         # thread. move_delay_s is purely so a human can follow along.
         self._both_sides = both_sides
         self._move_delay_s = move_delay_s
+        # How a move gets picked. Plain best_move, or the beginner-ish,
+        # weave-averse policy -- same signature either way.
+        self._noob = noob
+        self._pick_move = move_policy.choose_move if noob else (
+            lambda engine, board, think_s: engine.best_move(board, think_s)
+        )
         self._lock = Lock()
         self._wake = Event()
         self._enabled = False
@@ -658,6 +665,7 @@ class EngineController:
                 "extra": self._extra,
                 "expected_uci": expected.uci() if expected is not None else None,
                 "skill": self._engine.skill,
+                "style": "noob" if self._noob else "normal",
                 "message": self._message,
             }
 
@@ -707,7 +715,7 @@ class EngineController:
         with self._lock:
             self._thinking = True
             self._message = None
-        move = self._engine.best_move(board, self._think_s)
+        move = self._pick_move(self._engine, board, self._think_s)
         headline, extra = describe_move(board, move) if move is not None else (None, None)
 
         with self._lock:
@@ -956,6 +964,18 @@ def parse_args():
                              "camera, no calibration and no classifier are used -- the "
                              "position is tracked in software, so the board MUST start "
                              "with all 32 pieces in the standard setup. Requires --robot")
+    parser.add_argument("--noob", action=argparse.BooleanOptionalAction, default=None,
+                        help="play like a beginner: prefer pawn moves, and move a knight "
+                             "or castle only when nothing else is legal (those are the "
+                             "moves that make the arm weave, which is its riskiest "
+                             "motion). Costs about 2x --engine-think per move. "
+                             "Default: on with --ai-vs-ai, off otherwise")
+    parser.add_argument("--board-origin", default=rig.ORIGIN_SQUARE,
+                        choices=rig.SUPPORTED_ORIGINS,
+                        help="which real square the carriage parks on, i.e. how the board "
+                             f"is seated under the gantry (default: {rig.ORIGIN_SQUARE}, "
+                             "measured on this rig). 'h1' is the firmware's own "
+                             "assumption and applies no rotation")
     parser.add_argument("--move-delay", type=float, default=1.0,
                         help="--ai-vs-ai only: seconds to pause after each completed move, "
                              "so the game is watchable and you have time to hit Halt")
@@ -982,6 +1002,10 @@ def parse_args():
 def _open_robot(args):
     """Opens the gantry, or exits with a readable reason. Shared by both
     modes so the no-limit-switch warning is only written once."""
+    # How the board is seated under the gantry is a property of the machine,
+    # not of a single move, so it lives on rig rather than being threaded
+    # through every planner call. Both planners read it from there.
+    rig.ORIGIN_SQUARE = args.board_origin
     try:
         robot = open_gantry(args.robot, topple_delay_s=args.topple_delay,
                             protocol=args.robot_protocol)
@@ -995,8 +1019,16 @@ def _open_robot(args):
         # No limit switches on this build: HOME drives to the assumed origin
         # rather than seeking it, so "homed" is a promise the human makes,
         # not something the machine measured.
-        print(f"Robot: park the carriage on {rig.PARK_SQUARE} before homing -- "
+        #
+        # Name the square the human can actually see. rig.PARK_SQUARE is the
+        # firmware's idea of the origin; ORIGIN_SQUARE is which real corner
+        # that is on this rig, and telling them the wrong one is how the
+        # whole board ends up rotated.
+        print(f"Robot: park the carriage on {rig.ORIGIN_SQUARE} before homing -- "
               "there are no limit switches to find it.")
+        if rig.ORIGIN_SQUARE != rig.PARK_SQUARE:
+            print(f"Robot: board origin {rig.ORIGIN_SQUARE} -- squares are rotated "
+                  "before they reach the firmware.")
     return robot
 
 
@@ -1013,7 +1045,9 @@ def run_ai_vs_ai(args):
     engine = ChessEngine(command=args.engine_command, skill=args.engine_skill)
     if not engine.available:
         raise SystemExit(f"Engine: {engine.error}")
-    print("Engine: Stockfish ready (playing both sides).")
+    noob = True if args.noob is None else args.noob
+    print("Engine: Stockfish ready (playing both sides"
+          + (", beginner style)." if noob else ")."))
 
     robot = _open_robot(args)
 
@@ -1033,7 +1067,7 @@ def run_ai_vs_ai(args):
 
         engine_controller = EngineController(
             loop, engine, think_s=args.engine_think, robot=robot_controller,
-            both_sides=True, move_delay_s=args.move_delay,
+            both_sides=True, move_delay_s=args.move_delay, noob=noob,
         )
         start_server(args.host, args.port, buffer, loop, NullStream(),
                      engine_controller, robot_controller, ai_vs_ai=True)
@@ -1139,7 +1173,8 @@ def main():
                 print("Robot: homed and ready." if ok else f"Robot: {error}")
 
             engine_controller = EngineController(
-                loop, engine, think_s=args.engine_think, robot=robot_controller
+                loop, engine, think_s=args.engine_think, robot=robot_controller,
+                noob=bool(args.noob),
             )
             start_server(
                 args.host, args.port, buffer, loop, stream, engine_controller, robot_controller

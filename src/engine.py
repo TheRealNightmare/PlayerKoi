@@ -98,15 +98,46 @@ class ChessEngine:
             except Exception:
                 pass  # some builds name it differently; strength just stays default
 
-    def best_move(self, board, think_s=DEFAULT_THINK_S):
+    def best_move(self, board, think_s=DEFAULT_THINK_S, root_moves=None):
         """Returns a chess.Move, or None if unavailable or the position has
-        no legal moves (checkmate/stalemate)."""
+        no legal moves (checkmate/stalemate).
+
+        `root_moves` restricts the search to those moves. Note that play()
+        -- unlike analyse() -- honours Skill Level, so a restricted play()
+        still blunders at whatever strength was configured. That difference
+        is the whole reason move_policy.py makes two calls instead of one.
+        """
         if self._engine is None or board.is_game_over():
             return None
         import chess.engine
 
-        result = self._engine.play(board, chess.engine.Limit(time=think_s))
+        result = self._engine.play(
+            board, chess.engine.Limit(time=think_s), root_moves=root_moves
+        )
         return result.move
+
+    def top_moves(self, board, think_s=DEFAULT_THINK_S, count=5, root_moves=None):
+        """The engine's `count` best moves, strongest first.
+
+        This is analyse(), so it ignores Skill Level and answers with the
+        objectively good moves -- which is what a "reasonable candidates"
+        shortlist wants. Returns [] rather than raising if the engine is
+        missing or the build doesn't do MultiPV.
+        """
+        if self._engine is None or board.is_game_over():
+            return []
+        import chess.engine
+
+        try:
+            infos = self._engine.analyse(
+                board, chess.engine.Limit(time=think_s),
+                multipv=count, root_moves=root_moves,
+            )
+        except Exception:
+            return []  # no MultiPV, or the search was cut short
+        if isinstance(infos, dict):  # multipv=1 can come back unwrapped
+            infos = [infos]
+        return [info["pv"][0] for info in infos if info.get("pv")]
 
     def close(self):
         if self._engine is not None:

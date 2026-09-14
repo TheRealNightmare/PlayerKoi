@@ -43,6 +43,12 @@ Three things that are easy to get wrong:
   large.
 - **There are no limit switches on this build.** Position is dead reckoning
   from an assumed park at h1. Nothing can detect that it is wrong.
+- **"h1" here means the firmware's h1, which is physically the a8 corner.**
+  This sketch assumes the board is seated with h1 at the origin; on the built
+  rig it is rotated 180 degrees. The Python side corrects for that
+  (`rig.ORIGIN_SQUARE`), so *game* moves are rotated before they arrive but
+  the bench commands below are not. Everything in this document is in the
+  firmware's own naming.
 
 ## Bring-up, in order
 
@@ -53,7 +59,7 @@ stop there rather than continuing — later steps assume the earlier ones.
 |---|---|---|
 | 1 | Flash `chessbot_v1.ino` | compiles and uploads |
 | 2 | Open the serial monitor at 115200 | `READY ChessBot-V1` |
-| 3 | **Park the carriage on h1 by hand** | — |
+| 3 | **Park the carriage on the origin corner by hand** (physically a8 — see above) | — |
 | 4 | `PING` | `OK PONG` |
 | 5 | `POS` | `OK POS 0.0 0.0` |
 | 6 | `MAG 1` then `MAG 0` | `OK MAG 1` / `OK MAG 0`, coil audibly grabs and releases |

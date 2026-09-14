@@ -24,6 +24,7 @@ is merely advisory and comes last.
 
 import chess
 
+import rig
 from robot_moves import _PIECE_WORDS, Step
 
 
@@ -47,7 +48,7 @@ def _remove_prompt(square, piece):
     )
 
 
-def plan(board, move, topple_delay_s=None):
+def plan(board, move, topple_delay_s=None, origin_square=None):
     """Gantry commands to physically play `move` in `board` -- the position
     *before* the move, exactly like robot_moves.plan() and describe_move().
 
@@ -55,6 +56,11 @@ def plan(board, move, topple_delay_s=None):
     firmware has no TOPPLE, and the capture wait is a human confirmation
     rather than a fixed delay. It stays in the signature so the two planners
     remain interchangeable.
+
+    `origin_square` is which real square the carriage parks on; it rotates the
+    squares in the emitted commands to match how the board is seated under the
+    gantry. Defaults to rig.ORIGIN_SQUARE, the measured value for this machine.
+    Only Step.command is rotated -- see the comment on the MOVE step.
 
     Raises ValueError if the move isn't legal here. Not defensive noise:
     is_capture/is_en_passant answer for the side to move, so a move for the
@@ -88,7 +94,11 @@ def plan(board, move, topple_delay_s=None):
     knight = mover is not None and mover.piece_type == chess.KNIGHT
     steps.append(
         Step(
-            f"{'KNIGHT' if knight else 'MOVE'} {uci}",
+            # The command is rotated into machine orientation; the note is
+            # not. Step keeps the two apart precisely so the firmware and the
+            # human can be told different things about the same move, and the
+            # human is looking at a real board in real notation.
+            f"{'KNIGHT' if knight else 'MOVE'} {rig.orient_uci(uci, origin_square)}",
             f"{word} {origin} to {target}",
         )
     )
@@ -103,7 +113,7 @@ def plan(board, move, topple_delay_s=None):
         rook_to = chess.square_name(chess.square(5 if kingside else 3, rank))
         steps.append(
             Step(
-                f"KNIGHT {rook_from}{rook_to}",
+                f"KNIGHT {rig.orient_uci(rook_from + rook_to, origin_square)}",
                 f"rook {rook_from} to {rook_to}, weaving past the king",
             )
         )

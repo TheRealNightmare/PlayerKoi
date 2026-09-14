@@ -161,6 +161,10 @@ def _goto(x, y, note):
     # Every coordinate in a plan funnels through here, which makes this the
     # one place the travel limits need enforcing.
     x, y = _fold_to_travel(x), _fold_to_travel(y)
+    # ...and the one place the board's orientation under the gantry is
+    # applied. Rotation is symmetric about the board centre, so folding first
+    # and rotating after is the same as the other order. See rig.orient.
+    x, y = rig.orient(x, y)
     return Step(f"GOTO {x:.2f} {y:.2f}", note)
 
 
