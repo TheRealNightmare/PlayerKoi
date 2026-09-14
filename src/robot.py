@@ -435,13 +435,27 @@ class RobotController:
         while not self._stop_keepalive.wait(PAUSE_LAPSE_S / 3.0):
             self._loop.set_paused(True)
 
-    def close(self):
+    def detach(self):
+        """Stop driving, but leave the gantry open.
+
+        For swapping one mode's controller for another's: the serial port is
+        shared for the life of the process, because reopening it toggles DTR,
+        which resets the Uno and loses the position that a rig with no limit
+        switches cannot recover on its own.
+
+        Releasing the prompt is not optional. A controller dropped while the
+        robot thread is blocked mid-capture would leave that thread parked on
+        the Event forever, holding the gantry, and the move would eventually
+        resume into a board nobody is watching. Cancelling abandons it, which
+        is the only safe answer once nobody is left to confirm.
+        """
         self._stop_keepalive.set()
-        # Release anyone blocked on a prompt, or the robot thread never
-        # returns and shutdown hangs. Cancelling is the safe answer: we are
-        # shutting down, so the move must not continue.
         self._confirmed = False
         self._answered.set()
+
+    def close(self):
+        """detach(), and close the port too. For process shutdown."""
+        self.detach()
         self._robot.close()
 
 

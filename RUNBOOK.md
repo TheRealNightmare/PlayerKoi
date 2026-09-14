@@ -18,6 +18,7 @@ here is executable as written — no placeholders to substitute.
 | Play against the engine | [F](#f-playing-against-the-engine) |
 | Play against the robot arm | [G](#g-playing-with-the-robot-arm) |
 | Watch the machine play itself | [G2](#g2-ai-vs-ai-no-camera) |
+| Just start it and pick a mode | [G0](#g0-the-player-koi-menu) |
 | Something broke | [H](#h-gotchas-that-have-actually-bitten) · [I](#i-tuning-knobs) |
 
 ## Machines
@@ -408,6 +409,48 @@ for castling / en passant / promotion.
 
 While a move is pending it's the **only** move the tracker accepts. Undo
 and Edit board override that if you want to deviate.
+
+---
+
+## G0. The Player Koi menu
+
+One launch, and you choose the mode in the browser:
+
+```bash
+python3 src/web_ui.py --robot /dev/ttyACM0        # or 'auto', or 'mock'
+```
+
+Park the carriage on **a8** first — it homes on startup. Then open
+`http://<this-pi>:8000/` and pick a card:
+
+| Card | What it is |
+|---|---|
+| **AI vs AI** | Section [G2](#g2-ai-vs-ai-no-camera) — no camera needed |
+| **Play the engine** | Section [G](#g-playing-with-the-robot-arm) — needs calibration and a model |
+
+A mode you can't run is greyed out with the reason and the script that fixes
+it, so a fresh Pi with no model still gets you into AI vs AI.
+
+The menu also sets skill, think time, move delay and the beginner style before
+you start; the command-line flags become the menu's starting values.
+
+**Back to menu** ends the mode and **parks the carriage at the origin**. The
+game is discarded — re-entering a mode always starts from scratch, which
+matches having to reset the pieces by hand.
+
+**Reset** (on both screens) starts a new game *and* parks. It asks first,
+because the carriage crosses the whole board to get there and will shove
+anything standing in its way. On the menu it parks and nothing more.
+
+The gantry's serial port is opened **once**, for the life of the process —
+reopening it resets the Uno and loses the position — so switching modes never
+costs you a re-park or a re-home.
+
+The old direct commands still work and skip the menu:
+
+```bash
+python3 src/web_ui.py --ai-vs-ai --robot auto     # straight into AI vs AI
+```
 
 ---
 

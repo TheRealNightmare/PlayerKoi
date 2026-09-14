@@ -1,24 +1,33 @@
-"""Live web UI -- a chess.com-style 8x8 board diagram plus the live camera
-feed, with move descriptions in real algebraic notation as pieces are moved.
+"""Player Koi's web UI -- the menu, and both ways of playing behind it.
 
-The board diagram is driven by src/tracking_loop.py's event-gated
-occupancy-read/delta/legal-move pipeline (see that module's docstring)
-rather than a fixed-interval full-frame detection loop: the camera feed
-updates continuously and cheaply, but the board only re-evaluates when
-something has actually settled. Moves are real algebraic notation (SAN) via
-python-chess (src/move_resolver.py), not just a physical before/after
-description.
+One launch serves a mode menu; src/session.py owns which mode is running and
+what it takes to swap one for another. The two are very different stacks:
 
-There is no automatic rescan in this design -- when a settle can't be
-resolved with confidence, the UI flags it and offers a manual "Fix board"
-correction affordance instead (POST /board/correct).
+    Play the engine   camera + classifier + tracking_loop: you move White by
+                      hand, vision reads the board, the arm answers for Black.
+                      The board diagram is driven by tracking_loop's
+                      event-gated occupancy-read/delta/legal-move pipeline
+                      rather than a fixed-interval detection loop -- the feed
+                      updates continuously and cheaply, but the board only
+                      re-evaluates once something has settled.
 
-    python3 src/web_ui.py                      # http://<this-pi>:8000/
-    python3 src/web_ui.py --port 9000
+    AI vs AI          headless_loop: no camera at all. The engine plays both
+                      sides and the arm places every move, so the position is
+                      known rather than observed.
 
-Requires config/calibration.json (run calibrate.py first) and a trained,
-NCNN-exported empty/white/black classifier (see src/collect_square_crops.py
-and training/train_classifier.py).
+Moves are real algebraic notation (SAN) via python-chess, not a physical
+before/after description. There is no automatic rescan in this design -- when
+a settle can't be resolved with confidence the UI flags it and offers a manual
+"Fix board" correction instead (POST /board/correct).
+
+    python3 src/web_ui.py --robot auto         # http://<this-pi>:8000/
+    python3 src/web_ui.py --ai-vs-ai --robot auto    # skip the menu
+
+Nothing is required to reach the menu. "Play the engine" additionally needs
+config/calibration.json (run calibrate.py) and a trained, NCNN-exported
+empty/white/black classifier (see src/collect_square_crops.py and
+training/train_classifier.py); the menu greys it out and says so when they are
+missing, rather than the process refusing to start.
 """
 
 import argparse
@@ -37,6 +46,7 @@ import move_policy
 import rig
 from robot import GantryError, RobotController, open_gantry
 from robot_moves import DEFAULT_TOPPLE_DELAY_S
+from session import AI_VS_AI, MENU, NORMAL, ModeError, Session
 from square_classifier import DEFAULT_MIN_CONF
 
 # picamera2 (capture) and the ncnn classifier loader are imported inside
@@ -59,7 +69,7 @@ PAGE = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MicroChess</title>
+<title>Player Koi</title>
 <style>
   :root { color-scheme: dark; }
   body {
@@ -134,13 +144,66 @@ PAGE = """<!doctype html>
   #picker .opt { width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
                  font-size: 24px; background: #333; border-radius: 4px; cursor: pointer; }
   #picker .opt:hover { background: #555; }
+
+  /* --- shell: one heading, two screens ------------------------------- */
+  #shell { width: 100%; display: flex; flex-direction: column; align-items: center; gap: 18px; }
+  #brand { margin: 0; color: #eee; font-size: 30px; font-weight: 600; letter-spacing: 3px; }
+  #brand span { color: #769656; }
+  #screens { width: 100%; display: flex; flex-wrap: wrap; align-items: flex-start;
+             justify-content: center; gap: 24px; }
+  #menu { display: none; flex-direction: column; align-items: center; gap: 18px; max-width: 760px; }
+  #menuCards { display: flex; flex-wrap: wrap; justify-content: center; gap: 18px; }
+  .card {
+    width: 300px; display: flex; flex-direction: column; gap: 10px; text-align: left;
+    background: #23282e; border: 1px solid #444; border-radius: 8px; padding: 18px;
+  }
+  .card h2 { margin: 0; font-size: 18px; color: #eee; }
+  .card p { margin: 0; font-size: 13px; color: #bbb; line-height: 1.5; }
+  .card.unavailable { opacity: 0.55; }
+  .card .reason { color: #f0ad4e; font-size: 12px; line-height: 1.5; }
+  .card button { align-self: flex-start; }
+  .card button:disabled { cursor: not-allowed; opacity: 0.5; }
+  #menuSettings {
+    display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 16px;
+    color: #bbb; font-size: 13px; background: #23282e; border: 1px solid #444;
+    border-radius: 8px; padding: 14px 18px;
+  }
+  #menuSettings label { display: flex; align-items: center; gap: 6px; }
+  #menuSettings input[type="number"] { width: 62px; background: #1a1a1a; color: #eee;
+                                       border: 1px solid #666; border-radius: 4px; padding: 3px 5px; }
+  #menuError { color: #d9534f; font-size: 13px; min-height: 18px; text-align: center; }
+  #game { display: none; }
+  #sessionRow { display: flex; gap: 10px; }
+  #resetBtn, #menuResetBtn { background: #6a5320; border-color: #f0ad4e; }
+  #resetBtn:hover, #menuResetBtn:hover { background: #866828; }
 </style>
 </head>
 <body>
-  <div class="col">
+<div id="shell">
+  <h1 id="brand">PLAYER <span>KOI</span></h1>
+
+  <div id="menu">
+    <div id="menuCards"></div>
+    <div id="menuSettings">
+      <label>skill <input type="range" id="setSkill" min="0" max="20" step="1"></label>
+      <span id="setSkillVal"></span>
+      <label>think <input type="number" id="setThink" min="0.05" max="10" step="0.05"> s</label>
+      <label>move delay <input type="number" id="setDelay" min="0" max="30" step="0.5"> s</label>
+      <label><input type="checkbox" id="setNoob"> beginner style (few knight moves)</label>
+    </div>
+    <div id="menuError"></div>
+    <button id="menuResetBtn">Reset &amp; park the arm</button>
+  </div>
+
+  <div id="screens">
+  <div class="col" id="game">
     <div id="board"><div id="picker"></div></div>
     <div id="flagBox">
       <div id="flagReason"></div>
+    </div>
+    <div id="sessionRow">
+      <button id="backBtn">&larr; Back to menu</button>
+      <button id="resetBtn">Reset</button>
     </div>
     <div id="controls">
       <button id="editBtn">Edit board</button>
@@ -193,9 +256,11 @@ PAGE = """<!doctype html>
       </div>
     </div>
   </div>
-  <div class="col">
+  <div class="col" id="videoCol">
     <img id="stream" src="/stream.mjpg">
   </div>
+  </div>
+</div>
 <script>
 const GLYPHS = {
   "white-king": "\\u2654", "white-queen": "\\u2655", "white-rook": "\\u2656",
@@ -294,18 +359,34 @@ const engineExtraEl = document.getElementById("engineExtra");
 const engineMsgEl = document.getElementById("engineMsg");
 const engineToggle = document.getElementById("engineToggle");
 
-// AI vs AI: no camera feed to show, and the engine is no longer "Black".
-// Latched, because /board.json is polled every second and this only needs
-// doing once.
-let aiVsAiApplied = false;
-function applyAiVsAi() {
-  if (aiVsAiApplied) return;
-  aiVsAiApplied = true;
+// Which screen is up, and how the game screen is dressed for the mode.
+// Driven from every poll rather than latched once: with a menu you can leave
+// AI vs AI and come back to normal mode, so a one-way switch would be wrong.
+let currentMode = null;
+const menuEl = document.getElementById("menu");
+const gameEl = document.getElementById("game");
+const videoCol = document.getElementById("videoCol");
+const engineTitleEl = document.getElementById("engineTitle");
+const aiNoteEl = document.getElementById("aiNote");
+const engineToggleLabel = document.querySelector("#engineRow label");
+
+function applyMode(mode) {
+  if (mode === currentMode) return;
+  currentMode = mode;
+  const inGame = mode && mode !== "menu";
+  menuEl.style.display = inGame ? "none" : "flex";
+  gameEl.style.display = inGame ? "flex" : "none";
+
+  const ai = mode === "ai_vs_ai";
+  videoCol.style.display = ai || !inGame ? "none" : "flex";
+  aiNoteEl.style.display = ai ? "block" : "none";
+  engineTitleEl.textContent = ai ? "Engine (both sides)" : "Engine (Black)";
+  engineToggleLabel.lastChild.textContent = ai ? " play" : " on";
+
+  // Reconnect the feed when returning to a mode that has one; the <img>
+  // stops retrying once the server has answered 503.
   const img = document.getElementById("stream");
-  if (img) { img.remove(); }
-  document.getElementById("engineTitle").textContent = "Engine (both sides)";
-  document.getElementById("aiNote").style.display = "block";
-  document.querySelector("#engineRow label").lastChild.textContent = " play";
+  if (img && !ai && inGame) img.src = "/stream.mjpg?t=" + Date.now();
 }
 const engineSkill = document.getElementById("engineSkill");
 const engineSkillVal = document.getElementById("engineSkillVal");
@@ -317,9 +398,10 @@ const robotMsgEl = document.getElementById("robotMsg");
 const haltBtn = document.getElementById("haltBtn");
 const homeBtn = document.getElementById("homeBtn");
 const confirmBtn = document.getElementById("confirmBtn");
-// Substituted from rig.PARK_SQUARE when this page is built, so the warning
-// can't drift from the firmware's actual origin.
-const PARK_SQUARE = "__PARK_SQUARE__";
+// Sent with every poll rather than baked into the page: --board-origin is
+// applied after web_ui is imported, so a value substituted at import time
+// would name the wrong corner.
+let PARK_SQUARE = "?";
 
 const BACK_RANK = ["rook", "knight", "bishop", "queen", "king", "bishop", "knight", "rook"];
 
@@ -491,15 +573,161 @@ saveBtn.onclick = async () => {
   }
 };
 
+// ---- the menu -------------------------------------------------------
+
+const menuCardsEl = document.getElementById("menuCards");
+const menuErrorEl = document.getElementById("menuError");
+const setSkill = document.getElementById("setSkill");
+const setSkillVal = document.getElementById("setSkillVal");
+const setThink = document.getElementById("setThink");
+const setDelay = document.getElementById("setDelay");
+const setNoob = document.getElementById("setNoob");
+let settingsSeeded = false;
+
+setSkill.oninput = () => { setSkillVal.textContent = setSkill.value; };
+
+function seedSettings(defaults) {
+  // Once only, from whatever the process was launched with -- after that the
+  // controls belong to the user and polling must not fight them.
+  if (settingsSeeded || !defaults) return;
+  settingsSeeded = true;
+  if (defaults.skill !== undefined) setSkill.value = defaults.skill;
+  if (defaults.think !== undefined) setThink.value = defaults.think;
+  if (defaults.move_delay !== undefined) setDelay.value = defaults.move_delay;
+  if (defaults.noob !== undefined) setNoob.checked = !!defaults.noob;
+  setSkillVal.textContent = setSkill.value;
+}
+
+function renderMenu(modes) {
+  const signature = JSON.stringify(modes);
+  if (menuCardsEl.dataset.signature === signature) return;
+  menuCardsEl.dataset.signature = signature;
+  menuCardsEl.innerHTML = "";
+  for (const m of modes || []) {
+    const card = document.createElement("div");
+    card.className = "card" + (m.available ? "" : " unavailable");
+    const h = document.createElement("h2");
+    h.textContent = m.title;
+    const p = document.createElement("p");
+    p.textContent = m.blurb;
+    card.append(h, p);
+    if (!m.available) {
+      const reason = document.createElement("div");
+      reason.className = "reason";
+      reason.textContent = m.reason;
+      card.appendChild(reason);
+    }
+    const btn = document.createElement("button");
+    btn.textContent = m.available ? "Start" : "Unavailable";
+    btn.disabled = !m.available;
+    btn.onclick = () => startMode(m.mode, btn);
+    card.appendChild(btn);
+    menuCardsEl.appendChild(card);
+  }
+}
+
+async function startMode(mode, btn) {
+  menuErrorEl.textContent = "";
+  btn.disabled = true;
+  btn.textContent = "Starting...";
+  try {
+    const res = await fetch("/mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mode,
+        settings: {
+          skill: Number(setSkill.value),
+          think: Number(setThink.value),
+          move_delay: Number(setDelay.value),
+          noob: setNoob.checked,
+        },
+      }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      menuErrorEl.textContent = body.error || res.statusText;
+      return;
+    }
+    // Skill is an engine option, not a mode setting, so it goes the usual way.
+    await fetch("/engine", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ skill: Number(setSkill.value) }),
+    });
+    applyMode(body.mode);
+  } catch (e) {
+    menuErrorEl.textContent = String(e);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Start";
+    menuCardsEl.dataset.signature = "";  // force a redraw of the buttons
+  }
+}
+
+const backBtn = document.getElementById("backBtn");
+const resetBtn = document.getElementById("resetBtn");
+const menuResetBtn = document.getElementById("menuResetBtn");
+
+backBtn.onclick = async () => {
+  backBtn.disabled = true;
+  try {
+    const res = await fetch("/mode/stop", { method: "POST" });
+    const body = await res.json().catch(() => ({}));
+    if (body.park_error) alert("The arm did not park: " + body.park_error);
+    applyMode("menu");
+    moveLogEl.innerHTML = "";
+    lastMoveEl.textContent = "";
+    lastMoveSeq = -1;
+  } finally {
+    backBtn.disabled = false;
+  }
+};
+
+async function doReset(btn, withGame) {
+  // The carriage crosses the whole board to reach (0,0) and will shove
+  // anything standing in the way, so this always asks first.
+  if (!confirm((withGame ? "Reset the game and park the arm?" : "Park the arm?") +
+               "\\n\\nThe carriage will drive to " + PARK_SQUARE +
+               ", crossing the whole board. Clear its path and keep hands clear.")) {
+    return;
+  }
+  btn.disabled = true;
+  try {
+    const res = await fetch("/reset", { method: "POST" });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || body.error) alert("Reset: " + (body.error || res.statusText));
+    if (withGame) { moveLogEl.innerHTML = ""; lastMoveEl.textContent = ""; lastMoveSeq = -1; }
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+resetBtn.onclick = () => doReset(resetBtn, true);
+menuResetBtn.onclick = () => doReset(menuResetBtn, false);
+
 async function poll() {
   try {
     // ?editing=1 refreshes the server-side pause while the editor is open;
     // if this tab goes away, the pause lapses and tracking resumes.
     const res = await fetch("/board.json" + (editMatrix ? "?editing=1" : ""), { cache: "no-store" });
     const data = await res.json();
-    liveMatrix = data.matrix;
 
-    if (data.ai_vs_ai) applyAiVsAi();
+    if (data.park_square) PARK_SQUARE = data.park_square;
+    seedSettings(data.defaults);
+    applyMode(data.mode);
+    if (data.mode === "menu") {
+      // One poll drives both screens; on the menu there is no board to draw.
+      renderMenu(data.modes);
+      menuResetBtn.style.display = data.has_robot ? "inline-block" : "none";
+      statusEl.textContent = "";
+      lastOk = Date.now();
+      statusEl.classList.remove("stale");
+      setTimeout(poll, 500);
+      return;
+    }
+
+    liveMatrix = data.matrix;
     renderRobot(data.robot);
 
     const eng = data.engine || {};
@@ -558,9 +786,6 @@ poll();
 
 # The page is a static string, so the one rig-dependent value in it is
 # substituted here rather than at request time.
-PAGE = PAGE.replace("__PARK_SQUARE__", rig.PARK_SQUARE)
-
-
 class BoardBuffer:
     """Holds the latest board matrix, move text, flagged status/reason, and
     JPEG frame for the HTTP handler to read -- one lock guards the board
@@ -652,7 +877,12 @@ class EngineController:
         self._headline = None
         self._extra = None
         self._message = None if engine.available else engine.error
-        Thread(target=self._run, daemon=True).start()
+        # Set by close() to end _run. A mode switch builds a new controller
+        # around the same shared engine, so without this each switch would
+        # leak a thread that goes on driving the old mode's loop.
+        self._stopped = Event()
+        self._thread = Thread(target=self._run, daemon=True)
+        self._thread.start()
 
     def state(self):
         with self._lock:
@@ -680,13 +910,25 @@ class EngineController:
                     self._loop.set_expected_move(None)
         self.notify()
 
+    def attach_robot(self, robot):
+        """Hands the controller its arm after the fact.
+
+        Session builds this controller first (it binds to the loop) and the
+        RobotController second (it binds to the same loop), so the link has
+        to be made from outside rather than in either constructor.
+        """
+        with self._lock:
+            self._robot = robot
+
     def notify(self):
         self._wake.set()
 
     def _run(self):
-        while True:
+        while not self._stopped.is_set():
             self._wake.wait(timeout=1.0)
             self._wake.clear()
+            if self._stopped.is_set():
+                return
             try:
                 self._maybe_move()
             except Exception as exc:
@@ -728,6 +970,18 @@ class EngineController:
         # board next -- robot or human -- must match this move or it flags.
         self._loop.set_expected_move(move)
 
+        if self._both_sides and (self._robot is None or not self._robot.ready):
+            # Nobody else is going to place this move, so leaving it armed
+            # would wedge the game: _maybe_move returns early for as long as
+            # an expected move is pending. Clear it and say why, so homing
+            # the arm is enough to get going again.
+            self._loop.set_expected_move(None)
+            with self._lock:
+                state = self._robot.state() if self._robot is not None else {}
+                self._message = (state.get("message")
+                                 or "the arm is not homed -- press Home / re-enable")
+            return
+
         if self._robot is not None and self._robot.ready:
             # Blocking, but this is the engine's own thread with no lock
             # held, which is exactly why the search lives here too.
@@ -744,8 +998,16 @@ class EngineController:
                 time.sleep(self._move_delay_s)
                 self.notify()
 
-    def close(self):
-        self._engine.close()
+    def close(self, timeout=2.0):
+        """Stops the thread. Deliberately does NOT close the engine: the
+        Stockfish process is shared across modes and owned by whoever built
+        it. A move already in flight finishes -- the arm is mid-sequence and
+        cutting it loose is worse than waiting."""
+        self._stopped.set()
+        with self._lock:
+            self._enabled = False
+        self._wake.set()
+        self._thread.join(timeout=timeout)
 
 
 def _validate_correction(body):
@@ -777,8 +1039,14 @@ def _validate_correction(body):
     return None
 
 
-def start_server(host, port, buffer, loop, capture_stream, engine_controller, robot_controller=None,
-                 ai_vs_ai=False):
+def start_server(host, port, buffer, session):
+    """HTTP server that reads `session` live rather than closing over one
+    mode's objects, so a mode switch is visible to the very next request.
+
+    Every game route answers 409 when nothing is running: the menu is a real
+    state, not a degenerate game, and a stale tab polling /board.json after a
+    stop must get a clear answer rather than an exception.
+    """
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     class Handler(BaseHTTPRequestHandler):
@@ -791,7 +1059,15 @@ def start_server(host, port, buffer, loop, capture_stream, engine_controller, ro
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+            elif path == "/state.json":
+                self._send_json(200, self._state_payload())
             elif path == "/board.json":
+                loop = session.loop
+                if loop is None:
+                    # On the menu: answer with the session state alone, so
+                    # one poll drives both screens.
+                    self._send_json(200, self._state_payload())
+                    return
                 # The UI polls with ?editing=1 while its board editor is
                 # open; that refreshes the pause so tracking stays held.
                 # Stop polling (close the tab) and the pause lapses.
@@ -799,7 +1075,10 @@ def start_server(host, port, buffer, loop, capture_stream, engine_controller, ro
                     loop.set_paused(True)
                 matrix, updated_at, last_move, move_seq, flagged, flag_reason = buffer.get_board()
                 rows = matrix if matrix is not None else [[None] * 8 for _ in range(8)]
-                body = json.dumps(
+                robot_controller = session.robot_controller
+                engine_controller = session.engine_controller
+                payload = self._state_payload()
+                payload.update(
                     {
                         "matrix": rows,
                         "updated_at": updated_at,
@@ -809,28 +1088,23 @@ def start_server(host, port, buffer, loop, capture_stream, engine_controller, ro
                         "flag_reason": flag_reason,
                         "turn": loop.turn,
                         "paused": loop.is_paused,
-                        "engine": engine_controller.state(),
-                        "robot": robot_controller.state() if robot_controller is not None else None,
-                        "ai_vs_ai": ai_vs_ai,
+                        "engine": engine_controller.state() if engine_controller else None,
+                        "robot": robot_controller.state() if robot_controller else None,
                     }
-                ).encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                )
+                self._send_json(200, payload)
             elif path == "/stream.mjpg":
-                if ai_vs_ai:
+                if session.capture_stream is None:
                     # No camera in this mode. Answering rather than streaming
                     # nothing forever keeps a stray <img> from holding a
                     # ThreadingHTTPServer thread open for the whole game.
-                    self.send_error(503, "no camera in AI-vs-AI mode")
+                    self.send_error(503, "no camera in this mode")
                     return
                 self.send_response(200)
                 self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
                 self.end_headers()
                 try:
-                    while True:
+                    while session.capture_stream is not None:
                         jpeg = buffer.get_frame()
                         if jpeg is None:
                             time.sleep(0.05)
@@ -844,9 +1118,19 @@ def start_server(host, port, buffer, loop, capture_stream, engine_controller, ro
             else:
                 self.send_error(404)
 
+        def _state_payload(self):
+            state = session.state()
+            # The park corner belongs in the payload, not baked into PAGE:
+            # --board-origin is applied after this module is imported, so a
+            # page built at import time would name the wrong square.
+            state["park_square"] = rig.ORIGIN_SQUARE
+            return state
+
         def do_POST(self):
             path, _, _query = self.path.partition("?")
-            if path not in ("/board/correct", "/board/undo", "/board/pause", "/engine", "/robot"):
+            known = ("/board/correct", "/board/undo", "/board/pause", "/engine",
+                     "/robot", "/mode", "/mode/stop", "/reset")
+            if path not in known:
                 self.send_error(404)
                 return
 
@@ -856,6 +1140,39 @@ def start_server(host, port, buffer, loop, capture_stream, engine_controller, ro
                 body = json.loads(raw) if raw else {}
             except json.JSONDecodeError:
                 self._send_json(400, {"error": "invalid JSON body"})
+                return
+
+            # ---- mode control: valid on the menu, unlike everything else ----
+
+            if path == "/mode":
+                try:
+                    self._send_json(200, {"ok": True, **session.start(
+                        body.get("mode"), body.get("settings"))})
+                except ModeError as exc:
+                    self._send_json(400, {"error": str(exc)})
+                except Exception as exc:  # a camera or model that won't load
+                    self._send_json(500, {"error": f"could not start: {exc}"})
+                return
+
+            if path == "/mode/stop":
+                self._send_json(200, {"ok": True, **session.stop()})
+                return
+
+            if path == "/reset":
+                ok, error = session.reset()
+                payload = {"ok": ok, **self._state_payload()}
+                if not ok:
+                    payload["error"] = error
+                self._send_json(200 if ok else 400, payload)
+                return
+
+            # ---- everything below needs a running mode --------------------
+
+            loop = session.loop
+            engine_controller = session.engine_controller
+            robot_controller = session.robot_controller
+            if loop is None:
+                self._send_json(409, {"error": "no mode is running -- pick one first"})
                 return
 
             if path == "/engine":
@@ -908,8 +1225,7 @@ def start_server(host, port, buffer, loop, capture_stream, engine_controller, ro
                 return
 
             if path == "/board/undo":
-                frame, _timestamp = capture_stream.get_latest()
-                san = loop.undo_last_move(frame)
+                san = loop.undo_last_move(self._frame())
                 if san is None:
                     self._send_json(400, {"error": "nothing to undo"})
                 else:
@@ -921,11 +1237,18 @@ def start_server(host, port, buffer, loop, capture_stream, engine_controller, ro
                 self._send_json(400, {"error": error})
                 return
 
-            frame, _timestamp = capture_stream.get_latest()
-            loop.apply_manual_correction(body["matrix"], body["turn"], frame)
+            loop.apply_manual_correction(body["matrix"], body["turn"], self._frame())
             # Saving the editor ends the edit session, so lift the pause.
             loop.set_paused(False)
             self._send_json(200, {"ok": True})
+
+        def _frame(self):
+            """The latest camera frame, or None in a mode that has none."""
+            stream = session.capture_stream
+            if stream is None:
+                return None
+            frame, _timestamp = stream.get_latest()
+            return frame
 
         def _send_json(self, status, payload):
             body = json.dumps(payload).encode("utf-8")
@@ -1032,169 +1355,170 @@ def _open_robot(args):
     return robot
 
 
-def run_ai_vs_ai(args):
-    """Stockfish against itself, with the arm placing every move.
+def _make_builders(args, engine, buffer, session_ref):
+    """The two per-mode stacks, as callables for Session.
 
-    No camera anywhere in this path: HeadlessLoop is the position, so the
-    physical board has to start in the standard 32-piece setup or everything
-    after the first move is a lie. Nothing here verifies that -- it can't.
+    Both are closures rather than methods so session.py stays free of the
+    camera stack entirely -- importing picamera2 or ncnn is what would stop
+    --ai-vs-ai running off the Pi, and that import must not happen until
+    normal mode is actually asked for.
 
-    The engine's own thread drives the whole game; this one only serves HTTP
-    and waits, which is why there is no tick() loop.
+    Each returns (loop, capture_stream, engine_controller, tick).
     """
-    engine = ChessEngine(command=args.engine_command, skill=args.engine_skill)
-    if not engine.available:
-        raise SystemExit(f"Engine: {engine.error}")
-    noob = True if args.noob is None else args.noob
-    print("Engine: Stockfish ready (playing both sides"
-          + (", beginner style)." if noob else ")."))
 
-    robot = _open_robot(args)
-
-    buffer = BoardBuffer()
-    robot_controller = None
-    try:
+    def on_update_factory(harvester=None):
         def on_update(matrix, move_text, frame, flagged, reason):
             buffer.set_board(matrix, move_text, flagged, reason)
+            if harvester is not None and move_text is not None and not flagged:
+                harvester.record(matrix, frame)
+            session = session_ref()
+            # An unresolvable settle right after the arm moved means the
+            # physical board and the tracked position have diverged. Stop the
+            # arm before it stacks another move on top.
+            if flagged and session is not None and session.robot_controller is not None:
+                session.robot_controller.note_flag(reason)
+            # Just a poke -- the engine thinks on its own thread, since this
+            # runs with the loop's lock held.
+            if session is not None and session.engine_controller is not None:
+                session.engine_controller.notify()
 
-        loop = HeadlessLoop(on_update=on_update)
+        return on_update
+
+    def setting(settings, name, fallback):
+        value = settings.get(name)
+        return fallback if value is None else value
+
+    def build_ai(settings):
+        """No camera anywhere in this path: HeadlessLoop is the position, so
+        the physical board must start in the standard 32-piece setup or
+        everything after the first move is a lie. Nothing verifies that."""
+        loop = HeadlessLoop(on_update=on_update_factory())
         buffer.set_board(loop.current_matrix, None, False, None)  # seed the UI
-
-        robot_controller = RobotController(robot, loop)
-        print("Homing the gantry -- keep hands clear...")
-        ok, error = robot_controller.home()
-        print("Robot: homed and ready." if ok else f"Robot: {error}")
-
-        engine_controller = EngineController(
-            loop, engine, think_s=args.engine_think, robot=robot_controller,
-            both_sides=True, move_delay_s=args.move_delay, noob=noob,
+        controller = EngineController(
+            loop, engine,
+            think_s=setting(settings, "think", args.engine_think),
+            robot=None,  # attached below, once Session has built it
+            both_sides=True,
+            move_delay_s=setting(settings, "move_delay", args.move_delay),
+            noob=bool(setting(settings, "noob", True)),
         )
-        start_server(args.host, args.port, buffer, loop, NullStream(),
-                     engine_controller, robot_controller, ai_vs_ai=True)
+        return loop, None, controller, None
+
+    def build_normal(settings):
+        # Imported here, not at module scope: picamera2 and the ncnn loader
+        # are the reason this mode can't run off the Pi, and AI vs AI must not
+        # pay for them.
+        from capture import Camera, CaptureStream
+        from harvest import CropHarvester
+        from square_classifier import load_classifier
+        from square_geometry import square_pixel_bboxes
+        from tracking_loop import TrackingLoop
+
+        calibration_matrix = load_calibration(args.calibration)
+        classifier_model = load_classifier(str(args.classifier))
+
+        camera = Camera()
+        camera.open()
+        stream = CaptureStream(camera)
+        stream.start()
+        frame = None
+        while frame is None:
+            frame, _timestamp = stream.get_latest()
+        image_size = (frame.shape[1], frame.shape[0])
+
+        harvester = None
+        if args.harvest is not None:
+            harvester = CropHarvester(
+                args.harvest, square_pixel_bboxes(calibration_matrix, image_size)
+            )
+
+        loop = TrackingLoop(
+            capture_stream=stream,
+            calibration_matrix=calibration_matrix,
+            image_size=image_size,
+            classifier_model=classifier_model,
+            on_update=on_update_factory(harvester),
+            poll_interval=args.poll_interval,
+            classifier_min_conf=args.min_conf,
+            motion_thresh=args.motion_thresh,
+        )
+        buffer.set_board(loop.current_matrix, None, False, None)
+        controller = EngineController(
+            loop, engine,
+            think_s=setting(settings, "think", args.engine_think),
+            robot=None,
+            both_sides=False,
+            noob=bool(setting(settings, "noob", False)),
+        )
+
+        def tick():
+            live_frame, _timestamp = stream.get_latest()
+            if live_frame is not None:
+                buffer.set_frame(live_frame)
+            loop.tick()
+
+        # CaptureStream.stop() is the teardown hook; Session calls .close().
+        stream.close = lambda: (stream.stop(), camera.close())
+        return loop, stream, controller, tick
+
+    return build_normal, build_ai
+
+
+def main():
+    args = parse_args()
+
+    engine = ChessEngine(command=args.engine_command, skill=args.engine_skill)
+    print("Engine: Stockfish ready." if engine.available else f"Engine: {engine.error}")
+
+    robot = _open_robot(args) if args.robot else None
+    if robot is not None:
+        # Once, here: the port stays open for the life of the process, so a
+        # mode switch never costs a re-home. The human has already parked the
+        # carriage -- this is where that promise is cashed in.
+        print("Homing the gantry -- keep hands clear...")
+        try:
+            robot.home()
+            print("Robot: homed and ready.")
+        except GantryError as exc:
+            print(f"Robot: {exc}")
+
+    buffer = BoardBuffer()
+    holder = {}
+    build_normal, build_ai = _make_builders(args, engine, buffer, lambda: holder.get("session"))
+
+    session = Session(
+        engine, robot=robot,
+        calibration=args.calibration, classifier=args.classifier,
+        build_normal=build_normal, build_ai=build_ai,
+        poll_interval=args.poll_interval,
+        defaults={
+            "skill": args.engine_skill,
+            "think": args.engine_think,
+            "move_delay": args.move_delay,
+            "noob": True if args.noob is None else args.noob,
+        },
+    )
+    holder["session"] = session
+
+    try:
+        start_server(args.host, args.port, buffer, session)
         print(f"Serving at http://<this-pi>:{args.port}/")
-        print("Set up all 32 pieces, then press Play in the UI.")
+
+        if args.ai_vs_ai:
+            # The old command line still lands straight in the game.
+            session.start(AI_VS_AI, {"noob": True if args.noob is None else args.noob,
+                                     "move_delay": args.move_delay,
+                                     "think": args.engine_think})
+            print("Started AI vs AI. Set up all 32 pieces, then press play.")
+        else:
+            print("Open the page and pick a mode.")
 
         while True:
             time.sleep(1.0)
     except KeyboardInterrupt:
         print("Stopped.")
     finally:
-        engine.close()
-        if robot_controller is not None:
-            robot_controller.close()  # drops the coil, closes the port
-        else:
-            robot.close()
-
-
-def main():
-    args = parse_args()
-
-    if args.ai_vs_ai:
-        if not args.robot:
-            raise SystemExit("--ai-vs-ai needs --robot: with no arm, nothing would move. "
-                             "Use --robot mock for a dry run.")
-        return run_ai_vs_ai(args)
-
-    if not args.calibration.exists():
-        raise SystemExit(f"No calibration found at {args.calibration} -- run calibrate.py first.")
-    if not args.classifier.exists():
-        raise SystemExit(
-            f"No classifier model found at {args.classifier} -- see src/collect_square_crops.py "
-            "and training/train_classifier.py to train/export one."
-        )
-
-    from capture import Camera, CaptureStream
-    from harvest import CropHarvester
-    from square_classifier import load_classifier
-    from square_geometry import square_pixel_bboxes
-    from tracking_loop import TrackingLoop
-
-    calibration_matrix = load_calibration(args.calibration)
-    print("Loading classifier...")
-    classifier_model = load_classifier(str(args.classifier))
-
-    engine = ChessEngine(command=args.engine_command, skill=args.engine_skill)
-    print("Engine: Stockfish ready." if engine.available else f"Engine: {engine.error}")
-
-    robot = _open_robot(args) if args.robot else None
-
-    buffer = BoardBuffer()
-    engine_controller = None
-    robot_controller = None
-    print("Running. Ctrl+C to stop.")
-    try:
-        with Camera() as cam, CaptureStream(cam) as stream:
-            frame = None
-            while frame is None:
-                frame, _timestamp = stream.get_latest()
-            image_size = (frame.shape[1], frame.shape[0])
-
-            harvester = None
-            if args.harvest is not None:
-                harvester = CropHarvester(
-                    args.harvest, square_pixel_bboxes(calibration_matrix, image_size)
-                )
-                print(f"Harvesting labelled crops to {args.harvest}")
-
-            def on_update(matrix, move_text, frame, flagged, reason):
-                buffer.set_board(matrix, move_text, flagged, reason)
-                # Only a resolved move is trustworthy ground truth. Undo
-                # reports the reverted position while the physical board
-                # still shows the post-move one, so harvesting there would
-                # write mislabelled crops -- see harvest.py.
-                if harvester is not None and move_text is not None and not flagged:
-                    harvester.record(matrix, frame)
-                # An unresolvable settle right after the arm moved means the
-                # physical board and the tracked position have diverged.
-                # Stop the arm before it stacks another move on top.
-                if flagged and robot_controller is not None:
-                    robot_controller.note_flag(reason)
-                # Just a poke -- the engine thinks on its own thread, since
-                # this runs with TrackingLoop's lock held.
-                if engine_controller is not None:
-                    engine_controller.notify()
-
-            loop = TrackingLoop(
-                capture_stream=stream,
-                calibration_matrix=calibration_matrix,
-                image_size=image_size,
-                classifier_model=classifier_model,
-                on_update=on_update,
-                poll_interval=args.poll_interval,
-                classifier_min_conf=args.min_conf,
-                motion_thresh=args.motion_thresh,
-            )
-            buffer.set_board(loop.current_matrix, None, False, None)  # seed the UI before any move happens
-
-            if robot is not None:
-                robot_controller = RobotController(robot, loop)
-                print("Homing the gantry -- keep hands clear...")
-                ok, error = robot_controller.home()
-                print("Robot: homed and ready." if ok else f"Robot: {error}")
-
-            engine_controller = EngineController(
-                loop, engine, think_s=args.engine_think, robot=robot_controller,
-                noob=bool(args.noob),
-            )
-            start_server(
-                args.host, args.port, buffer, loop, stream, engine_controller, robot_controller
-            )
-            print(f"Serving at http://<this-pi>:{args.port}/")
-
-            while True:
-                live_frame, _timestamp = stream.get_latest()
-                if live_frame is not None:
-                    buffer.set_frame(live_frame)
-                loop.tick()
-                time.sleep(args.poll_interval)
-    except KeyboardInterrupt:
-        print("Stopped.")
-    finally:
-        engine.close()  # don't leave the Stockfish subprocess behind
-        if robot_controller is not None:
-            robot_controller.close()  # drops the coil, closes the port
-        elif robot is not None:
-            robot.close()
+        session.close()
 
 
 if __name__ == "__main__":
