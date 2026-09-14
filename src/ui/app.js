@@ -171,6 +171,17 @@ const robotMsgEl = document.getElementById("robotMsg");
 const haltBtn = document.getElementById("haltBtn");
 const homeBtn = document.getElementById("homeBtn");
 const confirmBtn = document.getElementById("confirmBtn");
+const staleFirmwareEl = document.getElementById("staleFirmware");
+const polarityRadios = document.querySelectorAll('input[name="whitePolarity"]');
+
+// The white magnets are fitted the other way up on this set, so the coil has
+// to drive the opposite way to hold them. Which way that is was worth getting
+// wrong once; this makes it a click rather than a reflash.
+for (const radio of polarityRadios) {
+  radio.onchange = () => {
+    if (radio.checked) postRobot({ white_polarity: radio.value }, radio);
+  };
+}
 // Sent with every poll rather than baked into the page: --board-origin is
 // applied after web_ui is imported, so a value substituted at import time
 // would name the wrong corner.
@@ -299,6 +310,17 @@ function renderRobot(bot) {
   if (bot.awaiting_confirm) { state = "WAITING FOR YOU"; color = "yellow"; }
   robotStateEl.textContent = state + " (" + bot.port + ")";
   robotStateEl.dataset.color = color;
+
+  // An out-of-date board accepts every command and silently attracts for all
+  // of them, so it would shove a white piece off the table. Say so plainly.
+  staleFirmwareEl.hidden = !bot.stale_firmware;
+  if (bot.stale_firmware) staleFirmwareEl.textContent = bot.message || "firmware is out of date";
+
+  for (const radio of polarityRadios) {
+    radio.disabled = !!bot.stale_firmware;
+    // Don't fight a click that is still in flight.
+    if (document.activeElement !== radio) radio.checked = bot.white_polarity === radio.value;
+  }
 
   robotNoteEl.textContent = bot.note || "";
   // The alerts are real panels now, so an empty one would still draw a box.

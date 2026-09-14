@@ -47,8 +47,14 @@ Three things that are easy to get wrong:
   is being carried, and the firmware flips both the hold and the release kick
   to match (`WHITE_IS_REVERSED` in the sketch). Omitting it means "not
   reversed", so the bench commands in this document still work as written.
-  Check a piece by hand with `MAG 1` (attract: holds black) and `MAG 2`
-  (repel: holds white).
+  Check it with `POLTEST <square>`: park a white piece there and watch which
+  of the two phases holds it. Do that rather than judging from a game move —
+  the carriage has to be centred under the piece for the answer to mean
+  anything, and reading it off a move got the direction backwards once.
+
+  The polarity is a runtime setting (`POL`), stored host-side in
+  `config/rig.json` and pushed on every connect, so you can change it from the
+  web UI without reflashing.
 - **There are no limit switches on this build.** Position is dead reckoning
   from an assumed park at h1. Nothing can detect that it is wrong.
 - **"h1" here means the firmware's h1, which is physically the a8 corner.**
@@ -66,7 +72,7 @@ stop there rather than continuing — later steps assume the earlier ones.
 | # | Do | Expect |
 |---|---|---|
 | 1 | Flash `chessbot_v1.ino` | compiles and uploads |
-| 2 | Open the serial monitor at 115200 | `READY ChessBot-V1` |
+| 2 | Open the serial monitor at 115200 | `READY ChessBot-V1 r2` — **if there is no `r2`, the sketch is stale; re-upload it** |
 | 3 | **Park the carriage on the origin corner by hand** (physically a8 — see above) | — |
 | 4 | `PING` | `OK PONG` |
 | 5 | `POS` | `OK POS 0.0 0.0` |
@@ -104,6 +110,9 @@ move has finished"; the Pi never has to guess.
 | `GOTO e4` | `OK GOTO e4` | repositions the carriage, magnet untouched |
 | `MAG 0\|1\|2` | `OK MAG n` | coil off / attract / repel |
 | `PULSE` | `OK PULSE` | brief reverse kick, clears residual magnetism so the piece lets go |
+| `POL` | `OK POL 1` | what holds a WHITE piece: 1 = repel, 0 = attract |
+| `POL 0\|1` | `OK POL <n>` | set it, live. RAM only — re-sent by the host on every connect |
+| `POLTEST e2` | `OK POLTEST e2` | park there, attract 2 s, then repel 2 s. Watch which one holds the piece |
 | `HOME` | `OK HOME` | returns to the origin (h1) and drops the coil |
 | `POS` | `OK POS x y` | current position in mm |
 | `MM -105 100` | `OK MM x y` | move to raw machine coordinates |

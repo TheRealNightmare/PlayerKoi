@@ -504,12 +504,27 @@ already thinks it's a queen.
 Fix the physical board with **Edit board** or **Undo last move**, then press
 **Home / re-enable**. It will not move again until you do.
 
+**If the arm shoves white pieces off the board**, the coil polarity is wrong
+for them — their magnets are fitted the other way up from the black ones. Park
+a white piece and run `POLTEST e2` from the bench console: one phase holds it,
+the other pushes it. Set that in the **Robot arm** panel (*White pieces held
+by: attract / repel*); it is saved to `config/rig.json` and reapplied on every
+start.
+
+**If the UI says the firmware is out of date**, re-upload
+`firmware/chessbot_v1/chessbot_v1.ino`. The arm refuses to move until you do,
+and that is deliberate: an old board accepts the polarity suffix and silently
+ignores it, so every white move would shove a piece. Check with the startup
+line — it should say `firmware r2` or higher.
+
 **Bench console** for poking the gantry directly, without any chess:
 
 ```bash
 python3 src/robot.py --port /dev/ttyACM0 --console
 gantry> HOME
 gantry> GOTO 3.5 4
+gantry> POLTEST e2      # which polarity holds the piece on e2?
+gantry> POL 1           # 1 = white held by repel, 0 = by attract
 gantry> MAG 170
 gantry> OFF
 ```

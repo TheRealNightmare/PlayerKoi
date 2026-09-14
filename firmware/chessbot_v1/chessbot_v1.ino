@@ -32,6 +32,11 @@
                           polarity flips with it. Omitting it means "not
                           reversed", which is what the bench console wants.
      GOTO e4           -> OK GOTO e4        reposition, magnet untouched
+     POL               -> OK POL 1          read the white-magnet polarity
+     POL 0|1           -> OK POL <n>        1 = white is held by REPEL
+     POLTEST e2        -> OK POLTEST e2     park there, then attract 2s /
+                                            repel 2s, so you can see which
+                                            way actually holds the piece
      MAG 0|1|2         -> OK MAG n          off / attract / repel
      PULSE             -> OK PULSE          reverse kick, clears residual
      HOME              -> OK HOME           return to origin
@@ -98,10 +103,18 @@ unsigned int stepDelayUS;
 
 // ---------- magnet ----------
 // Cap at 255 only if the buck really is at ~6V. Lower if running on cells.
+// Bumped whenever the serial protocol changes in a way the host must know
+// about. It rides in the READY banner, and src/robot.py refuses to drive a
+// board older than it expects -- r1 had no polarity suffix at all and would
+// silently attract for every move, shoving every white piece off its square.
+#define FIRMWARE_REV 2
+
 // Measured on this set: the white pieces' magnets are the other way up, so
-// they need the opposite coil polarity from the black ones. If a rebuilt set
-// ever has them consistent, set this false and nothing else changes.
+// they need the opposite coil polarity from the black ones. This is only the
+// power-on default -- POL changes it at runtime, because finding the right
+// direction by reflashing once per guess is miserable.
 const bool WHITE_IS_REVERSED = true;
+bool whiteReversed = WHITE_IS_REVERSED;
 
 const int MAG_FULL  = 255;
 const int MAG_WEAVE = 170;
@@ -134,7 +147,10 @@ void setup() {
 
   // The Uno resets when the Pi opens the port. This banner tells the
   // host the board is up and ready to accept commands.
-  Serial.println("READY ChessBot-V1");
+  // The "READY ChessBot-V1" prefix is load-bearing -- robot.py waits on
+  // "READY" and docs/CONNECTION.md quotes this line. The revision is appended
+  // so a host can tell r1 from r2 without any new handshake.
+  Serial.println("READY ChessBot-V1 r" + String(FIRMWARE_REV));
 }
 
 void loop() {
@@ -196,6 +212,45 @@ void handleCommand(String line) {
     else if (m == 2) magRepel(MAG_FULL);
     else { Serial.println("ERR mag 0|1|2"); return; }
     Serial.println("OK MAG " + String(m));
+  }
+
+  // Which way the coil must drive to HOLD a white piece. 1 = the white
+  // magnets are reversed, so white is held by repel and black by attract;
+  // 0 = both colours the same, held by attract.
+  //
+  // RAM only, on purpose. Opening the serial port toggles DTR and reboots the
+  // Uno, so the host has to re-send this on every connect regardless -- and
+  // one source of truth beats an EEPROM copy that can disagree with it.
+  else if (cmd == "POL") {
+    if (arg.length() > 0) {
+      if (arg == "0")      whiteReversed = false;
+      else if (arg == "1") whiteReversed = true;
+      else { Serial.println("ERR pol 0|1"); return; }
+    }
+    Serial.println("OK POL " + String(whiteReversed ? 1 : 0));
+  }
+
+  // Bench aid: park on a square and drive the coil each way in turn, so
+  // "which polarity holds this piece?" is one command with the carriage
+  // provably centred. Guessing that from a game move is how the polarity got
+  // diagnosed backwards once already.
+  else if (cmd == "POLTEST") {
+    if (arg.length() < 2) { Serial.println("ERR bad square"); return; }
+    int f = arg.charAt(0) - 'a';
+    int r = arg.charAt(1) - '1';
+    if (f < 0 || f > 7 || r < 0 || r > 7) { Serial.println("ERR bad square"); return; }
+    if (!gotoSquare(f, r)) { Serial.println("ERR out of range"); return; }
+
+    Serial.println("-- ATTRACT for 2s (holds BLACK on this set)");
+    magAttract(MAG_FULL);
+    delay(2000);
+    magOff();
+    delay(500);
+    Serial.println("-- REPEL for 2s (holds WHITE on this set)");
+    magRepel(MAG_FULL);
+    delay(2000);
+    magOff();
+    Serial.println("OK POLTEST " + arg);
   }
 
   else if (cmd == "PULSE") {
@@ -278,8 +333,14 @@ bool parseColour(const String &arg, bool &reversed) {
   rest.trim();
   rest.toLowerCase();
   if (rest.length() == 0) { reversed = false; return true; }
-  if (rest == "w")        { reversed = WHITE_IS_REVERSED; return true; }
-  if (rest == "b")        { reversed = !WHITE_IS_REVERSED; return true; }
+  // Black is the reference and is never reversed: attract holds it, which is
+  // what r1 did for every piece and why black always played correctly. Only
+  // white can differ, which is exactly what `whiteReversed` names.
+  //
+  // NOT !whiteReversed -- that quietly made black repel whenever white was
+  // set normal, so POL 0 would have broken the colour that already worked.
+  if (rest == "w")        { reversed = whiteReversed; return true; }
+  if (rest == "b")        { reversed = false; return true; }
   return false;
 }
 

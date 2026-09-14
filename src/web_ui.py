@@ -50,6 +50,7 @@ from engine import DEFAULT_SKILL, DEFAULT_THINK_S, ChessEngine, describe_move
 from headless_loop import HeadlessLoop, NullStream
 import move_policy
 import rig
+import rig_config
 from robot import GantryError, RobotController, open_gantry
 from robot_moves import DEFAULT_TOPPLE_DELAY_S
 from session import AI_VS_AI, MENU, NORMAL, ModeError, Session
@@ -531,6 +532,20 @@ def start_server(host, port, buffer, session):
                         return
                     self._send_json(200, {"ok": True, "robot": robot_controller.state()})
                     return
+                if body.get("white_polarity"):
+                    polarity = body["white_polarity"]
+                    if polarity not in rig_config.POLARITIES:
+                        self._send_json(400, {"error": f"polarity must be one of "
+                                                       f"{list(rig_config.POLARITIES)}"})
+                        return
+                    try:
+                        robot_controller.set_white_polarity(polarity)
+                    except (GantryError, ValueError) as exc:
+                        self._send_json(400, {"error": str(exc),
+                                              "robot": robot_controller.state()})
+                        return
+                    self._send_json(200, {"ok": True, "robot": robot_controller.state()})
+                    return
                 if body.get("home"):
                     # Homing crosses the board, so it must not race a settle.
                     loop.set_paused(True, lapse_s=60.0)
@@ -620,6 +635,12 @@ def parse_args():
                              "moves that make the arm weave, which is its riskiest "
                              "motion). Costs about 2x --engine-think per move. "
                              "Default: on with --ai-vs-ai, off otherwise")
+    parser.add_argument("--white-polarity", choices=rig_config.POLARITIES, default=None,
+                        help="what the coil must do to HOLD a white piece. The white "
+                             "magnets are fitted the other way up on this set, so "
+                             "'repel' holds them and 'attract' shoves them off the "
+                             "square. Saved to config/rig.json; omit to use the saved "
+                             "value. Changeable live in the UI")
     parser.add_argument("--board-origin", default=rig.ORIGIN_SQUARE,
                         choices=rig.SUPPORTED_ORIGINS,
                         help="which real square the carriage parks on, i.e. how the board "
@@ -656,15 +677,26 @@ def _open_robot(args):
     # not of a single move, so it lives on rig rather than being threaded
     # through every planner call. Both planners read it from there.
     rig.ORIGIN_SQUARE = args.board_origin
+    if args.white_polarity:
+        rig_config.save(args.white_polarity)
     try:
         robot = open_gantry(args.robot, topple_delay_s=args.topple_delay,
-                            protocol=args.robot_protocol)
+                            protocol=args.robot_protocol,
+                            white_polarity=args.white_polarity)
     except GantryError as exc:
         raise SystemExit(f"Robot: {exc}")
     except ImportError:
         raise SystemExit("Robot: pyserial is missing -- pip install -r requirements.txt")
 
-    print(f"Robot: gantry on {robot.port} ({args.robot_protocol} protocol).")
+    print(f"Robot: gantry on {robot.port} ({args.robot_protocol} protocol), "
+          f"firmware r{robot.firmware_rev}.")
+    if robot.stale_firmware:
+        # Loud, and it will refuse to move -- an r1 board silently attracts
+        # for every move, so the first white move shoves a piece off the board.
+        print(f"Robot: !! {robot.message}")
+    else:
+        print(f"Robot: white pieces are held by {robot.white_polarity.upper()} "
+              "(change it in the UI, or with --white-polarity).")
     if args.robot_protocol == "legacy":
         # No limit switches on this build: HOME drives to the assumed origin
         # rather than seeking it, so "homed" is a promise the human makes,
@@ -798,7 +830,9 @@ def main():
     print("Engine: Stockfish ready." if engine.available else f"Engine: {engine.error}")
 
     robot = _open_robot(args) if args.robot else None
-    if robot is not None:
+    if robot is not None and robot.stale_firmware:
+        print("Robot: not homing -- reflash first.")
+    elif robot is not None:
         # Once, here: the port stays open for the life of the process, so a
         # mode switch never costs a re-home. The human has already parked the
         # carriage -- this is where that promise is cashed in.

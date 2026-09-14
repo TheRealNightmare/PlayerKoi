@@ -125,6 +125,14 @@
       <div id="robotNote"></div>
       <div id="robotPrompt" class="nr-alert nr-clr nr-border" data-color="yellow" hidden></div>
       <div id="robotMsg" class="nr-alert nr-clr nr-border" data-color="red" hidden></div>
+      <div id="staleFirmware" class="nr-alert nr-clr nr-border" data-color="red" hidden></div>
+      <div id="polarityRow">
+        <span class="nr-label">White pieces held by</span>
+        <label class="nr-label"><input type="radio" class="nr-check" name="whitePolarity"
+               value="attract" data-color="cyan"> attract</label>
+        <label class="nr-label"><input type="radio" class="nr-check" name="whitePolarity"
+               value="repel" data-color="cyan"> repel</label>
+      </div>
       <div id="robotRow">
         <button id="confirmBtn" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
                 data-color="green" data-pressable>Done — piece removed</button>

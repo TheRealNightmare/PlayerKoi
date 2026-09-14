@@ -24,6 +24,8 @@ import sys
 import time
 from threading import Event, Lock, Thread
 
+import rig
+import rig_config
 import robot_moves
 from tracking_loop import PAUSE_LAPSE_S
 
@@ -49,6 +51,7 @@ class GantryLink:
     def __init__(self, port, baud=BAUD, timeout=COMMAND_TIMEOUT_S):
         import serial  # pyserial; imported here so MockGantry works without it
 
+        self.banner = None
         self._timeout = timeout
         # Read timeout is short and polled, so a long command (homing) can
         # still be given its full budget while an unplugged board fails
@@ -65,6 +68,9 @@ class GantryLink:
             # startswith, not ==: chessbot_v1 announces itself as
             # "READY ChessBot-V1" while chess_gantry sends a bare "READY".
             if line.startswith("READY"):
+                # Kept so the caller can read the firmware revision out of it
+                # -- see rig.banner_rev and Robot.stale_firmware.
+                self.banner = line
                 return
         raise GantryError(
             f"no READY banner from {self.port} within {READY_TIMEOUT_S:.0f}s -- "
@@ -115,16 +121,23 @@ class MockGantry:
     """Acks everything, moves nothing. Makes `--robot mock` a full dry run
     of the whole stack -- planner, controller, web UI -- with no hardware."""
 
-    def __init__(self, log=None):
+    def __init__(self, log=None, banner=None):
         self.commands = []
         self.port = "mock"
         self._log = log
+        # Pretends to be a current board, so a dry run exercises the same
+        # path a flashed rig does. Pass an older banner to test the refusal.
+        self.banner = banner if banner is not None else f"READY ChessBot-V1 r{rig.FIRMWARE_REV}"
 
     def send(self, command):
         self.commands.append(command)
         if self._log:
             self._log(f"[gantry] {command}")
-        return "0.00 0.00 1" if command == "STATUS" else ""
+        if command == "STATUS":
+            return "0.00 0.00 1"
+        if command.startswith("POL"):
+            return command[3:].strip() or "1"
+        return ""
 
     def abort(self):
         self.commands.append("!")
@@ -162,9 +175,31 @@ class Robot:
         self.message = None
         self.busy = False
 
+        # A board older than this code expects. Kept apart from `halted`
+        # because home() clears a halt on purpose -- re-homing is the recovery
+        # path -- and re-homing plainly does not reflash an Arduino. An r1
+        # board accepts every command we send and silently attracts for all of
+        # them, so it would shove a white piece off the board on move one.
+        # Set by open_gantry once it has read the saved config; None means
+        # nobody has told the board yet.
+        self.white_polarity = None
+        self.firmware_rev = rig.banner_rev(getattr(link, "banner", None))
+        self.stale_firmware = self.firmware_rev < rig.FIRMWARE_REV
+        if self.stale_firmware:
+            self.message = (
+                f"firmware is r{self.firmware_rev}, this needs r{rig.FIRMWARE_REV} -- "
+                "reflash firmware/chessbot_v1/chessbot_v1.ino "
+                "(an r1 board ignores the w|b polarity and shoves white pieces)"
+            )
+
     @property
     def port(self):
         return self._link.port
+
+    @property
+    def ready(self):
+        """Whether a move may be attempted at all."""
+        return self.homed and not self.halted and not self.stale_firmware
 
     def set_prompt_callback(self, on_prompt):
         """Who answers a blocking prompt. Set by RobotController, which is
@@ -179,7 +214,14 @@ class Robot:
     def home(self):
         """Homes the gantry and clears a halt. This is also the re-enable
         path after an error, which is why it clears `halted`: the whole
-        point of re-homing is to re-establish a trustworthy position."""
+        point of re-homing is to re-establish a trustworthy position.
+
+        Refuses outright on stale firmware. Homing is harmless there, but
+        letting it succeed would clear the message and leave the UI claiming
+        the arm is ready when the very next move would shove a piece.
+        """
+        if self.stale_firmware:
+            raise GantryError(self.message)
         with self._lock:
             self.busy = True
         try:
@@ -197,6 +239,20 @@ class Robot:
             with self._lock:
                 self.busy = False
             self._on_status(None, None)
+
+    def set_white_polarity(self, polarity):
+        """Tell the board what holds a white piece, and remember it.
+
+        Re-sent on every connect by open_gantry, because opening the port
+        reboots the Uno and it forgets. Saving is the caller's job -- this
+        layer doesn't know about config files.
+        """
+        if polarity not in rig_config.POLARITIES:
+            raise ValueError(f"unknown polarity {polarity!r}")
+        self._link.send(rig_config.pol_command(polarity))
+        with self._lock:
+            self.white_polarity = polarity
+        return polarity
 
     def raw(self, command):
         """Sends a firmware command directly. For the bench console during
@@ -221,6 +277,8 @@ class Robot:
         GantryError -- with the robot halted and the coil dropped -- if
         anything goes wrong mid-sequence."""
         with self._lock:
+            if self.stale_firmware:
+                raise GantryError(self.message)
             if self.halted:
                 raise GantryError(f"robot is halted: {self.message}")
             if not self.homed:
@@ -362,11 +420,14 @@ class RobotController:
                 "prompt": self._prompt,
                 "awaiting_confirm": self._awaiting,
                 "message": self._robot.message,
+                "firmware_rev": self._robot.firmware_rev,
+                "stale_firmware": self._robot.stale_firmware,
+                "white_polarity": self._robot.white_polarity,
             }
 
     @property
     def ready(self):
-        return self._robot.homed and not self._robot.halted
+        return self._robot.ready
 
     def home(self):
         """Also the recovery path: home() clears the halt, because re-homing
@@ -376,6 +437,13 @@ class RobotController:
             return True, None
         except GantryError as exc:
             return False, str(exc)
+
+    def set_white_polarity(self, polarity):
+        """Applies the setting to the board and saves it, so the next launch
+        starts with whatever was found to work."""
+        applied = self._robot.set_white_polarity(polarity)
+        rig_config.save(applied)
+        return applied
 
     def halt(self, reason="halted from the web UI"):
         # Free a blocked prompt first, otherwise a halt requested while the
@@ -460,7 +528,7 @@ class RobotController:
 
 
 def open_gantry(target, topple_delay_s=robot_moves.DEFAULT_TOPPLE_DELAY_S, on_status=None,
-                log=print, protocol="legacy"):
+                log=print, protocol="legacy", white_polarity=None):
     """Builds a Robot from a CLI argument: a serial port path, "auto" to
     detect the Uno, or "mock". Does not home -- the caller decides when the
     board is clear enough for the carriage to move.
@@ -483,7 +551,16 @@ def open_gantry(target, topple_delay_s=robot_moves.DEFAULT_TOPPLE_DELAY_S, on_st
         raise ValueError(f"unknown robot protocol {protocol!r} (legacy|native)")
 
     link = MockGantry(log=log) if target == "mock" else link_factory(target)
-    return Robot(link, topple_delay_s=topple_delay_s, on_status=on_status, planner=planner)
+    robot = Robot(link, topple_delay_s=topple_delay_s, on_status=on_status, planner=planner)
+
+    # The board forgot its polarity when the port was opened -- that reset it.
+    # Push the saved value now, before anything can ask it to move. Skipped on
+    # a stale board, which has no POL verb and would answer ERR.
+    if not robot.stale_firmware:
+        settings = rig_config.load()
+        polarity = white_polarity or settings["white_polarity"]
+        robot.set_white_polarity(polarity)
+    return robot
 
 
 def _console(robot):
@@ -494,7 +571,9 @@ def _console(robot):
     chess logic is involved -- which is the whole point during assembly.
     """
     print(f"Connected to {robot.port}. Firmware commands go through verbatim.")
-    print("chessbot_v1: PING / POS / MAG 0|1|2 / GOTO e4 / MOVE e2e4 / KNIGHT b1c3 / HOME")
+    print("chessbot_v1: PING / POS / MAG 0|1|2 / GOTO e4 / MOVE e2e4 w|b / HOME")
+    print("  POLTEST e2  park there, attract 2s then repel 2s -- which one holds it?")
+    print("  POL 0|1     1 = white pieces are held by REPEL (this set), 0 = by attract")
     print("  (check the pitch: GOTO a1 then POS should read -210 0)")
     print("chess_gantry: PING / HOME / GOTO 3.5 4 / MAG 170 / PULSE / TOPPLE / OFF / STATUS")
     print("Ctrl-C or 'quit' to leave (drops the magnet on the way out).\n")

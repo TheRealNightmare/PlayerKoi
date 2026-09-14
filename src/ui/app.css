@@ -190,6 +190,9 @@ body {
 #robotBox { display: none; }
 #robotBox.halted { --clr: var(--red); --on-clr: var(--on-red); }
 #robotNote { font-size: 13px; min-height: 18px; }
+#polarityRow { display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+               justify-content: center; font-size: 12px; }
+#staleFirmware { max-width: 320px; font-size: 13px; text-align: left; }
 #robotPrompt, #robotMsg, #aiNote { max-width: 320px; font-size: 13px; text-align: left; }
 
 #videoCol { display: none; }

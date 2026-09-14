@@ -95,6 +95,25 @@ PARK_SQUARE = "h1"
 BAUD = 115200
 READY_BANNER = "READY ChessBot-V1"
 
+# The protocol revision this code expects from the sketch. Bumped whenever the
+# host starts relying on something a older board doesn't do.
+#
+#   r1  the original: no polarity suffix. It accepts "MOVE e2e4 w" anyway --
+#       parsePly reads four characters and ignores the rest -- and silently
+#       attracts for every move, which shoves every white piece off its
+#       square. That silence is why this check exists.
+#   r2  w|b suffix on MOVE/KNIGHT, plus POL and POLTEST.
+FIRMWARE_REV = 2
+
+
+def banner_rev(banner):
+    """The revision from a READY line. A banner with no revision is r1 -- that
+    is precisely what the original sketch prints."""
+    for token in (banner or "").split():
+        if token.startswith("r") and token[1:].isdigit():
+            return int(token[1:])
+    return 1
+
 
 # ---------------------------------------------------------------- orientation
 #
