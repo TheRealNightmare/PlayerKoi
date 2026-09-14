@@ -110,7 +110,7 @@ class TestRobotExecution(unittest.TestCase):
         robot = robot_mod.Robot(robot_mod.MockGantry(), planner=robot_moves_legacy)
         robot.home()
         robot.play(chess.Board(), chess.Move.from_uci("e2e4"))
-        self.assertEqual(robot._link.commands, ["HOME", "MOVE e2e4"])
+        self.assertEqual(robot._link.commands, ["HOME", "MOVE e2e4 w"])
 
     def test_refuses_to_move_before_homing(self):
         robot = robot_mod.Robot(robot_mod.MockGantry())
@@ -324,7 +324,7 @@ class TestBlockingPrompts(unittest.TestCase):
         robot.home()
         board, move = self._captured_position()
         robot.play(board, move)
-        self.assertEqual(robot._link.commands, ["HOME", "MOVE e4d5"])
+        self.assertEqual(robot._link.commands, ["HOME", "MOVE e4d5 w"])
 
     def test_the_prompt_arrives_before_the_drag(self):
         seen = []
@@ -360,7 +360,7 @@ class TestBlockingPrompts(unittest.TestCase):
         self.assertTrue(controller.confirm())
         thread.join(timeout=2.0)
         self.assertFalse(thread.is_alive(), "confirming must release the move")
-        self.assertEqual(robot._link.commands, ["HOME", "MOVE e4d5"])
+        self.assertEqual(robot._link.commands, ["HOME", "MOVE e4d5 w"])
         self.assertIsNone(controller.state()["awaiting_confirm"])
 
     def test_confirming_when_nothing_waits_is_reported_not_swallowed(self):

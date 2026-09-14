@@ -70,6 +70,22 @@ FEED_MMS = 40.0
 MAG_FULL = 255
 MAG_DIAG = 155
 
+# The white pieces on this set were built with their magnets the other way up,
+# so they need the opposite coil polarity: attract holds a black piece, repel
+# holds a white one. Measured at the bench with MAG 1 / MAG 2.
+#
+# The firmware owns the actual coil switching (WHITE_IS_REVERSED in
+# chessbot_v1.ino); this side only has to say which colour is being carried,
+# which it does with a w|b suffix on MOVE and KNIGHT. Mirrored here because
+# every other measured fact about the machine is in this file.
+WHITE_IS_REVERSED = True
+
+
+def colour_token(is_white):
+    """The w|b suffix for MOVE/KNIGHT. The firmware maps it to a polarity."""
+    return "w" if is_white else "b"
+
+
 # Where the carriage rests, and what a human must park it on before HOME.
 # There are no limit switches: HOME drives to the assumed origin rather than
 # seeking anything, so if the carriage isn't actually on h1 when the board

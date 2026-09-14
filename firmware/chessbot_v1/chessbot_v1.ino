@@ -25,8 +25,12 @@
      "OK ..."  success        "ERR ..."  failure
 
      PING              -> OK PONG
-     MOVE e7e5         -> OK MOVE e7e5      straight drag between centres
-     KNIGHT b8c6       -> OK KNIGHT b8c6    weave along gridlines
+     MOVE e7e5 b       -> OK MOVE e7e5 b    straight drag between centres
+     KNIGHT b8c6 b     -> OK KNIGHT b8c6 b  weave along gridlines
+                          The trailing w|b is which colour is being carried:
+                          white magnets are reversed on this set, so the coil
+                          polarity flips with it. Omitting it means "not
+                          reversed", which is what the bench console wants.
      GOTO e4           -> OK GOTO e4        reposition, magnet untouched
      MAG 0|1|2         -> OK MAG n          off / attract / repel
      PULSE             -> OK PULSE          reverse kick, clears residual
@@ -94,6 +98,11 @@ unsigned int stepDelayUS;
 
 // ---------- magnet ----------
 // Cap at 255 only if the buck really is at ~6V. Lower if running on cells.
+// Measured on this set: the white pieces' magnets are the other way up, so
+// they need the opposite coil polarity from the black ones. If a rebuilt set
+// ever has them consistent, set this false and nothing else changes.
+const bool WHITE_IS_REVERSED = true;
+
 const int MAG_FULL  = 255;
 const int MAG_WEAVE = 170;
 const int MAG_DIAG  = 155;
@@ -102,6 +111,9 @@ const int MAG_DIAG  = 155;
 float posX = 0.0, posY = 0.0;
 
 float clampWeave(float v);
+void magHold(int duty, bool reversed);
+void magRelease(bool reversed);
+bool parseColour(const String &arg, bool &reversed);
 
 void setup() {
   pinMode(stepPinA, OUTPUT);
@@ -152,15 +164,19 @@ void handleCommand(String line) {
 
   else if (cmd == "MOVE") {
     int f0, r0, f1, r1;
-    if (!parsePly(arg, f0, r0, f1, r1)) { Serial.println("ERR bad ply"); return; }
-    if (!doMove(f0, r0, f1, r1))        { Serial.println("ERR out of range"); return; }
+    bool rev;
+    if (!parsePly(arg, f0, r0, f1, r1))  { Serial.println("ERR bad ply"); return; }
+    if (!parseColour(arg, rev))          { Serial.println("ERR colour w|b"); return; }
+    if (!doMove(f0, r0, f1, r1, rev))    { Serial.println("ERR out of range"); return; }
     Serial.println("OK MOVE " + arg);
   }
 
   else if (cmd == "KNIGHT") {
     int f0, r0, f1, r1;
-    if (!parsePly(arg, f0, r0, f1, r1)) { Serial.println("ERR bad ply"); return; }
-    if (!doKnight(f0, r0, f1, r1))      { Serial.println("ERR out of range"); return; }
+    bool rev;
+    if (!parsePly(arg, f0, r0, f1, r1))  { Serial.println("ERR bad ply"); return; }
+    if (!parseColour(arg, rev))          { Serial.println("ERR colour w|b"); return; }
+    if (!doKnight(f0, r0, f1, r1, rev))  { Serial.println("ERR out of range"); return; }
     Serial.println("OK KNIGHT " + arg);
   }
 
@@ -249,39 +265,57 @@ bool parsePly(String p, int &f0, int &r0, int &f1, int &r1) {
           f1 >= 0 && f1 <= 7 && r1 >= 0 && r1 <= 7);
 }
 
+// Which piece the coil is about to pick up: "MOVE e2e4 w" or "... b".
+//
+// The colour is optional, and absent means NOT reversed -- that is what the
+// firmware did before polarity existed, so a bench console typing a bare
+// "MOVE e2e4" still behaves the way docs/CONNECTION.md describes. The Python
+// planner always sends it explicitly; see robot_moves_legacy.plan.
+bool parseColour(const String &arg, bool &reversed) {
+  if (arg.length() <= 4) { reversed = false; return true; }
+
+  String rest = arg.substring(4);
+  rest.trim();
+  rest.toLowerCase();
+  if (rest.length() == 0) { reversed = false; return true; }
+  if (rest == "w")        { reversed = WHITE_IS_REVERSED; return true; }
+  if (rest == "b")        { reversed = !WHITE_IS_REVERSED; return true; }
+  return false;
+}
+
 // ============================================================
 //  PIECE MOVES
 // ============================================================
-bool doMove(int f0, int r0, int f1, int r1) {
+bool doMove(int f0, int r0, int f1, int r1, bool reversed) {
   if (!gotoSquare(f0, r0)) return false;
-  magAttract(MAG_FULL);
+  magHold(MAG_FULL, reversed);
   if (!gotoSquare(f1, r1)) { magOff(); return false; }
-  magPulse();
+  magRelease(reversed);
   return true;
 }
 
 // Knight: step half a square diagonally, run along the gridline,
 // then step back onto the destination centre.
-bool doKnight(int f0, int r0, int f1, int r1) {
+bool doKnight(int f0, int r0, int f1, int r1, bool reversed) {
   float sx = (f1 - f0) > 0 ? 0.5 : -0.5;
   float sy = (r1 - r0) > 0 ? 0.5 : -0.5;
 
   if (!gotoSquare(f0, r0)) return false;
-  magAttract(MAG_FULL);
+  magHold(MAG_FULL, reversed);
 
   if (!gotoSquareF(clampWeave(f0 + sx), clampWeave(r0 + sy))) {
     magOff(); return false;
   }
-  magAttract(MAG_DIAG);
+  magHold(MAG_DIAG, reversed);
 
   if (!gotoSquareF(clampWeave(f1 - sx), clampWeave(r1 - sy))) {
     magOff(); return false;
   }
-  magAttract(MAG_FULL);
+  magHold(MAG_FULL, reversed);
   delay(5);
 
   if (!gotoSquare(f1, r1)) { magOff(); return false; }
-  magPulse();
+  magRelease(reversed);
   return true;
 }
 
@@ -320,11 +354,28 @@ void magAttract(int duty) { analogWrite(AIN1, duty); digitalWrite(AIN2, LOW); }
 void magRepel(int duty)   { digitalWrite(AIN1, LOW); analogWrite(AIN2, duty); }
 void magOff()             { digitalWrite(AIN1, LOW); digitalWrite(AIN2, LOW); }
 
-void magPulse() {
-  magRepel(MAG_FULL);
+// The white pieces on this set were built with their magnets the other way
+// up, so the coil polarity that grips a black piece pushes a white one away.
+// Every move therefore says which kind it is carrying, and these two are the
+// only places that decide what the coil actually does.
+//
+// Both have to flip together. Holding with the wrong sign shoves the piece
+// off the square; releasing with the wrong sign grabs it harder instead of
+// kicking it free, and the carriage then drags it to the next square.
+
+void magHold(int duty, bool reversed) {
+  if (reversed) magRepel(duty);
+  else          magAttract(duty);
+}
+
+void magRelease(bool reversed) {
+  if (reversed) magAttract(MAG_FULL);
+  else          magRepel(MAG_FULL);
   delay(15);
   magOff();
 }
+
+void magPulse() { magRelease(false); }   // bench verb: the un-reversed kick
 
 // ============================================================
 //  MOTION

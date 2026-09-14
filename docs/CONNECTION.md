@@ -41,6 +41,14 @@ Three things that are easy to get wrong:
 - **Set the microstepping jumpers to 1/2.** A CNC Shield commonly ships at 1/8.
   The firmware assumes 1/2 (10 steps/mm), so 1/8 makes every distance 4× too
   large.
+- **The white pieces' magnets are reversed.** They were built the other way
+  up, so the coil polarity that grips a black piece pushes a white one away.
+  `MOVE` and `KNIGHT` therefore take a trailing `w` or `b` saying which colour
+  is being carried, and the firmware flips both the hold and the release kick
+  to match (`WHITE_IS_REVERSED` in the sketch). Omitting it means "not
+  reversed", so the bench commands in this document still work as written.
+  Check a piece by hand with `MAG 1` (attract: holds black) and `MAG 2`
+  (repel: holds white).
 - **There are no limit switches on this build.** Position is dead reckoning
   from an assumed park at h1. Nothing can detect that it is wrong.
 - **"h1" here means the firmware's h1, which is physically the a8 corner.**
@@ -65,8 +73,8 @@ stop there rather than continuing — later steps assume the earlier ones.
 | 6 | `MAG 1` then `MAG 0` | `OK MAG 1` / `OK MAG 0`, coil audibly grabs and releases |
 | 7 | `GOTO a1`, then `POS` | `OK POS -210.0 0.0` — **this is the pitch check** |
 | 8 | `HOME` | `OK HOME`, carriage returns to h1 |
-| 9 | `MOVE e2e4` | `OK MOVE e2e4`, a pawn is dragged cleanly |
-| 10 | `KNIGHT b1c3` | `OK KNIGHT b1c3`, weaves without disturbing the pawns |
+| 9 | `MOVE e2e4 w\|b` | `OK MOVE e2e4`, a pawn is dragged cleanly |
+| 10 | `KNIGHT b1c3 w\|b` | `OK KNIGHT b1c3`, weaves without disturbing the pawns |
 
 Step 7 is the one that matters. If `POS` doesn't read `-210 0`, the 30mm pitch
 is wrong and everything downstream — the planner's clearance arithmetic, the
@@ -91,8 +99,8 @@ move has finished"; the Pi never has to guess.
 | Command | Reply | Does |
 |---|---|---|
 | `PING` | `OK PONG` | liveness check |
-| `MOVE e7e5` | `OK MOVE e7e5` | straight drag between square centres |
-| `KNIGHT b8c6` | `OK KNIGHT b8c6` | weaves along the gridlines, for knights and castling rooks |
+| `MOVE e7e5 w\|b` | `OK MOVE e7e5` | straight drag between square centres |
+| `KNIGHT b8c6 w\|b` | `OK KNIGHT b8c6` | weaves along the gridlines, for knights and castling rooks |
 | `GOTO e4` | `OK GOTO e4` | repositions the carriage, magnet untouched |
 | `MAG 0\|1\|2` | `OK MAG n` | coil off / attract / repel |
 | `PULSE` | `OK PULSE` | brief reverse kick, clears residual magnetism so the piece lets go |

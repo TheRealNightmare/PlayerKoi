@@ -40,12 +40,12 @@ def plan_uci(board, uci, origin_square="h1"):
 
 class TestQuietMoves(unittest.TestCase):
     def test_a_pawn_is_one_straight_drag(self):
-        self.assertEqual(commands(plan_uci(chess.Board(), "e2e4")), ["MOVE e2e4"])
+        self.assertEqual(commands(plan_uci(chess.Board(), "e2e4")), ["MOVE e2e4 w"])
 
     def test_a_knight_weaves_instead(self):
         # The whole reason the verb differs: a knight's diagonal between
         # centres cuts the corner of an occupied square.
-        self.assertEqual(commands(plan_uci(chess.Board(), "b1c3")), ["KNIGHT b1c3"])
+        self.assertEqual(commands(plan_uci(chess.Board(), "b1c3")), ["KNIGHT b1c3 w"])
 
     def test_a_quiet_move_asks_the_human_for_nothing(self):
         self.assertEqual(prompts(plan_uci(chess.Board(), "e2e4")), [])
@@ -76,7 +76,7 @@ class TestCaptures(unittest.TestCase):
         # Order is the entire point. Dragging first would shove two pieces.
         steps = plan_uci(self.board, "e4d5")
         self.assertEqual(steps[0].kind, "prompt")
-        self.assertEqual(steps[1].command, "MOVE e4d5")
+        self.assertEqual(steps[1].command, "MOVE e4d5 w")
 
     def test_the_capture_prompt_blocks(self):
         self.assertTrue(plan_uci(self.board, "e4d5")[0].blocking)
@@ -88,7 +88,7 @@ class TestCaptures(unittest.TestCase):
         self.assertIn("PAWN", prompt)
 
     def test_a_capture_is_still_one_drag(self):
-        self.assertEqual(commands(plan_uci(self.board, "e4d5")), ["MOVE e4d5"])
+        self.assertEqual(commands(plan_uci(self.board, "e4d5")), ["MOVE e4d5 w"])
 
 
 class TestEnPassant(unittest.TestCase):
@@ -110,7 +110,7 @@ class TestEnPassant(unittest.TestCase):
         self.assertTrue(plan_uci(self.board, "e5d6")[0].blocking)
 
     def test_the_drag_goes_to_the_destination(self):
-        self.assertEqual(commands(plan_uci(self.board, "e5d6")), ["MOVE e5d6"])
+        self.assertEqual(commands(plan_uci(self.board, "e5d6")), ["MOVE e5d6 w"])
 
 
 class TestCastling(unittest.TestCase):
@@ -132,13 +132,13 @@ class TestCastling(unittest.TestCase):
     def test_kingside_moves_the_king_then_weaves_the_rook(self):
         self.assertEqual(
             commands(plan_uci(self.kingside(), "e1g1")),
-            ["MOVE e1g1", "KNIGHT h1f1"],
+            ["MOVE e1g1 w", "KNIGHT h1f1 w"],
         )
 
     def test_queenside_moves_the_king_then_weaves_the_rook(self):
         self.assertEqual(
             commands(plan_uci(self.queenside(), "e1c1")),
-            ["MOVE e1c1", "KNIGHT a1d1"],
+            ["MOVE e1c1 w", "KNIGHT a1d1 w"],
         )
 
     def test_black_castles_on_its_own_rank(self):
@@ -147,7 +147,7 @@ class TestCastling(unittest.TestCase):
             board.push_san(san)
         self.assertEqual(
             commands(plan_uci(board, "e8g8")),
-            ["MOVE e8g8", "KNIGHT h8f8"],
+            ["MOVE e8g8 b", "KNIGHT h8f8 b"],
         )
 
     def test_the_rook_never_drags_straight_through_the_king(self):
@@ -181,7 +181,7 @@ class TestPromotion(unittest.TestCase):
         steps = plan_uci(self.board, "b7a8q")
         self.assertTrue(steps[0].blocking)          # clear the rook
         self.assertIn("a8", steps[0].prompt)
-        self.assertEqual(steps[1].command, "MOVE b7a8")
+        self.assertEqual(steps[1].command, "MOVE b7a8 w")
         self.assertFalse(steps[-1].blocking)        # then swap the queen in
 
     def test_the_promotion_suffix_is_not_sent_to_the_firmware(self):
@@ -203,7 +203,7 @@ class TestEveryLegalMovePlans(unittest.TestCase):
             while not board.is_game_over() and board.fullmove_number < 90:
                 move = random.choice(list(board.legal_moves))
                 for command in commands(legacy.plan(board, move)):
-                    verb, squares = command.split()
+                    verb, squares, polarity = command.split()
                     self.assertIn(verb, ("MOVE", "KNIGHT"))
                     self.assertEqual(len(squares), 4, command)
                     # Both halves must be real squares, or the firmware
@@ -240,13 +240,13 @@ class TestOrientation(unittest.TestCase):
     def test_the_command_is_rotated(self):
         self.assertEqual(
             commands(plan_uci(chess.Board(), "e2e4", origin_square="a8")),
-            ["MOVE d7d5"],
+            ["MOVE d7d5 w"],
         )
 
     def test_a_knight_command_is_rotated_too(self):
         self.assertEqual(
             commands(plan_uci(chess.Board(), "b1c3", origin_square="a8")),
-            ["KNIGHT g8f6"],
+            ["KNIGHT g8f6 w"],
         )
 
     def test_the_note_stays_in_real_notation(self):
@@ -266,7 +266,7 @@ class TestOrientation(unittest.TestCase):
         board = chess.Board("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1")
         self.assertEqual(
             commands(plan_uci(board, "e1g1", origin_square="a8")),
-            ["MOVE d8b8", "KNIGHT a8c8"],
+            ["MOVE d8b8 w", "KNIGHT a8c8 w"],
         )
 
     def test_the_default_origin_is_the_rig_constant(self):
@@ -277,7 +277,7 @@ class TestOrientation(unittest.TestCase):
 
         self.assertEqual(
             legacy.plan(chess.Board(), chess.Move.from_uci("e2e4"))[0].command,
-            f"MOVE {rig.orient_uci('e2e4')}",
+            f"MOVE {rig.orient_uci('e2e4')} w",
         )
 
     def test_every_legal_move_still_names_real_squares(self):
@@ -295,6 +295,63 @@ class TestOrientation(unittest.TestCase):
                     self.assertEqual(len(squares), 4)
                     self.assertTrue(all(c in "abcdefgh" for c in squares[::2]))
                     self.assertTrue(all(c in "12345678" for c in squares[1::2]))
+            board.push(move)
+
+
+class TestMagnetPolarity(unittest.TestCase):
+    """The white pieces on this set have their magnets the other way up, so
+    the coil polarity has to follow the colour being carried. Holding a white
+    piece with the black polarity pushes it off the square instead of
+    gripping it, and the release pulse grabs it instead of letting go -- so
+    the carriage drags it onward into the next move.
+
+    The firmware decides what the coil does; this side only has to say which
+    colour it is. That is the w|b suffix on MOVE and KNIGHT.
+    """
+
+    @staticmethod
+    def _tokens(steps):
+        return [c.split()[-1] for c in commands(steps)]
+
+    def test_a_white_move_is_tagged_white(self):
+        self.assertEqual(self._tokens(plan_uci(chess.Board(), "e2e4")), ["w"])
+
+    def test_a_black_move_is_tagged_black(self):
+        board = chess.Board()
+        board.push_san("e4")
+        self.assertEqual(self._tokens(plan_uci(board, "e7e5")), ["b"])
+
+    def test_a_knight_carries_it_too(self):
+        self.assertEqual(self._tokens(plan_uci(chess.Board(), "b1c3")), ["w"])
+
+    def test_castling_tags_the_rook_like_the_king(self):
+        """Both commands move the same player's pieces, so a mismatch would
+        drop the rook halfway across the back rank."""
+        board = chess.Board("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1")
+        self.assertEqual(self._tokens(plan_uci(board, "e1g1")), ["w", "w"])
+        board = chess.Board("r3k2r/8/8/8/8/8/8/R3K2R b KQkq - 0 1")
+        self.assertEqual(self._tokens(plan_uci(board, "e8c8")), ["b", "b"])
+
+    def test_a_capture_is_tagged_by_the_capturer_not_the_victim(self):
+        """The victim is lifted off by hand; the coil only ever carries the
+        piece that is moving."""
+        board = chess.Board()
+        for san in ("e4", "d5"):
+            board.push_san(san)
+        self.assertEqual(self._tokens(plan_uci(board, "e4d5")), ["w"])
+
+    def test_every_command_of_a_whole_game_is_tagged(self):
+        board = chess.Board()
+        random.seed(17)
+        for _ in range(200):
+            if board.is_game_over():
+                board = chess.Board()
+            move = random.choice(list(board.legal_moves))
+            expected = "w" if board.turn == chess.WHITE else "b"
+            for command in commands(legacy.plan(board, move)):
+                parts = command.split()
+                self.assertEqual(len(parts), 3, command)
+                self.assertEqual(parts[-1], expected, command)
             board.push(move)
 
 

@@ -9,6 +9,8 @@ its own, with the magnet duties and edge folding already measured into it.
 So what is left here is chess rules, and only chess rules:
 
     which squares move        MOVE vs KNIGHT, and castling's second command
+    which colour is carried   the w|b suffix -- white magnets are reversed on
+                              this set, so the coil polarity follows it
     what has to come off      captures, including en passant's offset victim
     what a human must do      remove a captured piece, swap in a queen
 
@@ -92,13 +94,20 @@ def plan(board, move, topple_delay_s=None, origin_square=None):
     # clipping whatever it's jumping, so it weaves along the gridlines
     # instead. The firmware owns that path; we just pick the verb.
     knight = mover is not None and mover.piece_type == chess.KNIGHT
+    # Which colour the coil is about to pick up. The white pieces' magnets are
+    # reversed on this set, so the firmware flips polarity on this token --
+    # holding a white piece with the black polarity shoves it off the square.
+    # Named apart from the `colour` the promotion branch below binds to a
+    # word ("white"), so the two can never be confused if this file is
+    # reordered -- one is a protocol token, the other is prose.
+    polarity = rig.colour_token(mover is not None and mover.color == chess.WHITE)
     steps.append(
         Step(
             # The command is rotated into machine orientation; the note is
             # not. Step keeps the two apart precisely so the firmware and the
             # human can be told different things about the same move, and the
             # human is looking at a real board in real notation.
-            f"{'KNIGHT' if knight else 'MOVE'} {rig.orient_uci(uci, origin_square)}",
+            f"{'KNIGHT' if knight else 'MOVE'} {rig.orient_uci(uci, origin_square)} {polarity}",
             f"{word} {origin} to {target}",
         )
     )
@@ -113,7 +122,8 @@ def plan(board, move, topple_delay_s=None, origin_square=None):
         rook_to = chess.square_name(chess.square(5 if kingside else 3, rank))
         steps.append(
             Step(
-                f"KNIGHT {rig.orient_uci(rook_from + rook_to, origin_square)}",
+                # Same colour as the king, so the same polarity.
+                f"KNIGHT {rig.orient_uci(rook_from + rook_to, origin_square)} {polarity}",
                 f"rook {rook_from} to {rook_to}, weaving past the king",
             )
         )
