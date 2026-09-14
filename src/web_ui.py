@@ -546,6 +546,15 @@ def start_server(host, port, buffer, session):
                         return
                     self._send_json(200, {"ok": True, "robot": robot_controller.state()})
                     return
+                if body.get("release_ms") is not None:
+                    try:
+                        robot_controller.set_release_ms(body["release_ms"])
+                    except (GantryError, ValueError) as exc:
+                        self._send_json(400, {"error": str(exc),
+                                              "robot": robot_controller.state()})
+                        return
+                    self._send_json(200, {"ok": True, "robot": robot_controller.state()})
+                    return
                 if body.get("home"):
                     # Homing crosses the board, so it must not race a settle.
                     loop.set_paused(True, lapse_s=60.0)
@@ -641,6 +650,14 @@ def parse_args():
                              "'repel' holds them and 'attract' shoves them off the "
                              "square. Saved to config/rig.json; omit to use the saved "
                              "value. Changeable live in the UI")
+    parser.add_argument("--release-ms", type=int, default=None,
+                        metavar="MS",
+                        help=f"how long the grip takes to fade when a piece is set "
+                             f"down ({rig.MIN_RELEASE_MS}-{rig.MAX_RELEASE_MS}). A hard "
+                             "release makes the piece jump, so it eases off and then "
+                             "gives a weak kick to clear the core; 0 restores the old "
+                             "instant kick. Saved to config/rig.json; adjustable live "
+                             "in the UI")
     parser.add_argument("--board-origin", default=rig.ORIGIN_SQUARE,
                         choices=rig.SUPPORTED_ORIGINS,
                         help="which real square the carriage parks on, i.e. how the board "
@@ -677,12 +694,13 @@ def _open_robot(args):
     # not of a single move, so it lives on rig rather than being threaded
     # through every planner call. Both planners read it from there.
     rig.ORIGIN_SQUARE = args.board_origin
-    if args.white_polarity:
-        rig_config.save(args.white_polarity)
+    if args.white_polarity or args.release_ms is not None:
+        rig_config.save(white_polarity=args.white_polarity, release_ms=args.release_ms)
     try:
         robot = open_gantry(args.robot, topple_delay_s=args.topple_delay,
                             protocol=args.robot_protocol,
-                            white_polarity=args.white_polarity)
+                            white_polarity=args.white_polarity,
+                            release_ms=args.release_ms)
     except GantryError as exc:
         raise SystemExit(f"Robot: {exc}")
     except ImportError:
@@ -695,8 +713,9 @@ def _open_robot(args):
         # for every move, so the first white move shoves a piece off the board.
         print(f"Robot: !! {robot.message}")
     else:
-        print(f"Robot: white pieces are held by {robot.white_polarity.upper()} "
-              "(change it in the UI, or with --white-polarity).")
+        print(f"Robot: white pieces are held by {robot.white_polarity.upper()}, "
+              f"release fades over {robot.release_ms}ms "
+              "(both adjustable in the UI).")
     if args.robot_protocol == "legacy":
         # No limit switches on this build: HOME drives to the assumed origin
         # rather than seeking it, so "homed" is a promise the human makes,

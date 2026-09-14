@@ -173,6 +173,14 @@ const homeBtn = document.getElementById("homeBtn");
 const confirmBtn = document.getElementById("confirmBtn");
 const staleFirmwareEl = document.getElementById("staleFirmware");
 const polarityRadios = document.querySelectorAll('input[name="whitePolarity"]');
+const releaseMs = document.getElementById("releaseMs");
+const releaseMsVal = document.getElementById("releaseMsVal");
+
+// How long the grip fades when a piece is set down. A hard release punches the
+// piece and it jumps; this eases off first. 0 is the old instant kick, kept so
+// the difference can be felt rather than taken on trust.
+releaseMs.oninput = () => { releaseMsVal.textContent = releaseMs.value + " ms"; };
+releaseMs.onchange = () => postRobot({ release_ms: Number(releaseMs.value) }, releaseMs);
 
 // The white magnets are fitted the other way up on this set, so the coil has
 // to drive the opposite way to hold them. Which way that is was worth getting
@@ -315,6 +323,13 @@ function renderRobot(bot) {
   // of them, so it would shove a white piece off the table. Say so plainly.
   staleFirmwareEl.hidden = !bot.stale_firmware;
   if (bot.stale_firmware) staleFirmwareEl.textContent = bot.message || "firmware is out of date";
+
+  releaseMs.disabled = !!bot.stale_firmware;
+  if (document.activeElement !== releaseMs && bot.release_ms !== null
+      && bot.release_ms !== undefined) {
+    releaseMs.value = bot.release_ms;
+    releaseMsVal.textContent = bot.release_ms + " ms";
+  }
 
   for (const radio of polarityRadios) {
     radio.disabled = !!bot.stale_firmware;

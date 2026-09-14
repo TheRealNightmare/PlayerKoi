@@ -55,6 +55,13 @@ Three things that are easy to get wrong:
   The polarity is a runtime setting (`POL`), stored host-side in
   `config/rig.json` and pushed on every connect, so you can change it from the
   web UI without reflashing.
+- **A piece is set down gently, not dropped.** A full-strength reverse pulse
+  does not release a magnet so much as punch it, and the piece jumps. So the
+  release fades the grip to nothing, lets the piece settle, and only then gives
+  a weak reverse to clear residual magnetism from the core — that last part is
+  not optional, since a magnetised core tows the piece along when the carriage
+  leaves. `RELEASE <ms>` tunes the fade; `RELEASE 0` restores the old kick if
+  you want to see the difference.
 - **There are no limit switches on this build.** Position is dead reckoning
   from an assumed park at h1. Nothing can detect that it is wrong.
 - **"h1" here means the firmware's h1, which is physically the a8 corner.**
@@ -72,7 +79,7 @@ stop there rather than continuing — later steps assume the earlier ones.
 | # | Do | Expect |
 |---|---|---|
 | 1 | Flash `chessbot_v1.ino` | compiles and uploads |
-| 2 | Open the serial monitor at 115200 | `READY ChessBot-V1 r2` — **if there is no `r2`, the sketch is stale; re-upload it** |
+| 2 | Open the serial monitor at 115200 | `READY ChessBot-V1 r3` — **if the revision is lower, the sketch is stale; re-upload it** |
 | 3 | **Park the carriage on the origin corner by hand** (physically a8 — see above) | — |
 | 4 | `PING` | `OK PONG` |
 | 5 | `POS` | `OK POS 0.0 0.0` |
@@ -109,10 +116,12 @@ move has finished"; the Pi never has to guess.
 | `KNIGHT b8c6 w\|b` | `OK KNIGHT b8c6` | weaves along the gridlines, for knights and castling rooks |
 | `GOTO e4` | `OK GOTO e4` | repositions the carriage, magnet untouched |
 | `MAG 0\|1\|2` | `OK MAG n` | coil off / attract / repel |
-| `PULSE` | `OK PULSE` | brief reverse kick, clears residual magnetism so the piece lets go |
+| `PULSE` | `OK PULSE` | raw full-power reverse kick, for the bench. A game move uses the gentler faded release |
 | `POL` | `OK POL 1` | what holds a WHITE piece: 1 = repel, 0 = attract |
 | `POL 0\|1` | `OK POL <n>` | set it, live. RAM only — re-sent by the host on every connect |
 | `POLTEST e2` | `OK POLTEST e2` | park there, attract 2 s, then repel 2 s. Watch which one holds the piece |
+| `RELEASE` | `OK RELEASE 200` | ms the grip takes to fade when a piece is set down |
+| `RELEASE <ms>` | `OK RELEASE <ms>` | 0–2000. **0 = no fade**, the old instant kick |
 | `HOME` | `OK HOME` | returns to the origin (h1) and drops the coil |
 | `POS` | `OK POS x y` | current position in mm |
 | `MM -105 100` | `OK MM x y` | move to raw machine coordinates |

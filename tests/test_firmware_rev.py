@@ -1,4 +1,4 @@
-"""Tests for the firmware-revision handshake and the saved polarity.
+"""Tests for the firmware-revision handshake and the saved rig settings.
 
 Both exist because of one silent failure: r1 of the sketch accepts
 "MOVE e2e4 w" -- parsePly reads four characters and ignores the rest -- and
@@ -52,8 +52,10 @@ class TestBannerParsing(unittest.TestCase):
         self.assertEqual(rig.banner_rev("READY ChessBot-V1 r2"), 2)
         self.assertEqual(rig.banner_rev("READY ChessBot-V1 r17"), 17)
 
-    def test_this_code_expects_at_least_the_polarity_revision(self):
-        self.assertGreaterEqual(rig.FIRMWARE_REV, 2)
+    def test_this_code_expects_at_least_the_release_revision(self):
+        """r2 added the polarity suffix, r3 the faded release. The host sends
+        both on connect, so it needs r3."""
+        self.assertGreaterEqual(rig.FIRMWARE_REV, 3)
 
 
 class TestStaleBoardRefuses(unittest.TestCase):
@@ -116,9 +118,9 @@ class TestSavedPolarity(unittest.TestCase):
         self.assertEqual(rig_config.load(self.tmp)["white_polarity"], expected)
 
     def test_it_round_trips(self):
-        rig_config.save(rig_config.ATTRACT, self.tmp)
+        rig_config.save(rig_config.ATTRACT, path=self.tmp)
         self.assertEqual(rig_config.load(self.tmp)["white_polarity"], rig_config.ATTRACT)
-        rig_config.save(rig_config.REPEL, self.tmp)
+        rig_config.save(rig_config.REPEL, path=self.tmp)
         self.assertEqual(rig_config.load(self.tmp)["white_polarity"], rig_config.REPEL)
 
     def test_a_corrupt_file_falls_back_instead_of_raising(self):
@@ -133,12 +135,60 @@ class TestSavedPolarity(unittest.TestCase):
 
     def test_saving_nonsense_is_refused(self):
         with self.assertRaises(ValueError):
-            rig_config.save("sideways", self.tmp)
+            rig_config.save("sideways", path=self.tmp)
 
     def test_the_pol_command_matches_the_polarity(self):
         """POL 1 means white is reversed, i.e. held by repel."""
         self.assertEqual(rig_config.pol_command(rig_config.REPEL), "POL 1")
         self.assertEqual(rig_config.pol_command(rig_config.ATTRACT), "POL 0")
+
+
+class TestSavedReleaseTime(unittest.TestCase):
+    """How slowly the grip lets go. A hard release punches the piece and it
+    jumps; this is the knob that stops it."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp()) / "rig.json"
+
+    def test_it_defaults_to_the_measured_value(self):
+        self.assertEqual(rig_config.load(self.tmp)["release_ms"], rig.DEFAULT_RELEASE_MS)
+
+    def test_it_round_trips(self):
+        rig_config.save(release_ms=350, path=self.tmp)
+        self.assertEqual(rig_config.load(self.tmp)["release_ms"], 350)
+
+    def test_zero_is_allowed_and_means_the_old_instant_kick(self):
+        rig_config.save(release_ms=0, path=self.tmp)
+        self.assertEqual(rig_config.load(self.tmp)["release_ms"], 0)
+
+    def test_saving_one_setting_keeps_the_other(self):
+        """Changing a control in the UI must not silently reset its
+        neighbour -- they share one file."""
+        rig_config.save(white_polarity=rig_config.ATTRACT, release_ms=400, path=self.tmp)
+        rig_config.save(release_ms=120, path=self.tmp)
+        settings = rig_config.load(self.tmp)
+        self.assertEqual(settings["release_ms"], 120)
+        self.assertEqual(settings["white_polarity"], rig_config.ATTRACT)
+
+        rig_config.save(white_polarity=rig_config.REPEL, path=self.tmp)
+        self.assertEqual(rig_config.load(self.tmp)["release_ms"], 120)
+
+    def test_an_out_of_range_value_in_the_file_is_ignored(self):
+        self.tmp.write_text(json.dumps({"release_ms": 99999}))
+        self.assertEqual(rig_config.load(self.tmp)["release_ms"], rig.DEFAULT_RELEASE_MS)
+
+    def test_a_non_numeric_value_in_the_file_is_ignored(self):
+        self.tmp.write_text(json.dumps({"release_ms": "slowly"}))
+        self.assertEqual(rig_config.load(self.tmp)["release_ms"], rig.DEFAULT_RELEASE_MS)
+
+    def test_saving_out_of_range_is_refused(self):
+        for bad in (-1, rig.MAX_RELEASE_MS + 1, "slowly"):
+            with self.assertRaises(ValueError, msg=bad):
+                rig_config.save(release_ms=bad, path=self.tmp)
+
+    def test_the_release_command_is_formed_correctly(self):
+        self.assertEqual(rig_config.release_command(200), "RELEASE 200")
+        self.assertEqual(rig_config.release_command(0), "RELEASE 0")
 
 
 class TestPolarityReachesTheBoard(unittest.TestCase):
@@ -154,22 +204,46 @@ class TestPolarityReachesTheBoard(unittest.TestCase):
             robot.set_white_polarity("sideways")
         self.assertEqual(robot._link.commands, [])
 
-    def test_open_gantry_pushes_the_saved_value_on_connect(self):
+    def test_open_gantry_pushes_both_settings_on_connect(self):
         """Opening the port reboots the Uno, so whatever it was told last
         time is gone. If this stops happening, the board silently reverts to
-        its compiled default."""
+        its compiled defaults."""
         from robot import open_gantry
 
-        robot = open_gantry("mock", white_polarity=rig_config.ATTRACT)
-        self.assertEqual(robot._link.commands, ["POL 0"])
+        robot = open_gantry("mock", white_polarity=rig_config.ATTRACT, release_ms=120)
+        self.assertEqual(robot._link.commands, ["POL 0", "RELEASE 120"])
         self.assertEqual(robot.white_polarity, rig_config.ATTRACT)
+        self.assertEqual(robot.release_ms, 120)
 
-    def test_a_stale_board_is_not_sent_pol(self):
-        """r1 has no POL verb and would answer ERR, which would look like a
+    def test_the_settings_go_out_before_anything_can_move(self):
+        """A move sent before RELEASE would use the compiled default, which
+        is the one case the whole config path exists to prevent."""
+        from robot import open_gantry
+
+        robot = open_gantry("mock")
+        self.assertEqual(len(robot._link.commands), 2)
+        self.assertTrue(robot._link.commands[0].startswith("POL"))
+        self.assertTrue(robot._link.commands[1].startswith("RELEASE"))
+
+    def test_setting_the_release_sends_it(self):
+        robot = current_robot()
+        robot.set_release_ms(350)
+        self.assertIn("RELEASE 350", robot._link.commands)
+        self.assertEqual(robot.release_ms, 350)
+
+    def test_an_out_of_range_release_is_refused_before_sending(self):
+        robot = current_robot()
+        with self.assertRaises(ValueError):
+            robot.set_release_ms(rig.MAX_RELEASE_MS + 1)
+        self.assertEqual(robot._link.commands, [])
+
+    def test_a_stale_board_is_sent_neither_setting(self):
+        """r1 has neither verb and would answer ERR, which would look like a
         dead link rather than old firmware."""
         robot = stale_robot()
         self.assertEqual(robot._link.commands, [])
         self.assertIsNone(robot.white_polarity)
+        self.assertIsNone(robot.release_ms)
 
 
 if __name__ == "__main__":

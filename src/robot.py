@@ -183,6 +183,7 @@ class Robot:
         # Set by open_gantry once it has read the saved config; None means
         # nobody has told the board yet.
         self.white_polarity = None
+        self.release_ms = None
         self.firmware_rev = rig.banner_rev(getattr(link, "banner", None))
         self.stale_firmware = self.firmware_rev < rig.FIRMWARE_REV
         if self.stale_firmware:
@@ -253,6 +254,23 @@ class Robot:
         with self._lock:
             self.white_polarity = polarity
         return polarity
+
+    def set_release_ms(self, release_ms):
+        """How long the grip takes to fade when a piece is set down.
+
+        Re-sent on every connect for the same reason as the polarity: opening
+        the port reboots the Uno and it forgets. 0 restores the old instant
+        kick, which is what made the pieces jump.
+        """
+        release_ms = int(release_ms)
+        if not rig.MIN_RELEASE_MS <= release_ms <= rig.MAX_RELEASE_MS:
+            raise ValueError(
+                f"release_ms must be {rig.MIN_RELEASE_MS}-{rig.MAX_RELEASE_MS}, "
+                f"not {release_ms}")
+        self._link.send(rig_config.release_command(release_ms))
+        with self._lock:
+            self.release_ms = release_ms
+        return release_ms
 
     def raw(self, command):
         """Sends a firmware command directly. For the bench console during
@@ -423,6 +441,7 @@ class RobotController:
                 "firmware_rev": self._robot.firmware_rev,
                 "stale_firmware": self._robot.stale_firmware,
                 "white_polarity": self._robot.white_polarity,
+                "release_ms": self._robot.release_ms,
             }
 
     @property
@@ -442,7 +461,13 @@ class RobotController:
         """Applies the setting to the board and saves it, so the next launch
         starts with whatever was found to work."""
         applied = self._robot.set_white_polarity(polarity)
-        rig_config.save(applied)
+        rig_config.save(white_polarity=applied)
+        return applied
+
+    def set_release_ms(self, release_ms):
+        """Applies the fade time and saves it, so a value that works is kept."""
+        applied = self._robot.set_release_ms(release_ms)
+        rig_config.save(release_ms=applied)
         return applied
 
     def halt(self, reason="halted from the web UI"):
@@ -528,7 +553,7 @@ class RobotController:
 
 
 def open_gantry(target, topple_delay_s=robot_moves.DEFAULT_TOPPLE_DELAY_S, on_status=None,
-                log=print, protocol="legacy", white_polarity=None):
+                log=print, protocol="legacy", white_polarity=None, release_ms=None):
     """Builds a Robot from a CLI argument: a serial port path, "auto" to
     detect the Uno, or "mock". Does not home -- the caller decides when the
     board is clear enough for the carriage to move.
@@ -558,8 +583,9 @@ def open_gantry(target, topple_delay_s=robot_moves.DEFAULT_TOPPLE_DELAY_S, on_st
     # a stale board, which has no POL verb and would answer ERR.
     if not robot.stale_firmware:
         settings = rig_config.load()
-        polarity = white_polarity or settings["white_polarity"]
-        robot.set_white_polarity(polarity)
+        robot.set_white_polarity(white_polarity or settings["white_polarity"])
+        robot.set_release_ms(
+            settings["release_ms"] if release_ms is None else release_ms)
     return robot
 
 
@@ -574,6 +600,7 @@ def _console(robot):
     print("chessbot_v1: PING / POS / MAG 0|1|2 / GOTO e4 / MOVE e2e4 w|b / HOME")
     print("  POLTEST e2  park there, attract 2s then repel 2s -- which one holds it?")
     print("  POL 0|1     1 = white pieces are held by REPEL (this set), 0 = by attract")
+    print("  RELEASE ms  how slowly the grip fades when a piece lands (0 = old kick)")
     print("  (check the pitch: GOTO a1 then POS should read -210 0)")
     print("chess_gantry: PING / HOME / GOTO 3.5 4 / MAG 170 / PULSE / TOPPLE / OFF / STATUS")
     print("Ctrl-C or 'quit' to leave (drops the magnet on the way out).\n")

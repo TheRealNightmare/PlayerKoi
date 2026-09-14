@@ -511,11 +511,16 @@ the other pushes it. Set that in the **Robot arm** panel (*White pieces held
 by: attract / repel*); it is saved to `config/rig.json` and reapplied on every
 start.
 
+**If a piece jumps or rattles as it is set down**, the release is too abrupt.
+Raise **Set-down ease** in the Robot arm panel — it fades the grip away before
+the de-clinging kick instead of punching the piece off the coil. It saves
+itself; 0 is the old instant behaviour if you want to compare.
+
 **If the UI says the firmware is out of date**, re-upload
 `firmware/chessbot_v1/chessbot_v1.ino`. The arm refuses to move until you do,
 and that is deliberate: an old board accepts the polarity suffix and silently
 ignores it, so every white move would shove a piece. Check with the startup
-line — it should say `firmware r2` or higher.
+line — it should say `firmware r3` or higher.
 
 **Bench console** for poking the gantry directly, without any chess:
 
@@ -525,6 +530,7 @@ gantry> HOME
 gantry> GOTO 3.5 4
 gantry> POLTEST e2      # which polarity holds the piece on e2?
 gantry> POL 1           # 1 = white held by repel, 0 = by attract
+gantry> RELEASE 200     # ms the grip fades over when a piece lands (0 = old kick)
 gantry> MAG 170
 gantry> OFF
 ```

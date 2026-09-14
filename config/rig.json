@@ -1,3 +1,4 @@
 {
-  "white_polarity": "repel"
+  "white_polarity": "repel",
+  "release_ms": 200
 }

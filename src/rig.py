@@ -70,6 +70,21 @@ FEED_MMS = 40.0
 MAG_FULL = 255
 MAG_DIAG = 155
 
+# Letting go of a piece. The pieces hold permanent magnets, so a full-strength
+# reverse does not release one so much as punch it -- it jumps and rattles as
+# it lands. So the release fades the grip to nothing first, lets the piece
+# settle, and only then gives a WEAK reverse to clear residual magnetism from
+# the core. The kick can be weak because the piece is already seated by then;
+# dropping it entirely is not an option, since a magnetised core tows the
+# piece along when the carriage leaves.
+MAG_KICK = 110
+
+# How long that fade takes. Tunable live (RELEASE, and the slider in the web
+# UI) because the right value depends on the piece and the coil; 0 restores
+# the old instant kick.
+DEFAULT_RELEASE_MS = 200
+MIN_RELEASE_MS, MAX_RELEASE_MS = 0, 2000
+
 # The white pieces on this set were built with their magnets the other way up,
 # so they need the opposite coil polarity: attract holds a black piece, repel
 # holds a white one. Measured at the bench with MAG 1 / MAG 2.
@@ -103,7 +118,8 @@ READY_BANNER = "READY ChessBot-V1"
 #       attracts for every move, which shoves every white piece off its
 #       square. That silence is why this check exists.
 #   r2  w|b suffix on MOVE/KNIGHT, plus POL and POLTEST.
-FIRMWARE_REV = 2
+#   r3  the faded release, plus RELEASE to tune it.
+FIRMWARE_REV = 3
 
 
 def banner_rev(banner):

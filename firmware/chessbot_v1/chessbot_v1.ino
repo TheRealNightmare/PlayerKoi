@@ -37,8 +37,12 @@
      POLTEST e2        -> OK POLTEST e2     park there, then attract 2s /
                                             repel 2s, so you can see which
                                             way actually holds the piece
+     RELEASE           -> OK RELEASE 200    ms the grip takes to fade away
+     RELEASE <ms>      -> OK RELEASE <ms>   0-2000; 0 = no fade, old behaviour
      MAG 0|1|2         -> OK MAG n          off / attract / repel
-     PULSE             -> OK PULSE          reverse kick, clears residual
+     PULSE             -> OK PULSE          raw full-power reverse kick, for
+                                            the bench. A game move uses the
+                                            gentler faded release instead.
      HOME              -> OK HOME           return to origin
      POS               -> OK POS x y        current mm position
      MM -105 100       -> OK MM x y         raw machine coordinates, mm
@@ -107,7 +111,7 @@ unsigned int stepDelayUS;
 // about. It rides in the READY banner, and src/robot.py refuses to drive a
 // board older than it expects -- r1 had no polarity suffix at all and would
 // silently attract for every move, shoving every white piece off its square.
-#define FIRMWARE_REV 2
+#define FIRMWARE_REV 3
 
 // Measured on this set: the white pieces' magnets are the other way up, so
 // they need the opposite coil polarity from the black ones. This is only the
@@ -119,6 +123,27 @@ bool whiteReversed = WHITE_IS_REVERSED;
 const int MAG_FULL  = 255;
 const int MAG_WEAVE = 170;
 const int MAG_DIAG  = 155;
+
+// Letting go. The pieces hold permanent magnets, so a full-strength reverse
+// does not release one so much as punch it -- it jumps and rattles as it is
+// set down. So the release is two separate things:
+//
+//   1. fade the grip to nothing, and let the piece settle under no force
+//   2. a brief WEAK reverse, purely to clear residual magnetism from the core
+//
+// Phase 2 can be weak precisely because phase 1 already happened: by the time
+// it fires the piece is seated and unheld, so it only has to de-cling the
+// core, not shift anything. Dropping phase 2 entirely is not an option -- a
+// magnetised core tows the piece along when the carriage drives away.
+const int MAG_KICK           = 110;  // de-cling only, not a shove
+const int RELEASE_KICK_MS    = 20;
+const int RELEASE_SETTLE_MS  = 30;   // pause between the fade and the kick
+const int RELEASE_FADE_STEPS = 24;   // PWM steps on the way down
+
+// How long the fade takes. Runtime, set by RELEASE -- 0 reproduces the old
+// instant single-kick behaviour exactly, which makes this an A/B test rather
+// than a change you have to take on faith.
+int releaseFadeMS = 200;
 
 // ---------- state ----------
 float posX = 0.0, posY = 0.0;
@@ -251,6 +276,17 @@ void handleCommand(String line) {
     delay(2000);
     magOff();
     Serial.println("OK POLTEST " + arg);
+  }
+
+  // How long the grip takes to fade away when a piece is set down. 0 is the
+  // old behaviour: no fade, straight to the kick.
+  else if (cmd == "RELEASE") {
+    if (arg.length() > 0) {
+      long ms = arg.toInt();
+      if (ms < 0 || ms > 2000) { Serial.println("ERR release 0-2000"); return; }
+      releaseFadeMS = (int)ms;
+    }
+    Serial.println("OK RELEASE " + String(releaseFadeMS));
   }
 
   else if (cmd == "PULSE") {
@@ -430,13 +466,34 @@ void magHold(int duty, bool reversed) {
 }
 
 void magRelease(bool reversed) {
-  if (reversed) magAttract(MAG_FULL);
-  else          magRepel(MAG_FULL);
-  delay(15);
+  // Phase 1: ease the grip off, so the piece is already sitting still before
+  // anything pushes on it.
+  if (releaseFadeMS > 0) {
+    int stepMS = releaseFadeMS / RELEASE_FADE_STEPS;
+    if (stepMS < 1) stepMS = 1;
+    for (int i = RELEASE_FADE_STEPS - 1; i >= 0; i--) {
+      magHold((int)((long)MAG_FULL * i / RELEASE_FADE_STEPS), reversed);
+      delay(stepMS);
+    }
+  }
+  magOff();
+  delay(RELEASE_SETTLE_MS);
+
+  // Phase 2: the opposite polarity, weakly, to clear the core. !reversed is
+  // the opposite sign for free -- no second attract/repel decision to keep in
+  // step with magHold.
+  magHold(MAG_KICK, !reversed);
+  delay(RELEASE_KICK_MS);
   magOff();
 }
 
-void magPulse() { magRelease(false); }   // bench verb: the un-reversed kick
+// The bench verb keeps the old hard kick, deliberately: it stays a raw
+// de-magnetising pulse you can feel, separate from what a move now does.
+void magPulse() {
+  magRepel(MAG_FULL);
+  delay(15);
+  magOff();
+}
 
 // ============================================================
 //  MOTION
