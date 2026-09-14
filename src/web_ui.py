@@ -23,6 +23,12 @@ a settle can't be resolved with confidence the UI flags it and offers a manual
     python3 src/web_ui.py --robot auto         # http://<this-pi>:8000/
     python3 src/web_ui.py --ai-vs-ai --robot auto    # skip the menu
 
+The page itself is src/ui/ -- real .html/.css/.js files, served by
+read_ui_asset() rather than held in a string literal here. src/ui/neoretro.css
+is a hand-written reimplementation of the neo-retro design system
+(https://neo-retro.zurat.dev) in the gruvbox-light theme; the real thing is a
+Svelte component library and this rig has no build step.
+
 Nothing is required to reach the menu. "Play the engine" additionally needs
 config/calibration.json (run calibrate.py) and a trained, NCNN-exported
 empty/white/black classifier (see src/collect_square_crops.py and
@@ -64,728 +70,38 @@ _VALID_LABELS = {
     for piece in ("king", "queen", "rook", "bishop", "knight", "pawn")
 }
 
-PAGE = """<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Player Koi</title>
-<style>
-  :root { color-scheme: dark; }
-  body {
-    margin: 0; min-height: 100vh; display: flex; flex-wrap: wrap;
-    align-items: flex-start; justify-content: center; gap: 24px; padding: 24px;
-    background: #1a1a1a; font-family: -apple-system, Helvetica, Arial, sans-serif;
-    box-sizing: border-box;
-  }
-  .col { display: flex; flex-direction: column; align-items: center; gap: 12px; }
-  #status { color: #888; font-size: 14px; }
-  #status.stale { color: #d9534f; }
-  #board {
-    display: grid; grid-template-columns: repeat(8, min(11vw, 64px));
-    grid-template-rows: repeat(8, min(11vw, 64px));
-    border: 3px solid #3a2a1a; box-shadow: 0 8px 30px rgba(0,0,0,0.5);
-    position: relative;
-  }
-  .sq { display: flex; align-items: center; justify-content: center;
-        font-size: min(8vw, 46px); user-select: none; line-height: 1; position: relative; }
-  .light { background: #eeeed2; }
-  .dark  { background: #769656; }
-  .white-piece { color: #fff; text-shadow: 0 0 2px #000, 0 1px 3px rgba(0,0,0,.6); }
-  .black-piece { color: #111; }
-  .sq.editable { cursor: pointer; outline: 2px solid transparent; }
-  .sq.editable:hover { outline-color: #ffcc00; }
-  #stream { max-width: min(90vw, 640px); border-radius: 6px; box-shadow: 0 8px 30px rgba(0,0,0,0.5); }
-  #lastMove { color: #eee; font-size: 18px; min-height: 24px; }
-  #moveLog { color: #999; font-size: 13px; max-width: 320px; text-align: center; max-height: 140px; overflow-y: auto; }
-  #moveLog div { padding: 2px 0; }
-  #flagBox { display: none; flex-direction: column; align-items: center; gap: 8px;
-             background: #3a2a1a; border: 1px solid #d9534f; border-radius: 6px; padding: 10px 14px; color: #eee; }
-  #flagReason { color: #f0ad4e; font-size: 13px; text-align: center; max-width: 320px; }
-  button { background: #444; color: #eee; border: 1px solid #666; border-radius: 4px;
-           padding: 6px 14px; font-size: 14px; cursor: pointer; }
-  button:hover { background: #555; }
-  .expect-from { box-shadow: inset 0 0 0 4px #ffcc00; }
-  .expect-to   { box-shadow: inset 0 0 0 4px #4a9eff; }
-  #controls { display: flex; gap: 10px; }
-  #engineBox {
-    display: flex; flex-direction: column; align-items: center; gap: 6px;
-    background: #23282e; border: 1px solid #444; border-radius: 6px;
-    padding: 12px 18px; color: #eee; min-width: 300px;
-  }
-  #engineTitle { color: #888; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }
-  #engineMove { font-size: 30px; font-weight: bold; color: #4a9eff; min-height: 36px; letter-spacing: 2px; }
-  #engineExtra { color: #f0ad4e; font-size: 13px; text-align: center; max-width: 320px; }
-  #engineMsg { color: #888; font-size: 12px; text-align: center; max-width: 320px; }
-  #engineRow { display: flex; align-items: center; gap: 12px; font-size: 13px; color: #bbb; }
-  #robotBox {
-    display: none; flex-direction: column; align-items: center; gap: 6px;
-    background: #23282e; border: 1px solid #444; border-radius: 6px;
-    padding: 12px 18px; color: #eee; min-width: 300px;
-  }
-  #robotBox.halted { border-color: #d9534f; background: #3a2a2a; }
-  #robotTitle { color: #888; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }
-  #robotState { font-size: 16px; font-weight: bold; }
-  #robotNote { color: #bbb; font-size: 13px; text-align: center; min-height: 18px; }
-  #robotPrompt { color: #f0ad4e; font-size: 14px; font-weight: bold; text-align: center; max-width: 320px; }
-  #robotMsg { color: #d9534f; font-size: 12px; text-align: center; max-width: 320px; }
-  #robotRow { display: flex; gap: 10px; }
-  #haltBtn { background: #8a2b2b; border-color: #d9534f; }
-  #haltBtn:hover { background: #a33; }
-  #editControls { display: none; flex-direction: column; align-items: center; gap: 8px; }
-  #editShortcuts { display: flex; gap: 10px; }
-  #pausedNote { display: none; color: #f0ad4e; font-size: 13px; font-weight: bold; }
-  #turnRow { display: flex; gap: 10px; align-items: center; color: #eee; font-size: 14px; }
-  #saveCancelRow { display: flex; gap: 10px; }
-  #picker {
-    display: none; position: absolute; z-index: 10; background: #222; border: 1px solid #666;
-    border-radius: 6px; padding: 6px; grid-template-columns: repeat(4, 36px); gap: 4px;
-  }
-  #picker .opt { width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
-                 font-size: 24px; background: #333; border-radius: 4px; cursor: pointer; }
-  #picker .opt:hover { background: #555; }
+UI_DIR = Path(__file__).resolve().parent / "ui"
 
-  /* --- shell: one heading, two screens ------------------------------- */
-  #shell { width: 100%; display: flex; flex-direction: column; align-items: center; gap: 18px; }
-  #brand { margin: 0; color: #eee; font-size: 30px; font-weight: 600; letter-spacing: 3px; }
-  #brand span { color: #769656; }
-  #screens { width: 100%; display: flex; flex-wrap: wrap; align-items: flex-start;
-             justify-content: center; gap: 24px; }
-  #menu { display: none; flex-direction: column; align-items: center; gap: 18px; max-width: 760px; }
-  #menuCards { display: flex; flex-wrap: wrap; justify-content: center; gap: 18px; }
-  .card {
-    width: 300px; display: flex; flex-direction: column; gap: 10px; text-align: left;
-    background: #23282e; border: 1px solid #444; border-radius: 8px; padding: 18px;
-  }
-  .card h2 { margin: 0; font-size: 18px; color: #eee; }
-  .card p { margin: 0; font-size: 13px; color: #bbb; line-height: 1.5; }
-  .card.unavailable { opacity: 0.55; }
-  .card .reason { color: #f0ad4e; font-size: 12px; line-height: 1.5; }
-  .card button { align-self: flex-start; }
-  .card button:disabled { cursor: not-allowed; opacity: 0.5; }
-  #menuSettings {
-    display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 16px;
-    color: #bbb; font-size: 13px; background: #23282e; border: 1px solid #444;
-    border-radius: 8px; padding: 14px 18px;
-  }
-  #menuSettings label { display: flex; align-items: center; gap: 6px; }
-  #menuSettings input[type="number"] { width: 62px; background: #1a1a1a; color: #eee;
-                                       border: 1px solid #666; border-radius: 4px; padding: 3px 5px; }
-  #menuError { color: #d9534f; font-size: 13px; min-height: 18px; text-align: center; }
-  #game { display: none; }
-  #sessionRow { display: flex; gap: 10px; }
-  #resetBtn, #menuResetBtn { background: #6a5320; border-color: #f0ad4e; }
-  #resetBtn:hover, #menuResetBtn:hover { background: #866828; }
-</style>
-</head>
-<body>
-<div id="shell">
-  <h1 id="brand">PLAYER <span>KOI</span></h1>
-
-  <div id="menu">
-    <div id="menuCards"></div>
-    <div id="menuSettings">
-      <label>skill <input type="range" id="setSkill" min="0" max="20" step="1"></label>
-      <span id="setSkillVal"></span>
-      <label>think <input type="number" id="setThink" min="0.05" max="10" step="0.05"> s</label>
-      <label>move delay <input type="number" id="setDelay" min="0" max="30" step="0.5"> s</label>
-      <label><input type="checkbox" id="setNoob"> beginner style (few knight moves)</label>
-    </div>
-    <div id="menuError"></div>
-    <button id="menuResetBtn">Reset &amp; park the arm</button>
-  </div>
-
-  <div id="screens">
-  <div class="col" id="game">
-    <div id="board"><div id="picker"></div></div>
-    <div id="flagBox">
-      <div id="flagReason"></div>
-    </div>
-    <div id="sessionRow">
-      <button id="backBtn">&larr; Back to menu</button>
-      <button id="resetBtn">Reset</button>
-    </div>
-    <div id="controls">
-      <button id="editBtn">Edit board</button>
-      <button id="undoBtn">Undo last move</button>
-    </div>
-    <div id="pausedNote">tracking paused while editing</div>
-    <div id="editControls">
-      <div id="turnRow">
-        Side to move:
-        <label><input type="radio" name="turn" value="white" checked> White</label>
-        <label><input type="radio" name="turn" value="black"> Black</label>
-      </div>
-      <div id="editShortcuts">
-        <button id="resetStartBtn">Reset to start</button>
-        <button id="clearBoardBtn">Clear board</button>
-      </div>
-      <div id="saveCancelRow">
-        <button id="saveBtn">Save</button>
-        <button id="cancelBtn">Cancel</button>
-      </div>
-      <div id="editHint" style="color:#999; font-size:12px;">Click a square to set its piece</div>
-    </div>
-    <div id="lastMove"></div>
-    <div id="moveLog"></div>
-    <div id="status">connecting...</div>
-    <div id="engineBox">
-      <div id="engineTitle">Engine (Black)</div>
-      <div id="aiNote" style="display:none;color:#f0ad4e;font-size:12px">
-        no camera &mdash; the tracked position is trusted, not verified
-      </div>
-      <div id="engineMove"></div>
-      <div id="engineExtra"></div>
-      <div id="engineMsg"></div>
-      <div id="engineRow">
-        <label><input type="checkbox" id="engineToggle"> on</label>
-        <label>skill <input type="range" id="engineSkill" min="0" max="20" step="1"></label>
-        <span id="engineSkillVal"></span>
-      </div>
-    </div>
-    <div id="robotBox">
-      <div id="robotTitle">Robot arm</div>
-      <div id="robotState"></div>
-      <div id="robotNote"></div>
-      <div id="robotPrompt"></div>
-      <div id="robotMsg"></div>
-      <div id="robotRow">
-        <button id="confirmBtn">Done — piece removed</button>
-        <button id="haltBtn">HALT</button>
-        <button id="homeBtn">Home / re-enable</button>
-      </div>
-    </div>
-  </div>
-  <div class="col" id="videoCol">
-    <img id="stream" src="/stream.mjpg">
-  </div>
-  </div>
-</div>
-<script>
-const GLYPHS = {
-  "white-king": "\\u2654", "white-queen": "\\u2655", "white-rook": "\\u2656",
-  "white-bishop": "\\u2657", "white-knight": "\\u2658", "white-pawn": "\\u2659",
-  "black-king": "\\u265A", "black-queen": "\\u265B", "black-rook": "\\u265C",
-  "black-bishop": "\\u265D", "black-knight": "\\u265E", "black-pawn": "\\u265F",
-};
-const PICKER_OPTIONS = [null, ...Object.keys(GLYPHS)];
-
-const boardEl = document.getElementById("board");
-const pickerEl = document.getElementById("picker");
-const cells = [];
-for (let rank = 7; rank >= 0; rank--) {
-  for (let file = 0; file < 8; file++) {
-    const cell = document.createElement("div");
-    cell.className = "sq " + ((rank + file) % 2 === 0 ? "dark" : "light");
-    boardEl.appendChild(cell);
-    cells.push({ el: cell, rank, file });
-  }
+# Served content types, which is also the allowlist: a request for anything
+# not ending in one of these extensions is refused outright.
+_UI_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".svg": "image/svg+xml",
 }
 
-let liveMatrix = null;   // last matrix received from the server
-let editMatrix = null;   // working copy while in edit mode, null when not editing
 
-let expectedUci = null;   // e.g. "d7d5" -- the engine move awaiting placement
+def read_ui_asset(name):
+    """Bytes of one file from src/ui, or None if it isn't a servable asset.
 
-function squareName(file, rank) {
-  return "abcdefgh"[file] + (rank + 1);
-}
+    The page lives on disk rather than in a string literal here, because
+    writing JS through a Python string means every backslash escape in a JS
+    string has to be doubled -- and getting that wrong produces a real
+    newline inside a JS literal, which is a syntax error the Python side is
+    perfectly happy to emit.
 
-function render(matrix) {
-  for (const { el, rank, file } of cells) {
-    const label = matrix[rank][file];
-    if (!label) { el.textContent = ""; el.className = el.className.replace(/ (white|black)-piece/, ""); }
-    else {
-      el.textContent = GLYPHS[label] || "?";
-      const colorClass = label.startsWith("white") ? "white-piece" : "black-piece";
-      el.className = el.className.replace(/ (white|black)-piece/, "") + " " + colorClass;
-    }
-    // Mark where the engine wants the piece taken from and put down.
-    const name = squareName(file, rank);
-    el.classList.toggle("expect-from", !!expectedUci && expectedUci.slice(0, 2) === name);
-    el.classList.toggle("expect-to", !!expectedUci && expectedUci.slice(2, 4) === name);
-  }
-}
+    resolve() before the containment check, so ".." and symlinks are both
+    normalised away before it is made.
+    """
+    path = (UI_DIR / name).resolve()
+    if path.suffix not in _UI_TYPES:
+        return None, None
+    if not path.is_relative_to(UI_DIR) or not path.is_file():
+        return None, None
+    return path.read_bytes(), _UI_TYPES[path.suffix]
 
-function closePicker() { pickerEl.style.display = "none"; }
 
-function openPicker(cellInfo) {
-  pickerEl.innerHTML = "";
-  for (const label of PICKER_OPTIONS) {
-    const opt = document.createElement("div");
-    opt.className = "opt";
-    opt.textContent = label ? (GLYPHS[label] || "?") : "\\u2716";
-    opt.title = label || "empty";
-    opt.onclick = (ev) => {
-      ev.stopPropagation();
-      editMatrix[cellInfo.rank][cellInfo.file] = label;
-      render(editMatrix);
-      closePicker();
-    };
-    pickerEl.appendChild(opt);
-  }
-  const rect = cellInfo.el.getBoundingClientRect();
-  const boardRect = boardEl.getBoundingClientRect();
-  pickerEl.style.left = (rect.left - boardRect.left) + "px";
-  pickerEl.style.top = (rect.top - boardRect.top) + "px";
-  pickerEl.style.display = "grid";
-}
-
-for (const cellInfo of cells) {
-  cellInfo.el.addEventListener("click", () => {
-    if (!editMatrix) return;
-    openPicker(cellInfo);
-  });
-}
-boardEl.addEventListener("click", (ev) => { if (ev.target === boardEl) closePicker(); });
-
-const statusEl = document.getElementById("status");
-const lastMoveEl = document.getElementById("lastMove");
-const moveLogEl = document.getElementById("moveLog");
-const flagBoxEl = document.getElementById("flagBox");
-const flagReasonEl = document.getElementById("flagReason");
-const editControlsEl = document.getElementById("editControls");
-const controlsEl = document.getElementById("controls");
-const pausedNoteEl = document.getElementById("pausedNote");
-const editBtn = document.getElementById("editBtn");
-const undoBtn = document.getElementById("undoBtn");
-const resetStartBtn = document.getElementById("resetStartBtn");
-const clearBoardBtn = document.getElementById("clearBoardBtn");
-const saveBtn = document.getElementById("saveBtn");
-const cancelBtn = document.getElementById("cancelBtn");
-
-const engineMoveEl = document.getElementById("engineMove");
-const engineExtraEl = document.getElementById("engineExtra");
-const engineMsgEl = document.getElementById("engineMsg");
-const engineToggle = document.getElementById("engineToggle");
-
-// Which screen is up, and how the game screen is dressed for the mode.
-// Driven from every poll rather than latched once: with a menu you can leave
-// AI vs AI and come back to normal mode, so a one-way switch would be wrong.
-let currentMode = null;
-const menuEl = document.getElementById("menu");
-const gameEl = document.getElementById("game");
-const videoCol = document.getElementById("videoCol");
-const engineTitleEl = document.getElementById("engineTitle");
-const aiNoteEl = document.getElementById("aiNote");
-const engineToggleLabel = document.querySelector("#engineRow label");
-
-function applyMode(mode) {
-  if (mode === currentMode) return;
-  currentMode = mode;
-  const inGame = mode && mode !== "menu";
-  menuEl.style.display = inGame ? "none" : "flex";
-  gameEl.style.display = inGame ? "flex" : "none";
-
-  const ai = mode === "ai_vs_ai";
-  videoCol.style.display = ai || !inGame ? "none" : "flex";
-  aiNoteEl.style.display = ai ? "block" : "none";
-  engineTitleEl.textContent = ai ? "Engine (both sides)" : "Engine (Black)";
-  engineToggleLabel.lastChild.textContent = ai ? " play" : " on";
-
-  // Reconnect the feed when returning to a mode that has one; the <img>
-  // stops retrying once the server has answered 503.
-  const img = document.getElementById("stream");
-  if (img && !ai && inGame) img.src = "/stream.mjpg?t=" + Date.now();
-}
-const engineSkill = document.getElementById("engineSkill");
-const engineSkillVal = document.getElementById("engineSkillVal");
-const robotBox = document.getElementById("robotBox");
-const robotStateEl = document.getElementById("robotState");
-const robotNoteEl = document.getElementById("robotNote");
-const robotPromptEl = document.getElementById("robotPrompt");
-const robotMsgEl = document.getElementById("robotMsg");
-const haltBtn = document.getElementById("haltBtn");
-const homeBtn = document.getElementById("homeBtn");
-const confirmBtn = document.getElementById("confirmBtn");
-// Sent with every poll rather than baked into the page: --board-origin is
-// applied after web_ui is imported, so a value substituted at import time
-// would name the wrong corner.
-let PARK_SQUARE = "?";
-
-const BACK_RANK = ["rook", "knight", "bishop", "queen", "king", "bishop", "knight", "rook"];
-
-function emptyMatrix() {
-  return Array.from({ length: 8 }, () => Array(8).fill(null));
-}
-
-function startingMatrix() {
-  const m = emptyMatrix();
-  for (let file = 0; file < 8; file++) {
-    m[0][file] = "white-" + BACK_RANK[file];
-    m[1][file] = "white-pawn";
-    m[6][file] = "black-pawn";
-    m[7][file] = "black-" + BACK_RANK[file];
-  }
-  return m;
-}
-
-async function setPaused(paused) {
-  try {
-    await fetch("/board/pause", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ paused }),
-    });
-  } catch (e) { /* the pause lapses on its own if this never lands */ }
-}
-let lastOk = Date.now();
-let lastMoveSeq = 0;
-
-function logMove(text) {
-  const line = document.createElement("div");
-  line.textContent = text;
-  moveLogEl.prepend(line);
-  while (moveLogEl.children.length > 8) moveLogEl.removeChild(moveLogEl.lastChild);
-}
-
-function enterEditMode() {
-  editMatrix = (liveMatrix || emptyMatrix()).map(row => row.slice());
-  for (const { el } of cells) el.classList.add("editable");
-  editControlsEl.style.display = "flex";
-  controlsEl.style.display = "none";
-  pausedNoteEl.style.display = "block";
-  setPaused(true);   // held open by the ?editing=1 poll below
-  render(editMatrix);
-}
-
-function exitEditMode() {
-  editMatrix = null;
-  closePicker();
-  for (const { el } of cells) el.classList.remove("editable");
-  editControlsEl.style.display = "none";
-  controlsEl.style.display = "flex";
-  pausedNoteEl.style.display = "none";
-  setPaused(false);
-  if (liveMatrix) render(liveMatrix);
-}
-
-editBtn.onclick = enterEditMode;
-cancelBtn.onclick = exitEditMode;
-resetStartBtn.onclick = () => { editMatrix = startingMatrix(); render(editMatrix); };
-clearBoardBtn.onclick = () => { editMatrix = emptyMatrix(); render(editMatrix); };
-
-async function postEngine(payload) {
-  try {
-    await fetch("/engine", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-  } catch (e) { /* next poll re-syncs the displayed state */ }
-}
-
-engineToggle.onchange = () => postEngine({ enabled: engineToggle.checked });
-engineSkill.oninput = () => { engineSkillVal.textContent = engineSkill.value; };
-engineSkill.onchange = () => postEngine({ skill: Number(engineSkill.value) });
-
-async function postRobot(payload, button) {
-  if (button) button.disabled = true;
-  try {
-    const res = await fetch("/robot", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) alert(body.error || res.statusText);
-  } catch (e) {
-    alert("Robot command failed: " + e);
-  } finally {
-    if (button) button.disabled = false;
-  }
-}
-
-haltBtn.onclick = () => postRobot({ halt: true }, haltBtn);
-confirmBtn.onclick = () => postRobot({ confirm: true }, confirmBtn);
-homeBtn.onclick = () => {
-  // No limit switches: HOME drives to where it ASSUMES the origin is, so
-  // this only tells the truth if the carriage really is parked there.
-  if (confirm("Is the carriage parked on " + PARK_SQUARE + "?\\n\\n" +
-              "There are no limit switches -- homing drives to the assumed " +
-              "origin rather than finding it. If it is parked anywhere else, " +
-              "every move afterwards will be wrong.\\n\\n" +
-              "It will cross the whole board. Keep hands clear.")) {
-    postRobot({ home: true }, homeBtn);
-  }
-};
-
-function renderRobot(bot) {
-  if (!bot) { robotBox.style.display = "none"; return; }
-  robotBox.style.display = "flex";
-  robotBox.classList.toggle("halted", !!bot.halted);
-
-  let state = "ready";
-  let color = "#5cb85c";
-  if (bot.halted) { state = "HALTED"; color = "#d9534f"; }
-  else if (bot.busy) { state = "moving"; color = "#4a9eff"; }
-  else if (!bot.homed) { state = "not homed"; color = "#f0ad4e"; }
-  // A blocking prompt outranks everything else in the status line: the arm
-  // is stopped mid-move and nothing continues until it is answered.
-  if (bot.awaiting_confirm) { state = "WAITING FOR YOU"; color = "#f0ad4e"; }
-  robotStateEl.textContent = state + " (" + bot.port + ")";
-  robotStateEl.style.color = color;
-
-  robotNoteEl.textContent = bot.note || "";
-  robotPromptEl.textContent = bot.awaiting_confirm || bot.prompt || "";
-  robotMsgEl.textContent = bot.message || "";
-  haltBtn.disabled = bot.halted;
-  confirmBtn.style.display = bot.awaiting_confirm ? "" : "none";
-}
-
-undoBtn.onclick = async () => {
-  undoBtn.disabled = true;
-  try {
-    const res = await fetch("/board/undo", { method: "POST" });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      alert(body.error || res.statusText);
-      return;
-    }
-    logMove("(undid " + body.undone + ")");
-    lastMoveEl.textContent = "";
-  } catch (e) {
-    alert("Could not undo: " + e);
-  } finally {
-    undoBtn.disabled = false;
-  }
-};
-
-saveBtn.onclick = async () => {
-  const turn = document.querySelector('input[name="turn"]:checked').value;
-  saveBtn.disabled = true;
-  try {
-    const res = await fetch("/board/correct", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ matrix: editMatrix, turn }),
-    });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      alert("Could not save: " + (body.error || res.statusText));
-      return;
-    }
-    exitEditMode();
-  } catch (e) {
-    alert("Could not save: " + e);
-  } finally {
-    saveBtn.disabled = false;
-  }
-};
-
-// ---- the menu -------------------------------------------------------
-
-const menuCardsEl = document.getElementById("menuCards");
-const menuErrorEl = document.getElementById("menuError");
-const setSkill = document.getElementById("setSkill");
-const setSkillVal = document.getElementById("setSkillVal");
-const setThink = document.getElementById("setThink");
-const setDelay = document.getElementById("setDelay");
-const setNoob = document.getElementById("setNoob");
-let settingsSeeded = false;
-
-setSkill.oninput = () => { setSkillVal.textContent = setSkill.value; };
-
-function seedSettings(defaults) {
-  // Once only, from whatever the process was launched with -- after that the
-  // controls belong to the user and polling must not fight them.
-  if (settingsSeeded || !defaults) return;
-  settingsSeeded = true;
-  if (defaults.skill !== undefined) setSkill.value = defaults.skill;
-  if (defaults.think !== undefined) setThink.value = defaults.think;
-  if (defaults.move_delay !== undefined) setDelay.value = defaults.move_delay;
-  if (defaults.noob !== undefined) setNoob.checked = !!defaults.noob;
-  setSkillVal.textContent = setSkill.value;
-}
-
-function renderMenu(modes) {
-  const signature = JSON.stringify(modes);
-  if (menuCardsEl.dataset.signature === signature) return;
-  menuCardsEl.dataset.signature = signature;
-  menuCardsEl.innerHTML = "";
-  for (const m of modes || []) {
-    const card = document.createElement("div");
-    card.className = "card" + (m.available ? "" : " unavailable");
-    const h = document.createElement("h2");
-    h.textContent = m.title;
-    const p = document.createElement("p");
-    p.textContent = m.blurb;
-    card.append(h, p);
-    if (!m.available) {
-      const reason = document.createElement("div");
-      reason.className = "reason";
-      reason.textContent = m.reason;
-      card.appendChild(reason);
-    }
-    const btn = document.createElement("button");
-    btn.textContent = m.available ? "Start" : "Unavailable";
-    btn.disabled = !m.available;
-    btn.onclick = () => startMode(m.mode, btn);
-    card.appendChild(btn);
-    menuCardsEl.appendChild(card);
-  }
-}
-
-async function startMode(mode, btn) {
-  menuErrorEl.textContent = "";
-  btn.disabled = true;
-  btn.textContent = "Starting...";
-  try {
-    const res = await fetch("/mode", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        mode,
-        settings: {
-          skill: Number(setSkill.value),
-          think: Number(setThink.value),
-          move_delay: Number(setDelay.value),
-          noob: setNoob.checked,
-        },
-      }),
-    });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      menuErrorEl.textContent = body.error || res.statusText;
-      return;
-    }
-    // Skill is an engine option, not a mode setting, so it goes the usual way.
-    await fetch("/engine", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ skill: Number(setSkill.value) }),
-    });
-    applyMode(body.mode);
-  } catch (e) {
-    menuErrorEl.textContent = String(e);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = "Start";
-    menuCardsEl.dataset.signature = "";  // force a redraw of the buttons
-  }
-}
-
-const backBtn = document.getElementById("backBtn");
-const resetBtn = document.getElementById("resetBtn");
-const menuResetBtn = document.getElementById("menuResetBtn");
-
-backBtn.onclick = async () => {
-  backBtn.disabled = true;
-  try {
-    const res = await fetch("/mode/stop", { method: "POST" });
-    const body = await res.json().catch(() => ({}));
-    if (body.park_error) alert("The arm did not park: " + body.park_error);
-    applyMode("menu");
-    moveLogEl.innerHTML = "";
-    lastMoveEl.textContent = "";
-    lastMoveSeq = -1;
-  } finally {
-    backBtn.disabled = false;
-  }
-};
-
-async function doReset(btn, withGame) {
-  // The carriage crosses the whole board to reach (0,0) and will shove
-  // anything standing in the way, so this always asks first.
-  if (!confirm((withGame ? "Reset the game and park the arm?" : "Park the arm?") +
-               "\\n\\nThe carriage will drive to " + PARK_SQUARE +
-               ", crossing the whole board. Clear its path and keep hands clear.")) {
-    return;
-  }
-  btn.disabled = true;
-  try {
-    const res = await fetch("/reset", { method: "POST" });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok || body.error) alert("Reset: " + (body.error || res.statusText));
-    if (withGame) { moveLogEl.innerHTML = ""; lastMoveEl.textContent = ""; lastMoveSeq = -1; }
-  } finally {
-    btn.disabled = false;
-  }
-}
-
-resetBtn.onclick = () => doReset(resetBtn, true);
-menuResetBtn.onclick = () => doReset(menuResetBtn, false);
-
-async function poll() {
-  try {
-    // ?editing=1 refreshes the server-side pause while the editor is open;
-    // if this tab goes away, the pause lapses and tracking resumes.
-    const res = await fetch("/board.json" + (editMatrix ? "?editing=1" : ""), { cache: "no-store" });
-    const data = await res.json();
-
-    if (data.park_square) PARK_SQUARE = data.park_square;
-    seedSettings(data.defaults);
-    applyMode(data.mode);
-    if (data.mode === "menu") {
-      // One poll drives both screens; on the menu there is no board to draw.
-      renderMenu(data.modes);
-      menuResetBtn.style.display = data.has_robot ? "inline-block" : "none";
-      statusEl.textContent = "";
-      lastOk = Date.now();
-      statusEl.classList.remove("stale");
-      setTimeout(poll, 500);
-      return;
-    }
-
-    liveMatrix = data.matrix;
-    renderRobot(data.robot);
-
-    const eng = data.engine || {};
-    expectedUci = eng.expected_uci || null;
-    engineMoveEl.textContent = eng.thinking ? "thinking..." : (eng.instruction || "");
-    engineExtraEl.textContent = eng.thinking ? "" : (eng.extra || "");
-    engineMsgEl.textContent = eng.message || (eng.available ? "" : "engine unavailable");
-    // Don't fight the user mid-drag of the slider or mid-click of the toggle.
-    if (document.activeElement !== engineToggle) engineToggle.checked = !!eng.enabled;
-    if (document.activeElement !== engineSkill && eng.skill !== undefined) {
-      engineSkill.value = eng.skill;
-      engineSkillVal.textContent = eng.skill;
-    }
-    engineToggle.disabled = !eng.available;
-    engineSkill.disabled = !eng.available;
-
-    if (!editMatrix) render(liveMatrix);
-
-    if (data.move_seq > lastMoveSeq) {
-      if (data.last_move) {
-        lastMoveEl.textContent = data.last_move;
-        logMove(data.last_move);
-      } else if (data.flagged) {
-        lastMoveEl.textContent = "";
-        logMove("(flagged: " + (data.flag_reason || "unresolved") + ")");
-      }
-    }
-    lastMoveSeq = data.move_seq;
-
-    // The flag box is informational only -- the editor is reachable at any
-    // time from #controls, since a wrongly-accepted move raises no flag.
-    if (data.flagged) {
-      flagBoxEl.style.display = "flex";
-      flagReasonEl.textContent = data.flag_reason || "Board state could not be resolved automatically.";
-    } else {
-      flagBoxEl.style.display = "none";
-    }
-
-    const turnRadio = document.querySelector('input[name="turn"][value="' + data.turn + '"]');
-    if (turnRadio && !editMatrix) turnRadio.checked = true;
-
-    lastOk = Date.now();
-    statusEl.textContent = "live -- updated " + new Date(data.updated_at * 1000).toLocaleTimeString();
-    statusEl.classList.remove("stale");
-  } catch (e) {
-    statusEl.textContent = "connection lost, retrying...";
-  }
-  if (Date.now() - lastOk > 5000) statusEl.classList.add("stale");
-  setTimeout(poll, 500);
-}
-poll();
-</script>
-</body>
-</html>
-"""
-
-# The page is a static string, so the one rig-dependent value in it is
-# substituted here rather than at request time.
 class BoardBuffer:
     """Holds the latest board matrix, move text, flagged status/reason, and
     JPEG frame for the HTTP handler to read -- one lock guards the board
@@ -1052,13 +368,8 @@ def start_server(host, port, buffer, session):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             path, _, query = self.path.partition("?")
-            if path == "/":
-                body = PAGE.encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+            if path == "/" or path in ("/index.html",):
+                self._send_asset("index.html")
             elif path == "/state.json":
                 self._send_json(200, self._state_payload())
             elif path == "/board.json":
@@ -1115,8 +426,24 @@ def start_server(host, port, buffer, session):
                         time.sleep(0.03)
                 except (BrokenPipeError, ConnectionResetError):
                     pass  # viewer closed the tab
+            elif self._send_asset(path.lstrip("/")):
+                pass
             else:
                 self.send_error(404)
+
+        def _send_asset(self, name):
+            body, content_type = read_ui_asset(name)
+            if body is None:
+                return False
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            # The page is edited in place during development and the Pi is
+            # reached over a LAN, so a cached stylesheet is a real nuisance.
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(body)
+            return True
 
         def _state_payload(self):
             state = session.state()

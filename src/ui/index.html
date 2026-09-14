@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Player Koi</title>
+<link rel="stylesheet" href="/neoretro.css">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div id="shell">
+  <header id="brandBar" class="nr-clr nr-border nr-shadow" data-color="green">
+    <h1 id="brand">PLAYER <span>KOI</span></h1>
+    <span id="modeBadge" class="nr-badge nr-clr nr-border" data-color="black">menu</span>
+  </header>
+
+  <div id="menu">
+    <div id="menuCards"></div>
+
+    <section id="menuSettings" class="nr-card nr-clr nr-border nr-shadow" data-color="black">
+      <h2 class="nr-card-title">Engine</h2>
+      <div class="settings-grid">
+        <label class="nr-label" for="setSkill">skill
+          <input type="range" class="nr-slider" id="setSkill" min="0" max="20" step="1"
+                 data-color="blue">
+          <span id="setSkillVal" class="nr-badge nr-clr nr-border" data-color="blue"></span>
+        </label>
+        <label class="nr-label" for="setThink">think
+          <input type="number" class="nr-input nr-clr nr-border" id="setThink"
+                 min="0.05" max="10" step="0.05"> s
+        </label>
+        <label class="nr-label" for="setDelay">move delay
+          <input type="number" class="nr-input nr-clr nr-border" id="setDelay"
+                 min="0" max="30" step="0.5"> s
+        </label>
+        <label class="nr-label" for="setNoob">
+          <input type="checkbox" class="nr-check" id="setNoob" data-color="green">
+          beginner style (few knight moves)
+        </label>
+      </div>
+    </section>
+
+    <div id="menuError" class="nr-alert nr-clr nr-border" data-color="red" hidden></div>
+    <button id="menuResetBtn" class="nr-btn nr-clr nr-border nr-shadow nr-focus"
+            data-color="yellow" data-pressable>Reset &amp; park the arm</button>
+  </div>
+
+  <div id="screens">
+  <div class="col" id="game">
+    <div id="board" class="nr-border nr-shadow"><div id="picker" class="nr-border nr-shadow nr-clr" data-color="black"></div></div>
+
+    <div id="flagBox" class="nr-alert nr-clr nr-border nr-shadow" data-color="yellow">
+      <div class="nr-alert-title">Board not resolved</div>
+      <div id="flagReason"></div>
+    </div>
+
+    <div id="sessionRow">
+      <button id="backBtn" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+              data-color="black" data-pressable>&larr; Back to menu</button>
+      <button id="resetBtn" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+              data-color="yellow" data-pressable>Reset</button>
+    </div>
+
+    <div id="controls">
+      <button id="editBtn" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+              data-color="black" data-pressable>Edit board</button>
+      <button id="undoBtn" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+              data-color="black" data-pressable>Undo last move</button>
+    </div>
+
+    <div id="pausedNote" class="nr-badge nr-clr nr-border" data-color="yellow">
+      tracking paused while editing
+    </div>
+
+    <section id="editControls" class="nr-card nr-clr nr-border nr-shadow" data-color="black">
+      <div id="turnRow">
+        <span class="nr-label">Side to move:</span>
+        <label class="nr-label"><input type="radio" class="nr-check" name="turn" value="white"
+               data-color="cyan" checked> White</label>
+        <label class="nr-label"><input type="radio" class="nr-check" name="turn" value="black"
+               data-color="cyan"> Black</label>
+      </div>
+      <div id="editShortcuts">
+        <button id="resetStartBtn" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+                data-color="black" data-pressable>Reset to start</button>
+        <button id="clearBoardBtn" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+                data-color="black" data-pressable>Clear board</button>
+      </div>
+      <div id="saveCancelRow">
+        <button id="saveBtn" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+                data-color="green" data-pressable>Save</button>
+        <button id="cancelBtn" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+                data-color="black" data-pressable>Cancel</button>
+      </div>
+      <div id="editHint">Click a square to set its piece</div>
+    </section>
+
+    <div id="lastMove" class="nr-badge nr-clr nr-border" data-color="blue"></div>
+    <div id="moveLog" class="nr-clr nr-border" data-color="black"></div>
+    <div id="status">connecting...</div>
+
+    <section id="engineBox" class="nr-card nr-clr nr-border nr-shadow" data-color="black">
+      <h2 id="engineTitle" class="nr-card-title">Engine (Black)</h2>
+      <div id="aiNote" class="nr-alert nr-clr nr-border" data-color="yellow" hidden>
+        no camera &mdash; the tracked position is trusted, not verified
+      </div>
+      <div id="engineMove"></div>
+      <div id="engineExtra"></div>
+      <div id="engineMsg"></div>
+      <div id="engineRow">
+        <label class="nr-label" for="engineToggle">
+          <input type="checkbox" class="nr-check" id="engineToggle" data-color="green"> on
+        </label>
+        <label class="nr-label" for="engineSkill">skill
+          <input type="range" class="nr-slider" id="engineSkill" min="0" max="20" step="1"
+                 data-color="blue">
+          <span id="engineSkillVal" class="nr-badge nr-clr nr-border" data-color="blue"></span>
+        </label>
+      </div>
+    </section>
+
+    <section id="robotBox" class="nr-card nr-clr nr-border nr-shadow" data-color="black">
+      <h2 id="robotTitle" class="nr-card-title">Robot arm</h2>
+      <div id="robotState" class="nr-badge nr-clr nr-border" data-color="green"></div>
+      <div id="robotNote"></div>
+      <div id="robotPrompt" class="nr-alert nr-clr nr-border" data-color="yellow" hidden></div>
+      <div id="robotMsg" class="nr-alert nr-clr nr-border" data-color="red" hidden></div>
+      <div id="robotRow">
+        <button id="confirmBtn" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+                data-color="green" data-pressable>Done — piece removed</button>
+        <button id="haltBtn" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+                data-color="red" data-pressable>HALT</button>
+        <button id="homeBtn" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+                data-color="black" data-pressable>Home / re-enable</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="col" id="videoCol">
+    <img id="stream" class="nr-border nr-shadow" src="/stream.mjpg" alt="camera feed">
+  </div>
+  </div>
+</div>
+
+<!-- One dialog serves every confirm/alert. Native <dialog>, so focus
+     trapping, Escape and the top layer come for free. -->
+<dialog id="nrDialog" class="nr-dialog">
+  <form method="dialog" class="nr-dialog-body">
+    <h2 id="nrDialogTitle" class="nr-dialog-title"></h2>
+    <p id="nrDialogText" class="nr-dialog-text"></p>
+    <div class="nr-dialog-actions">
+      <button id="nrDialogCancel" value="cancel"
+              class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+              data-color="black" data-pressable>Cancel</button>
+      <button id="nrDialogOk" value="ok"
+              class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+              data-color="green" data-pressable>OK</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="/app.js"></script>
+</body>
+</html>

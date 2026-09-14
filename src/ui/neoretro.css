@@ -1,0 +1,327 @@
+/* Neo-Retro, hand-written.
+ *
+ * A reimplementation of the visual language of https://neo-retro.zurat.dev
+ * in plain CSS. The real thing is a shadcn-svelte registry -- Svelte 5 +
+ * Tailwind v4 + bits-ui -- and this rig has no build step and a Raspberry Pi
+ * to serve from, so the components are rebuilt here rather than installed.
+ * Hence the `nr-` prefix: this is not that library and shouldn't pretend to
+ * be, but the five rules below are taken from its published CSS verbatim.
+ *
+ * The whole system is:
+ *
+ *   [data-color=x]   sets --clr / --on-clr from the 16 ANSI slots
+ *   .nr-clr          paints those, and inverts them for ::selection
+ *   .nr-border       2px solid black -- always black, whatever the colour
+ *   .nr-shadow       a hard 4px offset shadow, no blur
+ *   [data-pressable] on :active, translate 4px and drop the shadow, so the
+ *                    element presses down INTO its own shadow
+ *   .nr-focus        a 4px outline at 2px offset
+ *
+ * Theme: gruvbox-light. Swapping themes is only the :root block -- every
+ * colour below is a slot reference, never a literal.
+ */
+
+:root {
+  /* --- gruvbox-light, verbatim from the theme --------------------------- */
+  --background: #fbf1c7;
+  --foreground: #3c3836;
+
+  --black: #fbf1c7;
+  --red: #cc241d;
+  --green: #98971a;
+  --yellow: #d79921;
+  --blue: #458588;
+  --magenta: #b16286;
+  --cyan: #689d6a;
+  --white: #7c6f64;
+
+  --bright-black: #928374;
+  --bright-red: #9d0006;
+  --bright-green: #79740e;
+  --bright-yellow: #b57614;
+  --bright-blue: #076678;
+  --bright-magenta: #8f3f71;
+  --bright-cyan: #427b58;
+  --bright-white: #3c3836;
+
+  /* Text that sits ON each slot. Part of the theme, not derived: the theme
+     author picked these, and guessing from luminance gets them wrong. */
+  --on-black: #000;
+  --on-red: #fff;
+  --on-green: #000;
+  --on-yellow: #000;
+  --on-blue: #000;
+  --on-magenta: #000;
+  --on-cyan: #000;
+  --on-white: #fff;
+  --on-bright-black: #000;
+  --on-bright-red: #fff;
+  --on-bright-green: #fff;
+  --on-bright-yellow: #000;
+  --on-bright-blue: #fff;
+  --on-bright-magenta: #fff;
+  --on-bright-cyan: #fff;
+  --on-bright-white: #fff;
+
+  --radius: 4px;
+  --ring: #000;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+               "Liberation Mono", "Courier New", monospace;
+
+  color-scheme: light;
+}
+
+/* --- the colour attribute ----------------------------------------------- */
+/* One attribute colours a whole component, instead of a class per variant. */
+
+[data-color] { --clr: var(--background); --on-clr: var(--foreground); }
+[data-color="black"]          { --clr: var(--black);          --on-clr: var(--on-black); }
+[data-color="red"]            { --clr: var(--red);            --on-clr: var(--on-red); }
+[data-color="green"]          { --clr: var(--green);          --on-clr: var(--on-green); }
+[data-color="yellow"]         { --clr: var(--yellow);         --on-clr: var(--on-yellow); }
+[data-color="blue"]           { --clr: var(--blue);           --on-clr: var(--on-blue); }
+[data-color="magenta"]        { --clr: var(--magenta);        --on-clr: var(--on-magenta); }
+[data-color="cyan"]           { --clr: var(--cyan);           --on-clr: var(--on-cyan); }
+[data-color="white"]          { --clr: var(--white);          --on-clr: var(--on-white); }
+[data-color="bright-black"]   { --clr: var(--bright-black);   --on-clr: var(--on-bright-black); }
+[data-color="bright-red"]     { --clr: var(--bright-red);     --on-clr: var(--on-bright-red); }
+[data-color="bright-green"]   { --clr: var(--bright-green);   --on-clr: var(--on-bright-green); }
+[data-color="bright-yellow"]  { --clr: var(--bright-yellow);  --on-clr: var(--on-bright-yellow); }
+[data-color="bright-blue"]    { --clr: var(--bright-blue);    --on-clr: var(--on-bright-blue); }
+[data-color="bright-magenta"] { --clr: var(--bright-magenta); --on-clr: var(--on-bright-magenta); }
+[data-color="bright-cyan"]    { --clr: var(--bright-cyan);    --on-clr: var(--on-bright-cyan); }
+[data-color="bright-white"]   { --clr: var(--bright-white);   --on-clr: var(--on-bright-white); }
+
+/* --- the five rules ----------------------------------------------------- */
+
+.nr-clr {
+  background-color: var(--clr, var(--background));
+  color: var(--on-clr, var(--foreground));
+}
+/* Selection inverts into the component's own colours rather than the
+   browser's blue. Small detail, and most of what makes it feel right. */
+.nr-clr::selection, .nr-clr ::selection {
+  background-color: var(--on-clr, var(--foreground));
+  color: var(--clr, var(--background));
+}
+
+.nr-border { border: 2px solid #000; }
+
+.nr-shadow { box-shadow: 4px 4px 0 0 #000; }
+
+/* Pressing moves the element onto its shadow instead of animating one. */
+.nr-shadow[data-pressable]:not(:disabled):not([aria-disabled="true"]):active {
+  translate: 4px 4px;
+  box-shadow: none;
+}
+
+.nr-focus:focus-visible {
+  outline: 4px solid var(--ring);
+  outline-offset: 2px;
+  position: relative;
+  z-index: 10;
+}
+
+/* --- base --------------------------------------------------------------- */
+
+* { box-sizing: border-box; }
+
+/* Every component below sets `display`, which beats the user-agent's
+   `[hidden] { display: none }` on specificity -- so a hidden alert would
+   still draw its box. The script toggles `.hidden`, so this has to win. */
+[hidden] { display: none !important; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: 14px;
+}
+
+/* --- button ------------------------------------------------------------- */
+
+.nr-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 40px;              /* h-10 */
+  padding: 8px 16px;         /* py-2 px-4 */
+  border-radius: var(--radius);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: translate 40ms, box-shadow 40ms;
+}
+.nr-btn-sm { height: 36px; padding: 6px 12px; font-size: 13px; }  /* h-9 px-3 */
+.nr-btn-lg { height: 44px; padding: 10px 32px; font-size: 15px; } /* h-11 px-8 */
+
+.nr-btn:disabled,
+.nr-btn[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.5;
+  box-shadow: none;
+  translate: 4px 4px;        /* sits in its shadow: visibly not pressable */
+}
+
+/* --- card --------------------------------------------------------------- */
+
+.nr-card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;                 /* gap-4 */
+  padding: 16px 0;           /* py-4; children own their px */
+  border-radius: var(--radius);
+}
+.nr-card > * { padding-inline: 16px; }   /* px-4 */
+
+.nr-card-title { margin: 0; font-size: 20px; font-weight: 700; }  /* text-xl */
+.nr-card-desc { margin: 0; opacity: 0.75; line-height: 1.5; }
+.nr-card-header { display: flex; flex-direction: column; gap: 6px; }
+.nr-card-footer { display: flex; align-items: center; gap: 10px; }
+
+/* --- badge -------------------------------------------------------------- */
+
+.nr-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+
+/* --- alert -------------------------------------------------------------- */
+
+.nr-alert {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  line-height: 1.5;
+  /* Alerts carry filesystem paths and firmware errors, which have no spaces
+     to break at and would otherwise run straight out of the panel. */
+  overflow-wrap: anywhere;
+}
+.nr-alert-title { font-weight: 700; }
+
+/* --- form controls ------------------------------------------------------ */
+
+.nr-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.nr-input {
+  height: 36px;
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  font-family: inherit;
+  font-size: 14px;
+}
+.nr-input[type="number"] { width: 78px; }
+
+/* Range: the track is a flat bar, the thumb a hard-shadowed square. */
+.nr-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 130px;
+  height: 20px;
+  background: transparent;
+  cursor: pointer;
+}
+.nr-slider::-webkit-slider-runnable-track {
+  height: 10px;
+  border: 2px solid #000;
+  border-radius: var(--radius);
+  background: var(--background);
+}
+.nr-slider::-moz-range-track {
+  height: 10px;
+  border: 2px solid #000;
+  border-radius: var(--radius);
+  background: var(--background);
+}
+.nr-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -5px;
+  border: 2px solid #000;
+  border-radius: var(--radius);
+  background: var(--clr, var(--blue));
+  box-shadow: 2px 2px 0 0 #000;
+}
+.nr-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #000;
+  border-radius: var(--radius);
+  background: var(--clr, var(--blue));
+  box-shadow: 2px 2px 0 0 #000;
+}
+.nr-slider:focus-visible { outline: 4px solid var(--ring); outline-offset: 2px; }
+
+/* Checkbox and radio: native box replaced, native semantics kept. */
+.nr-check {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  border: 2px solid #000;
+  border-radius: var(--radius);
+  background: var(--background);
+  box-shadow: 2px 2px 0 0 #000;
+  cursor: pointer;
+  display: inline-grid;
+  place-content: center;
+}
+.nr-check[type="radio"] { border-radius: 50%; }
+.nr-check:checked { background: var(--clr, var(--green)); }
+.nr-check:checked::after {
+  content: "";
+  width: 8px;
+  height: 8px;
+  background: #000;
+  border-radius: 1px;
+}
+.nr-check[type="radio"]:checked::after { border-radius: 50%; }
+.nr-check:focus-visible { outline: 4px solid var(--ring); outline-offset: 2px; }
+
+/* --- separator ---------------------------------------------------------- */
+
+.nr-sep { height: 2px; border: 0; background: #000; margin: 0; }
+
+/* --- dialog ------------------------------------------------------------- */
+/* Native <dialog>, so focus trapping, Escape and the top layer come free. */
+
+.nr-dialog {
+  max-width: min(92vw, 460px);
+  padding: 0;
+  border: 2px solid #000;
+  border-radius: var(--radius);
+  box-shadow: 8px 8px 0 0 #000;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+}
+.nr-dialog::backdrop { background: rgb(60 56 54 / 0.5); }
+.nr-dialog-body { display: flex; flex-direction: column; gap: 14px; padding: 18px; }
+.nr-dialog-title { margin: 0; font-size: 18px; font-weight: 700; }
+.nr-dialog-text { margin: 0; line-height: 1.6; white-space: pre-line; }
+.nr-dialog-actions { display: flex; justify-content: flex-end; gap: 10px; }
