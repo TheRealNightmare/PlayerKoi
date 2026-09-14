@@ -12,6 +12,8 @@ loop's classifier is monkeypatched exactly as in test_tracking_loop.py.
 
 import os
 import sys
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -21,6 +23,8 @@ import chess  # noqa: E402
 import numpy as np  # noqa: E402
 
 import robot as robot_mod  # noqa: E402
+import robot_moves  # noqa: E402
+import robot_moves_legacy  # noqa: E402
 import tracking_loop  # noqa: E402
 from move_resolver import standard_starting_matrix  # noqa: E402
 from robot import RobotController  # noqa: E402
@@ -74,8 +78,19 @@ class TestRobotExecution(unittest.TestCase):
 
         self.assertEqual(
             robot._link.commands,
-            ["HOME", "GOTO 4.00 1.00", "MAG 170", "GOTO 4.00 3.00", "PULSE", "MAG 0", "GOTO 0.00 0.00"],
+            [
+                "HOME", "GOTO 4.00 1.00", "MAG 170", "GOTO 4.00 3.00", "PULSE", "MAG 0",
+                "GOTO {:.2f} {:.2f}".format(*robot_moves.PARK),   # h1, the machine's origin
+            ],
         )
+
+    def test_the_legacy_planner_can_be_swapped_in(self):
+        # Robot is planner-agnostic on purpose: the same execution layer
+        # drives either firmware.
+        robot = robot_mod.Robot(robot_mod.MockGantry(), planner=robot_moves_legacy)
+        robot.home()
+        robot.play(chess.Board(), chess.Move.from_uci("e2e4"))
+        self.assertEqual(robot._link.commands, ["HOME", "MOVE e2e4"])
 
     def test_refuses_to_move_before_homing(self):
         robot = robot_mod.Robot(robot_mod.MockGantry())
@@ -258,6 +273,105 @@ class TestForceSettle(unittest.TestCase):
         with mock.patch.object(tracking_loop, "read_settled_state", return_value=_consensus_for(nonsense)):
             self.assertFalse(self.loop.force_settle())
         self.assertEqual(self.loop.board_copy.move_stack, [])
+
+
+class TestBlockingPrompts(unittest.TestCase):
+    """A capture on the legacy firmware stops the arm until a human has
+    lifted the victim. The thing that must not happen is the sequence
+    sailing past an unanswered prompt and dragging a piece onto an occupied
+    square."""
+
+    def _captured_position(self):
+        board = chess.Board()
+        for san in ["e4", "d5"]:
+            board.push_san(san)
+        return board, chess.Move.from_uci("e4d5")
+
+    def test_an_unanswered_prompt_stops_the_move(self):
+        # The default callback refuses, which is the safe direction: a
+        # blocking prompt with nobody listening must not be skipped.
+        robot = robot_mod.Robot(robot_mod.MockGantry(), planner=robot_moves_legacy)
+        robot.home()
+        board, move = self._captured_position()
+        with self.assertRaises(robot_mod.GantryError):
+            robot.play(board, move)
+        self.assertEqual(robot._link.commands, ["HOME", "OFF"],
+                         "the drag must not be sent when the prompt went unanswered")
+
+    def test_confirming_lets_the_drag_through(self):
+        robot = robot_mod.Robot(robot_mod.MockGantry(), planner=robot_moves_legacy,
+                                on_prompt=lambda step: True)
+        robot.home()
+        board, move = self._captured_position()
+        robot.play(board, move)
+        self.assertEqual(robot._link.commands, ["HOME", "MOVE e4d5"])
+
+    def test_the_prompt_arrives_before_the_drag(self):
+        seen = []
+        link = robot_mod.MockGantry()
+
+        def answer(step):
+            seen.append(list(link.commands))
+            return True
+
+        robot = robot_mod.Robot(link, planner=robot_moves_legacy, on_prompt=answer)
+        robot.home()
+        board, move = self._captured_position()
+        robot.play(board, move)
+        self.assertEqual(seen, [["HOME"]], "nothing may be dragged before the board is clear")
+
+    def test_controller_confirm_releases_the_waiting_move(self):
+        robot = robot_mod.Robot(robot_mod.MockGantry(), planner=robot_moves_legacy)
+        robot.home()
+        controller = robot_mod.RobotController(robot, mock.Mock())
+        board, move = self._captured_position()
+
+        done = []
+        thread = threading.Thread(
+            target=lambda: done.append(robot.play(board, move)), daemon=True
+        )
+        thread.start()
+
+        deadline = time.monotonic() + 2.0
+        while controller.state()["awaiting_confirm"] is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertIsNotNone(controller.state()["awaiting_confirm"], "should be waiting")
+
+        self.assertTrue(controller.confirm())
+        thread.join(timeout=2.0)
+        self.assertFalse(thread.is_alive(), "confirming must release the move")
+        self.assertEqual(robot._link.commands, ["HOME", "MOVE e4d5"])
+        self.assertIsNone(controller.state()["awaiting_confirm"])
+
+    def test_confirming_when_nothing_waits_is_reported_not_swallowed(self):
+        robot = robot_mod.Robot(robot_mod.MockGantry(), planner=robot_moves_legacy)
+        controller = robot_mod.RobotController(robot, mock.Mock())
+        self.assertFalse(controller.confirm())
+        self.assertFalse(controller.cancel())
+
+    def test_halting_frees_a_blocked_prompt(self):
+        # Otherwise a halt requested while the arm waits would leave the
+        # robot thread parked on the Event forever.
+        robot = robot_mod.Robot(robot_mod.MockGantry(), planner=robot_moves_legacy)
+        robot.home()
+        controller = robot_mod.RobotController(robot, mock.Mock())
+        board, move = self._captured_position()
+
+        thread = threading.Thread(target=lambda: None, daemon=True)
+        thread = threading.Thread(
+            target=lambda: self.assertRaises(robot_mod.GantryError, robot.play, board, move),
+            daemon=True,
+        )
+        thread.start()
+
+        deadline = time.monotonic() + 2.0
+        while controller.state()["awaiting_confirm"] is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        controller.halt("testing")
+        thread.join(timeout=2.0)
+        self.assertFalse(thread.is_alive(), "halting must not leave the arm blocked")
+        self.assertTrue(robot.halted)
 
 
 if __name__ == "__main__":

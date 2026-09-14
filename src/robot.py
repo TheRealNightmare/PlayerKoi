@@ -62,7 +62,9 @@ class GantryLink:
         deadline = time.monotonic() + READY_TIMEOUT_S
         while time.monotonic() < deadline:
             line = self._serial.readline().decode("ascii", "replace").strip()
-            if line == "READY":
+            # startswith, not ==: chessbot_v1 announces itself as
+            # "READY ChessBot-V1" while chess_gantry sends a bare "READY".
+            if line.startswith("READY"):
                 return
         raise GantryError(
             f"no READY banner from {self.port} within {READY_TIMEOUT_S:.0f}s -- "
@@ -89,7 +91,7 @@ class GantryLink:
                 # Anything else is a stray banner (the board reset
                 # mid-session) -- that invalidates the homing, so say so
                 # rather than carrying on with a bogus position.
-                if line == "READY":
+                if line.startswith("READY"):
                     raise GantryError("the Arduino reset mid-session -- position lost")
         raise GantryError(f"{command} timed out after {self._timeout:.0f}s")
 
@@ -140,10 +142,20 @@ class Robot:
     closed -- execute() refuses rather than guessing.
     """
 
-    def __init__(self, link, topple_delay_s=robot_moves.DEFAULT_TOPPLE_DELAY_S, on_status=None):
+    def __init__(self, link, topple_delay_s=robot_moves.DEFAULT_TOPPLE_DELAY_S, on_status=None,
+                 planner=robot_moves, on_prompt=None):
         self._link = link
         self._topple_delay_s = topple_delay_s
         self._on_status = on_status or (lambda note, prompt: None)
+        # Which planner turns a move into steps. robot_moves emits low-level
+        # GOTO waypoints for firmware/chess_gantry; robot_moves_legacy emits
+        # MOVE/KNIGHT for firmware/chessbot_v1, which plans its own paths.
+        self._planner = planner
+        # Called for blocking prompt steps; returns True to continue, False
+        # to abandon the move. Default refuses, because a blocking prompt
+        # with nobody to answer it would otherwise be silently skipped and
+        # the arm would drag a piece onto an occupied square.
+        self._on_prompt = on_prompt or (lambda step: False)
         self._lock = Lock()
         self.homed = False
         self.halted = False
@@ -153,6 +165,11 @@ class Robot:
     @property
     def port(self):
         return self._link.port
+
+    def set_prompt_callback(self, on_prompt):
+        """Who answers a blocking prompt. Set by RobotController, which is
+        built after the robot itself."""
+        self._on_prompt = on_prompt
 
     def set_status_callback(self, on_status):
         """Where per-step progress goes. Set by whoever owns the UI, which
@@ -210,7 +227,7 @@ class Robot:
                 raise GantryError("robot has not been homed")
             self.busy = True
 
-        steps = robot_moves.plan(board, move, topple_delay_s=self._topple_delay_s)
+        steps = self._planner.plan(board, move, topple_delay_s=self._topple_delay_s)
         try:
             for step in steps:
                 self._on_status(step.note, step.prompt)
@@ -218,8 +235,15 @@ class Robot:
                     self._link.send(step.command)
                 elif step.kind == "wait":
                     time.sleep(step.seconds)
-                # "prompt" steps are the caller's business -- see
-                # RobotController, which holds them until acknowledged.
+                elif step.kind == "prompt" and step.blocking:
+                    # A capture: the victim has to be off the board before
+                    # the attacker is dragged in. Nothing moves until a human
+                    # says so, and refusing abandons the move rather than
+                    # pressing on into an occupied square.
+                    if not self._on_prompt(step):
+                        raise GantryError(f"cancelled while waiting: {step.prompt}")
+                # Non-blocking prompts (promotion) are advisory and just ride
+                # along in the status line.
         except GantryError as exc:
             # Drop the coil before anything else: a halted robot still
             # gripping a piece drags it if the carriage is nudged.
@@ -274,7 +298,13 @@ class RobotController:
         self._note = None
         self._prompt = None
         self._stop_keepalive = Event()
+        # Blocking-prompt handshake: _answered is set by confirm() or
+        # cancel(), _confirmed carries which one it was.
+        self._awaiting = None
+        self._answered = Event()
+        self._confirmed = False
         robot.set_status_callback(self._set_status)
+        robot.set_prompt_callback(self._await_confirmation)
 
     def _set_status(self, note, prompt):
         """A prompt is sticky -- it survives the rest of the sequence and the
@@ -286,6 +316,41 @@ class RobotController:
             if prompt is not None:
                 self._prompt = prompt
 
+    def _await_confirmation(self, step):
+        """Blocks the robot thread until a human confirms (or cancels) via
+        the web UI. Runs on the engine's thread, never the HTTP thread.
+
+        There is deliberately no timeout: a capture prompt that gave up on
+        its own would resume with the victim still on the board, which is
+        the exact situation the prompt exists to prevent. The keep-alive
+        thread holds the tracker paused for as long as this takes.
+        """
+        with self._lock:
+            self._awaiting = step.prompt
+        self._answered.clear()
+        self._answered.wait()
+        with self._lock:
+            self._awaiting = None
+            return self._confirmed
+
+    def confirm(self):
+        """The human says the board is ready. Returns False if nothing was
+        waiting, so the UI can tell a stale click from a real one."""
+        if self._awaiting is None:
+            return False
+        self._confirmed = True
+        self._answered.set()
+        return True
+
+    def cancel(self):
+        """Abandon the move instead. The robot halts -- it is mid-sequence
+        with the coil possibly live, so a human needs to look at it."""
+        if self._awaiting is None:
+            return False
+        self._confirmed = False
+        self._answered.set()
+        return True
+
     def state(self):
         with self._lock:
             return {
@@ -295,6 +360,7 @@ class RobotController:
                 "busy": self._robot.busy,
                 "note": self._note,
                 "prompt": self._prompt,
+                "awaiting_confirm": self._awaiting,
                 "message": self._robot.message,
             }
 
@@ -312,6 +378,11 @@ class RobotController:
             return False, str(exc)
 
     def halt(self, reason="halted from the web UI"):
+        # Free a blocked prompt first, otherwise a halt requested while the
+        # arm waits for a captured piece would leave the robot thread parked
+        # on the Event with no way out.
+        self._confirmed = False
+        self._answered.set()
         self._robot.halt(reason)
 
     def note_flag(self, reason):
@@ -366,16 +437,39 @@ class RobotController:
 
     def close(self):
         self._stop_keepalive.set()
+        # Release anyone blocked on a prompt, or the robot thread never
+        # returns and shutdown hangs. Cancelling is the safe answer: we are
+        # shutting down, so the move must not continue.
+        self._confirmed = False
+        self._answered.set()
         self._robot.close()
 
 
-def open_gantry(target, topple_delay_s=robot_moves.DEFAULT_TOPPLE_DELAY_S, on_status=None, log=print):
-    """Builds a Robot from a CLI argument: a serial port path, or the
-    literal "mock". Does not home -- the caller decides when the board is
-    clear enough for the carriage to move."""
-    if target == "mock":
-        return Robot(MockGantry(log=log), topple_delay_s=topple_delay_s, on_status=on_status)
-    return Robot(GantryLink(target), topple_delay_s=topple_delay_s, on_status=on_status)
+def open_gantry(target, topple_delay_s=robot_moves.DEFAULT_TOPPLE_DELAY_S, on_status=None,
+                log=print, protocol="legacy"):
+    """Builds a Robot from a CLI argument: a serial port path, "auto" to
+    detect the Uno, or "mock". Does not home -- the caller decides when the
+    board is clear enough for the carriage to move.
+
+    `protocol` selects the firmware being talked to:
+
+        "legacy"  firmware/chessbot_v1 -- what is actually flashed on the
+                  machine. High-level MOVE/KNIGHT, paths planned on the Uno.
+        "native"  firmware/chess_gantry -- the unbuilt limit-switch rig.
+                  Low-level GOTO waypoints, paths planned here.
+    """
+    if protocol == "legacy":
+        import gantry_legacy
+        import robot_moves_legacy
+
+        planner, link_factory = robot_moves_legacy, gantry_legacy.LegacyGantryLink
+    elif protocol == "native":
+        planner, link_factory = robot_moves, GantryLink
+    else:
+        raise ValueError(f"unknown robot protocol {protocol!r} (legacy|native)")
+
+    link = MockGantry(log=log) if target == "mock" else link_factory(target)
+    return Robot(link, topple_delay_s=topple_delay_s, on_status=on_status, planner=planner)
 
 
 def _console(robot):
@@ -386,7 +480,9 @@ def _console(robot):
     chess logic is involved -- which is the whole point during assembly.
     """
     print(f"Connected to {robot.port}. Firmware commands go through verbatim.")
-    print("Try: PING / HOME / GOTO 3.5 4 / MAG 170 / PULSE / TOPPLE / OFF / STATUS")
+    print("chessbot_v1: PING / POS / MAG 0|1|2 / GOTO e4 / MOVE e2e4 / KNIGHT b1c3 / HOME")
+    print("  (check the pitch: GOTO a1 then POS should read -210 0)")
+    print("chess_gantry: PING / HOME / GOTO 3.5 4 / MAG 170 / PULSE / TOPPLE / OFF / STATUS")
     print("Ctrl-C or 'quit' to leave (drops the magnet on the way out).\n")
     try:
         while True:
@@ -411,13 +507,15 @@ def _console(robot):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--port", default="/dev/ttyACM0", help="serial port, or 'mock'")
+    parser.add_argument("--port", default="auto", help="serial port, 'auto', or 'mock'")
+    parser.add_argument("--protocol", default="legacy", choices=("legacy", "native"),
+                        help="which firmware is flashed (default: legacy = chessbot_v1)")
     parser.add_argument("--console", action="store_true", help="interactive bench console")
     parser.add_argument("--home", action="store_true", help="home the gantry and exit")
     args = parser.parse_args()
 
     try:
-        robot = open_gantry(args.port)
+        robot = open_gantry(args.port, protocol=args.protocol)
     except GantryError as exc:
         raise SystemExit(f"Could not open the gantry: {exc}")
     except ImportError:

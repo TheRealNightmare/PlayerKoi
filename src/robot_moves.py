@@ -51,10 +51,12 @@ you end up with a robot that plays en passant into the wrong square.
 
 import chess
 
-# Board geometry. Keep these in step with the firmware's own SQUARE_MM --
-# they exist here so the clearance arithmetic above can be re-derived rather
-# than taken on trust.
-SQUARE_MM = 30.0        # 240x240mm playing area
+import rig
+
+# Board geometry, mirrored from src/rig.py (and through it from the
+# firmware, which is where these were measured) so the clearance arithmetic
+# above can be re-derived rather than taken on trust.
+SQUARE_MM = rig.SQUARE_MM   # 30.0; 240x240mm playing area
 PIECE_BASE_MM = 15.0    # worst case of the measured 13-15mm bases
 MAGNET_MM = 25.0        # pole face diameter
 
@@ -73,9 +75,15 @@ LATTICE_BIAS = 0.2
 MAG_HOLD = 170
 MAG_EDGE = 110
 
-# Where the carriage rests between moves. Travel is exactly the board, so
-# this is a1's centre with the coil de-energised.
-PARK = (0.0, 0.0)
+# Where the carriage rests between moves, in file/rank. Travel is exactly
+# the board, so this is a square centre with the coil de-energised.
+#
+# It is h1, not a1: h1 is the machine's own origin and the position the
+# firmware assumes at power-on (there are no limit switches to discover it).
+# Parking anywhere else means a human re-parking by eye before HOME, and
+# being 210mm out is silent -- nothing reports it, every later coordinate is
+# just wrong. See rig.PARK_SQUARE.
+PARK = (7.0, 0.0)
 
 DEFAULT_TOPPLE_DELAY_S = 5.0
 
@@ -94,14 +102,20 @@ class Step:
     a step the Pi handles itself (WAIT, PROMPT). `note` is what the web UI
     shows while it's happening."""
 
-    __slots__ = ("command", "note", "kind", "seconds", "prompt")
+    __slots__ = ("command", "note", "kind", "seconds", "prompt", "blocking")
 
-    def __init__(self, command=None, note="", kind="command", seconds=0.0, prompt=None):
+    def __init__(self, command=None, note="", kind="command", seconds=0.0, prompt=None,
+                 blocking=False):
         self.command = command
         self.note = note
         self.kind = kind  # "command" | "wait" | "prompt"
         self.seconds = seconds
         self.prompt = prompt
+        # Only meaningful for "prompt": whether the sequence stops dead until
+        # a human confirms. A capture prompt must block (the destination
+        # square has to be cleared before anything is dragged onto it); the
+        # promotion prompt doesn't (the move is already finished).
+        self.blocking = blocking
 
     def __repr__(self):
         return f"Step({self.kind}, {self.command!r}, {self.note!r})"
@@ -114,6 +128,7 @@ class Step:
             and self.kind == other.kind
             and self.seconds == other.seconds
             and self.prompt == other.prompt
+            and self.blocking == other.blocking
         )
 
 
@@ -121,9 +136,31 @@ def _xy(square):
     return chess.square_file(square), chess.square_rank(square)
 
 
+def _fold_to_travel(value):
+    """Fold a coordinate back onto the board.
+
+    The measured corners ARE the travel limits on this machine -- there is no
+    room beyond a1 or h8 in any direction (rig.MIN_X_MM..MAX_X_MM). But a
+    routing line for an edge piece naturally wants to sit half a square
+    outside the board, which is simply unreachable: the carriage stops, or
+    the firmware rejects it with ERR out of range.
+
+    So fold it inward, which is what the firmware's own clampWeave() does
+    (FOLD_EDGE_WEAVE). The cost is known and accepted rather than solved: a
+    folded line runs down a real square-centre line instead of a gap, so an
+    edge weave can brush pieces sitting on those squares. Fixing that needs
+    a bigger frame, not more routing code.
+    """
+    return min(7.0, max(0.0, value))
+
+
 def _goto(x, y, note):
     # Two decimals is enough for half-square routing and keeps the serial
     # line short; the firmware parses with atof.
+    #
+    # Every coordinate in a plan funnels through here, which makes this the
+    # one place the travel limits need enforcing.
+    x, y = _fold_to_travel(x), _fold_to_travel(y)
     return Step(f"GOTO {x:.2f} {y:.2f}", note)
 
 

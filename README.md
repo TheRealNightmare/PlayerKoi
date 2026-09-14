@@ -153,20 +153,44 @@ under the board drags an electromagnet along the gaps between squares, an
 Arduino Uno drives it, and the Pi sends it where to go.
 
 ```bash
-python3 src/web_ui.py --robot /dev/ttyACM0    # the real gantry
+python3 src/web_ui.py --robot auto            # the real gantry, port detected
 python3 src/web_ui.py --robot mock            # dry run: logs commands, moves nothing
 ```
+
+**Park the carriage on h1 before homing.** This build has no limit switches,
+so `HOME` drives to where it *assumes* the origin is rather than finding it.
+If the carriage starts anywhere else, every move afterwards is silently wrong
+and nothing will tell you. Wiring, flashing and the full bring-up sequence are
+in **[docs/CONNECTION.md](docs/CONNECTION.md)**.
 
 The arm homes on startup, then plays automatically whenever the engine
 decides on a move. It is off unless `--robot` is given, so nothing here
 changes the hand-played setup above.
 
-The split is deliberate: the Arduino knows no chess at all. It takes
-`GOTO`/`MAG`/`PULSE`/`TOPPLE` on a serial line and nothing else, while every
-decision about *which* squares to visit is made in
-[`src/robot_moves.py`](src/robot_moves.py) from python-chess -- so captures,
-castling, en passant and knight routing are worked out where they can be
-unit-tested (`tests/test_robot_moves.py`) rather than on a microcontroller.
+### Two firmwares
+
+There are two sketches, and only one of them runs the machine:
+
+| | `firmware/chessbot_v1/` | `firmware/chess_gantry/` |
+|---|---|---|
+| Status | **flashed, proven** | unbuilt, dormant |
+| Protocol | `MOVE e2e4`, `KNIGHT b1c3` | `GOTO 3.5 4`, `MAG`, `TOPPLE` |
+| Plans paths | on the Uno | on the Pi (`robot_moves.py`) |
+| Homing | manual park, dead reckoning | limit switches |
+| Flag | `--robot-protocol legacy` (default) | `--robot-protocol native` |
+
+The live rig takes *whole moves* and does its own routing, with the magnet
+duties and edge handling measured into the firmware. So on this machine the
+Pi's job is chess rules only — [`src/robot_moves_legacy.py`](src/robot_moves_legacy.py)
+decides *which* squares and what a human must clear, and nothing more.
+
+`chess_gantry` is kept for a future rebuild with limit switches, where path
+planning moves back onto the Pi and [`src/robot_moves.py`](src/robot_moves.py)'s
+lattice routing comes into play. Both planners are unit-tested and either can
+be dropped into the same execution layer.
+
+Measured constants live in one place, [`src/rig.py`](src/rig.py), mirrored from
+the firmware that owns them.
 
 What it does physically:
 
@@ -176,11 +200,14 @@ What it does physically:
   that just jumped over it), ride the lattice lines *between* squares
   instead, at reduced magnet power -- and not down the middle of the gap:
   on 30mm squares the midline is only 15mm from the pieces either side, so
-  the route shifts toward whichever flank it can prove is empty.
-- **Captures** topple the piece in place, then the arm retreats to the
-  corner and waits `--topple-delay` seconds (default 5) for you to lift it
-  off before sliding its own piece in. En passant topples the pawn beside
-  the destination, not on it.
+  the route shifts toward whichever flank it can prove is empty. At the board
+  edge there is no room to step outside, so those routes fold back onto a
+  square centre line -- the one case where a weave passes closer than usual.
+- **Captures** stop the arm and ask you to lift the piece off, with a
+  **Done — piece removed** button in the UI. Nothing moves until you confirm:
+  dragging onto an occupied square would just shove two pieces around. There
+  is no graveyard because the gantry's travel is exactly the 8×8 board. En
+  passant asks for the pawn *beside* the destination, not on it.
 - **Promotion** moves the pawn and then asks you to swap in a queen. The
   arm can't fetch one, and vision can't tell a queen from a pawn anyway --
   the tracked state already records the promotion, so the board just has to
@@ -192,8 +219,13 @@ the move the engine intended -- the same `set_expected_move` mechanism that
 polices a hand-played move. A slipped belt, a dropped piece or a hand in the
 way flags and **halts the arm** rather than stacking another move on top of
 a position that isn't real. Recovery is Edit board / Undo, then **Home /
-re-enable** in the UI. There's also a **HALT** button, and pulling the 7.5 V
-jack stops everything instantly.
+re-enable** in the UI.
+
+There's also a **HALT** button, with one caveat worth knowing before you need
+it: on the legacy firmware a halt only takes effect once the command in flight
+finishes. That firmware has no soft e-stop and its motion is blocking, so the
+arm will refuse the *next* move but cannot abandon the current one. To stop a
+move in progress, pull the 7.5 V jack — that is instant.
 
 ## How detection works
 
@@ -255,11 +287,16 @@ always knows piece *type*, never needing to re-derive it from vision.
   pipeline. Consensus/delta-matching logic is unit-tested off-Pi with a
   fake model (see `tests/`), but classifier accuracy itself can only be
   judged after training on real photos.
-- **The arm's captures need a human.** A toppled piece is left lying on its
-  own square and cleared by hand within `--topple-delay`; there's no
-  graveyard area, because the gantry's travel is exactly the 8x8 board. The
-  delay is fixed rather than vision-gated -- if it elapses and the piece is
-  still there, the incoming move disturbs it and the settle flags.
+- **The arm's captures need a human.** There's no graveyard area, because the
+  gantry's travel is exactly the 8x8 board, so a captured piece is lifted off
+  by hand. The arm waits for you to confirm rather than for a timer, so it
+  can't run out of patience and disturb a piece you haven't cleared yet -- but
+  it does mean an unattended game stops at the first capture.
+- **There are no limit switches.** `HOME` drives to the assumed origin instead
+  of seeking it, so position is dead reckoning from a manual park on h1. A
+  missed step or a power-on with the carriage elsewhere corrupts every
+  coordinate afterwards, and nothing detects it -- the camera confirming each
+  move is what eventually catches it, by flagging and halting.
 - **30mm squares leave very little routing clearance, and that's the
   arm's real limitation.** The midline between two pieces is 15mm from each,
   against 13-15mm piece bases and a 25mm magnet whose edge comes within
@@ -279,14 +316,20 @@ config/       generated calibration data (git-ignored)
 docs/         DESIGN.md -- the full system document (architecture, geometry,
               protocols, decisions, risks)
               HARDWARE.md -- robot arm circuit, wiring, bring-up
-firmware/     chess_gantry/ -- the Arduino Uno sketch (CoreXY + magnet).
-              Knows no chess; takes GOTO/MAG/PULSE/TOPPLE over serial
+              CONNECTION.md -- what to flash, how to wire it, bring-up
+              order, the full command reference, troubleshooting
+firmware/     chessbot_v1/ -- THE SKETCH TO FLASH. Takes whole moves
+              (MOVE e2e4, KNIGHT b1c3) and routes them itself
+              chess_gantry/ -- dormant; the unbuilt limit-switch rebuild,
+              which takes GOTO/MAG/PULSE/TOPPLE instead. Do not flash
 models/       exported NCNN classifier (git-ignored, copied from training
               machine): square_classifier_ncnn_model/
 src/          capture, calibration, square classification, board-state
               helpers, event-gated tracking loop, legal-move resolution,
-              web UI, and the robot arm (robot_moves.py plans a move's
-              gantry path, robot.py drives and verifies it)
+              web UI, and the robot arm (rig.py holds the machine's measured
+              constants; robot_moves_legacy.py turns a move into firmware
+              commands, robot_moves.py plans a waypoint path for the
+              dormant native rig, robot.py drives and verifies either)
 tests/        unit tests for move resolution, the classifier's consensus
               wrapper, the tracking loop's delta computation, and the
               robot's path planning + halt-on-mismatch behaviour (no

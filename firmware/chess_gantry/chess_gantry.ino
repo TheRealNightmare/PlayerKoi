@@ -33,6 +33,32 @@
    without brushing their neighbours.
 */
 
+/*
+   *** DO NOT FLASH THIS ON THE CURRENT MACHINE. ***
+
+   This is the dormant native path: a planned rebuild with TMC2208 drivers and
+   limit switches, where the Pi plans the paths and this sketch just executes
+   GOTO waypoints. It has never run on hardware.
+
+   The rig that exists today runs firmware/chessbot_v1/, which has a different
+   pin map, no limit switches, and takes whole moves (MOVE e2e4) rather than
+   waypoints. Flashing this instead would home into switches that aren't
+   fitted and drive every distance twice as far.
+
+   The constants below are NOT this machine's -- they belong to the rebuild.
+   For reference, the live rig measures (see docs/CONNECTION.md, src/rig.py):
+
+       steps/mm       10      (1/2 microstepping)  vs  20 here
+       feed rate      40 mm/s                      vs  75 here
+       magnet drag    PWM 255                      vs  170 cap here
+       magnet weave   PWM 155
+       homing         none -- dead reckoning from a manual park on h1
+
+   Don't reconcile these by editing one to match the other: the two builds
+   genuinely differ (different drivers, different coil rail). Whichever board
+   you are flashing, its own constants are the right ones.
+*/
+
 #include <AccelStepper.h>
 #include <MultiStepper.h>
 

@@ -34,6 +34,7 @@ from board_state import load_calibration, matrix_to_fen_placement
 from capture import Camera, CaptureStream
 from engine import DEFAULT_SKILL, DEFAULT_THINK_S, ChessEngine, describe_move
 from harvest import CropHarvester
+import rig
 from robot import GantryError, RobotController, open_gantry
 from robot_moves import DEFAULT_TOPPLE_DELAY_S
 from square_classifier import DEFAULT_MIN_CONF, load_classifier
@@ -181,6 +182,7 @@ PAGE = """<!doctype html>
       <div id="robotPrompt"></div>
       <div id="robotMsg"></div>
       <div id="robotRow">
+        <button id="confirmBtn">Done — piece removed</button>
         <button id="haltBtn">HALT</button>
         <button id="homeBtn">Home / re-enable</button>
       </div>
@@ -295,6 +297,10 @@ const robotPromptEl = document.getElementById("robotPrompt");
 const robotMsgEl = document.getElementById("robotMsg");
 const haltBtn = document.getElementById("haltBtn");
 const homeBtn = document.getElementById("homeBtn");
+const confirmBtn = document.getElementById("confirmBtn");
+// Substituted from rig.PARK_SQUARE when this page is built, so the warning
+// can't drift from the firmware's actual origin.
+const PARK_SQUARE = "__PARK_SQUARE__";
 
 const BACK_RANK = ["rook", "knight", "bishop", "queen", "king", "bishop", "knight", "rook"];
 
@@ -390,8 +396,15 @@ async function postRobot(payload, button) {
 }
 
 haltBtn.onclick = () => postRobot({ halt: true }, haltBtn);
+confirmBtn.onclick = () => postRobot({ confirm: true }, confirmBtn);
 homeBtn.onclick = () => {
-  if (confirm("Home the gantry? It will cross the whole board -- keep hands clear.")) {
+  // No limit switches: HOME drives to where it ASSUMES the origin is, so
+  // this only tells the truth if the carriage really is parked there.
+  if (confirm("Is the carriage parked on " + PARK_SQUARE + "?\\n\\n" +
+              "There are no limit switches -- homing drives to the assumed " +
+              "origin rather than finding it. If it is parked anywhere else, " +
+              "every move afterwards will be wrong.\\n\\n" +
+              "It will cross the whole board. Keep hands clear.")) {
     postRobot({ home: true }, homeBtn);
   }
 };
@@ -406,13 +419,17 @@ function renderRobot(bot) {
   if (bot.halted) { state = "HALTED"; color = "#d9534f"; }
   else if (bot.busy) { state = "moving"; color = "#4a9eff"; }
   else if (!bot.homed) { state = "not homed"; color = "#f0ad4e"; }
+  // A blocking prompt outranks everything else in the status line: the arm
+  // is stopped mid-move and nothing continues until it is answered.
+  if (bot.awaiting_confirm) { state = "WAITING FOR YOU"; color = "#f0ad4e"; }
   robotStateEl.textContent = state + " (" + bot.port + ")";
   robotStateEl.style.color = color;
 
   robotNoteEl.textContent = bot.note || "";
-  robotPromptEl.textContent = bot.prompt || "";
+  robotPromptEl.textContent = bot.awaiting_confirm || bot.prompt || "";
   robotMsgEl.textContent = bot.message || "";
   haltBtn.disabled = bot.halted;
+  confirmBtn.style.display = bot.awaiting_confirm ? "" : "none";
 }
 
 undoBtn.onclick = async () => {
@@ -518,6 +535,10 @@ poll();
 </body>
 </html>
 """
+
+# The page is a static string, so the one rig-dependent value in it is
+# substituted here rather than at request time.
+PAGE = PAGE.replace("__PARK_SQUARE__", rig.PARK_SQUARE)
 
 
 class BoardBuffer:
@@ -783,6 +804,20 @@ def start_server(host, port, buffer, loop, capture_stream, engine_controller, ro
                     robot_controller.halt()
                     self._send_json(200, {"ok": True, "robot": robot_controller.state()})
                     return
+                if body.get("confirm"):
+                    # The human has lifted the captured piece. Releases the
+                    # robot thread, which is blocked mid-sequence.
+                    if not robot_controller.confirm():
+                        self._send_json(400, {"error": "nothing is waiting for confirmation"})
+                        return
+                    self._send_json(200, {"ok": True, "robot": robot_controller.state()})
+                    return
+                if body.get("cancel"):
+                    if not robot_controller.cancel():
+                        self._send_json(400, {"error": "nothing is waiting for confirmation"})
+                        return
+                    self._send_json(200, {"ok": True, "robot": robot_controller.state()})
+                    return
                 if body.get("home"):
                     # Homing crosses the board, so it must not race a settle.
                     loop.set_paused(True, lapse_s=60.0)
@@ -795,7 +830,7 @@ def start_server(host, port, buffer, loop, capture_stream, engine_controller, ro
                         return
                     self._send_json(200, {"ok": True, "robot": robot_controller.state()})
                     return
-                self._send_json(400, {"error": "expected {\"home\": true} or {\"halt\": true}"})
+                self._send_json(400, {"error": "expected one of home/halt/confirm/cancel"})
                 return
 
             if path == "/board/pause":
@@ -856,12 +891,17 @@ def parse_args():
     parser.add_argument("--engine-think", type=float, default=DEFAULT_THINK_S,
                         help="seconds the engine may think per move")
     parser.add_argument("--robot", default=None, metavar="PORT",
-                        help="serial port of the gantry Arduino (e.g. /dev/ttyACM0), or "
-                             "'mock' for a dry run. Omitted: no arm, you place Black's "
-                             "moves by hand as before")
+                        help="serial port of the gantry Arduino (e.g. /dev/ttyACM0), 'auto' "
+                             "to detect it, or 'mock' for a dry run. Omitted: no arm, you "
+                             "place Black's moves by hand as before")
+    parser.add_argument("--robot-protocol", default="legacy", choices=("legacy", "native"),
+                        help="which firmware is flashed. 'legacy' (default) is "
+                             "firmware/chessbot_v1, what the machine actually runs; "
+                             "'native' is firmware/chess_gantry, the unbuilt limit-switch rig")
     parser.add_argument("--topple-delay", type=float, default=DEFAULT_TOPPLE_DELAY_S,
-                        help="seconds to wait after toppling a captured piece, for you "
-                             "to lift it off the board")
+                        help="native protocol only: seconds to wait after toppling a "
+                             "captured piece, for you to lift it off. The legacy firmware "
+                             "waits for you to confirm instead, with no time limit")
     parser.add_argument("--harvest", type=Path, nargs="?", const=DEFAULT_HARVEST, default=None,
                         help="save labelled crops from every resolved move, to grow the training "
                              f"set as you play (default dir: {DEFAULT_HARVEST})")
@@ -891,8 +931,15 @@ def main():
     robot = None
     if args.robot:
         try:
-            robot = open_gantry(args.robot, topple_delay_s=args.topple_delay)
-            print(f"Robot: gantry on {robot.port}.")
+            robot = open_gantry(args.robot, topple_delay_s=args.topple_delay,
+                                protocol=args.robot_protocol)
+            print(f"Robot: gantry on {robot.port} ({args.robot_protocol} protocol).")
+            if args.robot_protocol == "legacy":
+                # No limit switches on this build: HOME drives to the assumed
+                # origin rather than seeking it, so "homed" is a promise the
+                # human makes, not something the machine measured.
+                print(f"Robot: park the carriage on {rig.PARK_SQUARE} before homing -- "
+                      "there are no limit switches to find it.")
         except GantryError as exc:
             raise SystemExit(f"Robot: {exc}")
         except ImportError:

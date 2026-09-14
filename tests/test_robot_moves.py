@@ -23,6 +23,12 @@ import chess  # noqa: E402
 import robot_moves  # noqa: E402
 
 
+def _park_command():
+    """Where a plan ends. Derived rather than written out, so moving the
+    park square is a one-line change in robot_moves."""
+    return "GOTO {:.2f} {:.2f}".format(*robot_moves.PARK)
+
+
 def commands(steps):
     return [step.command for step in steps if step.kind == "command"]
 
@@ -52,7 +58,8 @@ class TestQuietMoves(unittest.TestCase):
                 "GOTO 4.00 3.00",
                 "PULSE",
                 "MAG 0",
-                "GOTO 0.00 0.00",
+                # PARK, not a1: h1 is the machine's origin.
+                _park_command(),
             ],
         )
 
@@ -65,7 +72,7 @@ class TestQuietMoves(unittest.TestCase):
         self.assertTrue(issued[0].startswith("GOTO"))
         # ...and the plan always ends released and parked, so a resting
         # magnet never tugs at the piece above it.
-        self.assertEqual(issued[-2:], ["MAG 0", "GOTO 0.00 0.00"])
+        self.assertEqual(issued[-2:], ["MAG 0", _park_command()])
 
     def test_bishop_slides_diagonally_through_empty_squares(self):
         board = chess.Board("8/8/8/8/8/8/8/2B5 w - - 0 1")
@@ -376,6 +383,53 @@ def closest_approach(board, move):
                 worst = min(worst, _point_to_segment(centre, previous, here))
         previous = here
     return worst
+
+
+class TestTravelInvariant(unittest.TestCase):
+    """The other load-bearing property: every waypoint is reachable.
+
+    On this machine the measured corners ARE the travel limits -- there is no
+    room past a1 or h8 in any direction (rig.MIN_X_MM..MAX_X_MM). But routing
+    naturally wants to put an edge piece's line half a square outside the
+    board, which the carriage simply cannot reach: it stalls, or the firmware
+    answers ERR out of range and the move is lost mid-drag with the coil live.
+
+    So _goto folds coordinates back inside, mirroring the firmware's own
+    clampWeave(). These tests are what stop that fold being quietly removed.
+    """
+
+    def test_no_waypoint_leaves_the_board_over_full_games(self):
+        random.seed(11)
+        checked = 0
+        for _ in range(25):
+            board = chess.Board()
+            while not board.is_game_over() and board.fullmove_number < 90:
+                move = random.choice(list(board.legal_moves))
+                for x, y in gotos(robot_moves.plan(board, move)):
+                    self.assertGreaterEqual(min(x, y), 0.0, f"{move.uci()} in {board.fen()}")
+                    self.assertLessEqual(max(x, y), 7.0, f"{move.uci()} in {board.fen()}")
+                checked += 1
+                board.push(move)
+        self.assertGreater(checked, 2000, "sanity: the sweep should cover thousands of moves")
+
+    def test_an_edge_knight_is_folded_back_on(self):
+        # b1c3 has nothing outside it, but a-file and h-file knights route
+        # along a line that wants to sit at -0.5 or 7.5.
+        board = chess.Board()
+        board.push_san("a4")
+        board.push_san("a5")
+        for x, y in gotos(robot_moves.plan(board, chess.Move.from_uci("b1a3"))):
+            self.assertGreaterEqual(min(x, y), 0.0)
+            self.assertLessEqual(max(x, y), 7.0)
+
+    def test_the_fold_is_a_clamp_not_a_wrap(self):
+        self.assertEqual(robot_moves._fold_to_travel(-0.5), 0.0)
+        self.assertEqual(robot_moves._fold_to_travel(7.5), 7.0)
+        self.assertEqual(robot_moves._fold_to_travel(3.5), 3.5)   # interior untouched
+
+    def test_the_park_square_is_reachable(self):
+        x, y = robot_moves.PARK
+        self.assertEqual((robot_moves._fold_to_travel(x), robot_moves._fold_to_travel(y)), (x, y))
 
 
 class TestClearanceInvariant(unittest.TestCase):
