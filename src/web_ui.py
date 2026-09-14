@@ -31,15 +31,16 @@ import chess
 import cv2
 
 from board_state import load_calibration, matrix_to_fen_placement
-from capture import Camera, CaptureStream
 from engine import DEFAULT_SKILL, DEFAULT_THINK_S, ChessEngine, describe_move
-from harvest import CropHarvester
+from headless_loop import HeadlessLoop, NullStream
 import rig
 from robot import GantryError, RobotController, open_gantry
 from robot_moves import DEFAULT_TOPPLE_DELAY_S
-from square_classifier import DEFAULT_MIN_CONF, load_classifier
-from square_geometry import square_pixel_bboxes
-from tracking_loop import TrackingLoop
+from square_classifier import DEFAULT_MIN_CONF
+
+# picamera2 (capture) and the ncnn classifier loader are imported inside
+# main()'s tracking path rather than here, so --ai-vs-ai runs off the Pi and
+# without a trained model -- it needs neither.
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CALIBRATION = REPO_ROOT / "config" / "calibration.json"
@@ -166,6 +167,9 @@ PAGE = """<!doctype html>
     <div id="status">connecting...</div>
     <div id="engineBox">
       <div id="engineTitle">Engine (Black)</div>
+      <div id="aiNote" style="display:none;color:#f0ad4e;font-size:12px">
+        no camera &mdash; the tracked position is trusted, not verified
+      </div>
       <div id="engineMove"></div>
       <div id="engineExtra"></div>
       <div id="engineMsg"></div>
@@ -288,6 +292,20 @@ const engineMoveEl = document.getElementById("engineMove");
 const engineExtraEl = document.getElementById("engineExtra");
 const engineMsgEl = document.getElementById("engineMsg");
 const engineToggle = document.getElementById("engineToggle");
+
+// AI vs AI: no camera feed to show, and the engine is no longer "Black".
+// Latched, because /board.json is polled every second and this only needs
+// doing once.
+let aiVsAiApplied = false;
+function applyAiVsAi() {
+  if (aiVsAiApplied) return;
+  aiVsAiApplied = true;
+  const img = document.getElementById("stream");
+  if (img) { img.remove(); }
+  document.getElementById("engineTitle").textContent = "Engine (both sides)";
+  document.getElementById("aiNote").style.display = "block";
+  document.querySelector("#engineRow label").lastChild.textContent = " play";
+}
 const engineSkill = document.getElementById("engineSkill");
 const engineSkillVal = document.getElementById("engineSkillVal");
 const robotBox = document.getElementById("robotBox");
@@ -480,6 +498,7 @@ async function poll() {
     const data = await res.json();
     liveMatrix = data.matrix;
 
+    if (data.ai_vs_ai) applyAiVsAi();
     renderRobot(data.robot);
 
     const eng = data.engine || {};
@@ -582,6 +601,23 @@ class BoardBuffer:
             return self._jpeg
 
 
+def _game_over_reason(board):
+    """Why a finished game finished, in words. python-chess's result() gives
+    the score but not the cause, and "1/2-1/2" alone leaves you guessing
+    whether the arm stalled or the position is genuinely drawn."""
+    if board.is_checkmate():
+        return "checkmate"
+    if board.is_stalemate():
+        return "stalemate"
+    if board.is_insufficient_material():
+        return "insufficient material"
+    if board.is_seventyfive_moves():
+        return "75-move rule"
+    if board.is_fivefold_repetition():
+        return "fivefold repetition"
+    return "no legal moves"
+
+
 class EngineController:
     """Runs the engine on its own thread and publishes the move to place.
 
@@ -591,11 +627,17 @@ class EngineController:
     thinking.
     """
 
-    def __init__(self, loop, engine, think_s=DEFAULT_THINK_S, robot=None):
+    def __init__(self, loop, engine, think_s=DEFAULT_THINK_S, robot=None,
+                 both_sides=False, move_delay_s=0.0):
         self._loop = loop
         self._engine = engine
         self._think_s = think_s
         self._robot = robot
+        # AI vs AI: one engine plays itself and the arm places every move, so
+        # the colour gate comes off and each completed move re-pokes the
+        # thread. move_delay_s is purely so a human can follow along.
+        self._both_sides = both_sides
+        self._move_delay_s = move_delay_s
         self._lock = Lock()
         self._wake = Event()
         self._enabled = False
@@ -648,15 +690,18 @@ class EngineController:
         with self._lock:
             if not self._enabled or not self._engine.available:
                 return
-        # Engine plays Black, and only when nothing is already pending.
-        if self._loop.turn != "black" or self._loop.expected_move is not None:
+        # Engine plays Black -- unless it's playing both sides -- and only
+        # when nothing is already pending.
+        if self._loop.expected_move is not None:
+            return
+        if not self._both_sides and self._loop.turn != "black":
             return
 
         board = self._loop.board_copy
         if board.is_game_over():
             with self._lock:
                 self._headline, self._extra = None, None
-                self._message = "no legal moves -- game over"
+                self._message = f"game over -- {board.result()} ({_game_over_reason(board)})"
             return
 
         with self._lock:
@@ -682,6 +727,14 @@ class EngineController:
             if not ok:
                 with self._lock:
                     self._message = f"robot stopped: {error}"
+                return
+            if self._both_sides:
+                # Nobody else is going to wake us: in AI vs AI the arm's own
+                # move *is* the board update, so the chain has to re-poke
+                # itself. A failed move deliberately doesn't -- the robot is
+                # halted and a human has to look at it.
+                time.sleep(self._move_delay_s)
+                self.notify()
 
     def close(self):
         self._engine.close()
@@ -716,7 +769,8 @@ def _validate_correction(body):
     return None
 
 
-def start_server(host, port, buffer, loop, capture_stream, engine_controller, robot_controller=None):
+def start_server(host, port, buffer, loop, capture_stream, engine_controller, robot_controller=None,
+                 ai_vs_ai=False):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     class Handler(BaseHTTPRequestHandler):
@@ -749,6 +803,7 @@ def start_server(host, port, buffer, loop, capture_stream, engine_controller, ro
                         "paused": loop.is_paused,
                         "engine": engine_controller.state(),
                         "robot": robot_controller.state() if robot_controller is not None else None,
+                        "ai_vs_ai": ai_vs_ai,
                     }
                 ).encode("utf-8")
                 self.send_response(200)
@@ -757,6 +812,12 @@ def start_server(host, port, buffer, loop, capture_stream, engine_controller, ro
                 self.end_headers()
                 self.wfile.write(body)
             elif path == "/stream.mjpg":
+                if ai_vs_ai:
+                    # No camera in this mode. Answering rather than streaming
+                    # nothing forever keeps a stray <img> from holding a
+                    # ThreadingHTTPServer thread open for the whole game.
+                    self.send_error(503, "no camera in AI-vs-AI mode")
+                    return
                 self.send_response(200)
                 self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
                 self.end_headers()
@@ -890,6 +951,14 @@ def parse_args():
                         help="Stockfish Skill Level 0-20 (adjustable live in the UI)")
     parser.add_argument("--engine-think", type=float, default=DEFAULT_THINK_S,
                         help="seconds the engine may think per move")
+    parser.add_argument("--ai-vs-ai", action="store_true",
+                        help="Stockfish plays itself and the arm places every move. No "
+                             "camera, no calibration and no classifier are used -- the "
+                             "position is tracked in software, so the board MUST start "
+                             "with all 32 pieces in the standard setup. Requires --robot")
+    parser.add_argument("--move-delay", type=float, default=1.0,
+                        help="--ai-vs-ai only: seconds to pause after each completed move, "
+                             "so the game is watchable and you have time to hit Halt")
     parser.add_argument("--robot", default=None, metavar="PORT",
                         help="serial port of the gantry Arduino (e.g. /dev/ttyACM0), 'auto' "
                              "to detect it, or 'mock' for a dry run. Omitted: no arm, you "
@@ -910,8 +979,87 @@ def parse_args():
     return parser.parse_args()
 
 
+def _open_robot(args):
+    """Opens the gantry, or exits with a readable reason. Shared by both
+    modes so the no-limit-switch warning is only written once."""
+    try:
+        robot = open_gantry(args.robot, topple_delay_s=args.topple_delay,
+                            protocol=args.robot_protocol)
+    except GantryError as exc:
+        raise SystemExit(f"Robot: {exc}")
+    except ImportError:
+        raise SystemExit("Robot: pyserial is missing -- pip install -r requirements.txt")
+
+    print(f"Robot: gantry on {robot.port} ({args.robot_protocol} protocol).")
+    if args.robot_protocol == "legacy":
+        # No limit switches on this build: HOME drives to the assumed origin
+        # rather than seeking it, so "homed" is a promise the human makes,
+        # not something the machine measured.
+        print(f"Robot: park the carriage on {rig.PARK_SQUARE} before homing -- "
+              "there are no limit switches to find it.")
+    return robot
+
+
+def run_ai_vs_ai(args):
+    """Stockfish against itself, with the arm placing every move.
+
+    No camera anywhere in this path: HeadlessLoop is the position, so the
+    physical board has to start in the standard 32-piece setup or everything
+    after the first move is a lie. Nothing here verifies that -- it can't.
+
+    The engine's own thread drives the whole game; this one only serves HTTP
+    and waits, which is why there is no tick() loop.
+    """
+    engine = ChessEngine(command=args.engine_command, skill=args.engine_skill)
+    if not engine.available:
+        raise SystemExit(f"Engine: {engine.error}")
+    print("Engine: Stockfish ready (playing both sides).")
+
+    robot = _open_robot(args)
+
+    buffer = BoardBuffer()
+    robot_controller = None
+    try:
+        def on_update(matrix, move_text, frame, flagged, reason):
+            buffer.set_board(matrix, move_text, flagged, reason)
+
+        loop = HeadlessLoop(on_update=on_update)
+        buffer.set_board(loop.current_matrix, None, False, None)  # seed the UI
+
+        robot_controller = RobotController(robot, loop)
+        print("Homing the gantry -- keep hands clear...")
+        ok, error = robot_controller.home()
+        print("Robot: homed and ready." if ok else f"Robot: {error}")
+
+        engine_controller = EngineController(
+            loop, engine, think_s=args.engine_think, robot=robot_controller,
+            both_sides=True, move_delay_s=args.move_delay,
+        )
+        start_server(args.host, args.port, buffer, loop, NullStream(),
+                     engine_controller, robot_controller, ai_vs_ai=True)
+        print(f"Serving at http://<this-pi>:{args.port}/")
+        print("Set up all 32 pieces, then press Play in the UI.")
+
+        while True:
+            time.sleep(1.0)
+    except KeyboardInterrupt:
+        print("Stopped.")
+    finally:
+        engine.close()
+        if robot_controller is not None:
+            robot_controller.close()  # drops the coil, closes the port
+        else:
+            robot.close()
+
+
 def main():
     args = parse_args()
+
+    if args.ai_vs_ai:
+        if not args.robot:
+            raise SystemExit("--ai-vs-ai needs --robot: with no arm, nothing would move. "
+                             "Use --robot mock for a dry run.")
+        return run_ai_vs_ai(args)
 
     if not args.calibration.exists():
         raise SystemExit(f"No calibration found at {args.calibration} -- run calibrate.py first.")
@@ -921,6 +1069,12 @@ def main():
             "and training/train_classifier.py to train/export one."
         )
 
+    from capture import Camera, CaptureStream
+    from harvest import CropHarvester
+    from square_classifier import load_classifier
+    from square_geometry import square_pixel_bboxes
+    from tracking_loop import TrackingLoop
+
     calibration_matrix = load_calibration(args.calibration)
     print("Loading classifier...")
     classifier_model = load_classifier(str(args.classifier))
@@ -928,22 +1082,7 @@ def main():
     engine = ChessEngine(command=args.engine_command, skill=args.engine_skill)
     print("Engine: Stockfish ready." if engine.available else f"Engine: {engine.error}")
 
-    robot = None
-    if args.robot:
-        try:
-            robot = open_gantry(args.robot, topple_delay_s=args.topple_delay,
-                                protocol=args.robot_protocol)
-            print(f"Robot: gantry on {robot.port} ({args.robot_protocol} protocol).")
-            if args.robot_protocol == "legacy":
-                # No limit switches on this build: HOME drives to the assumed
-                # origin rather than seeking it, so "homed" is a promise the
-                # human makes, not something the machine measured.
-                print(f"Robot: park the carriage on {rig.PARK_SQUARE} before homing -- "
-                      "there are no limit switches to find it.")
-        except GantryError as exc:
-            raise SystemExit(f"Robot: {exc}")
-        except ImportError:
-            raise SystemExit("Robot: pyserial is missing -- pip install -r requirements.txt")
+    robot = _open_robot(args) if args.robot else None
 
     buffer = BoardBuffer()
     engine_controller = None

@@ -17,6 +17,7 @@ here is executable as written — no placeholders to substitute.
 | Put a trained model on the Pi | [E](#e-export-and-deploy) |
 | Play against the engine | [F](#f-playing-against-the-engine) |
 | Play against the robot arm | [G](#g-playing-with-the-robot-arm) |
+| Watch the machine play itself | [G2](#g2-ai-vs-ai-no-camera) |
 | Something broke | [H](#h-gotchas-that-have-actually-bitten) · [I](#i-tuning-knobs) |
 
 ## Machines
@@ -463,6 +464,51 @@ gantry> GOTO 3.5 4
 gantry> MAG 170
 gantry> OFF
 ```
+
+---
+
+## G2. AI vs AI (no camera)
+
+Stockfish plays both sides and the arm places every move. **Nothing in this
+mode uses the camera** — no calibration, no classifier, no model. The position
+is tracked purely in software (`src/headless_loop.py`), which is sound only
+because the arm is the sole thing touching the board.
+
+That is the trade: there is no verification. A slipped belt, a dragged
+neighbour, a piece knocked over — none of it is detected, and every move after
+it is played into a position that no longer exists.
+
+**1. Set the board up completely.** All 32 pieces, standard position, White at
+the a1 end. This is assumed, never checked.
+
+**2. Park the carriage on h1** by hand. No limit switches — `HOME` drives to
+the assumed origin rather than finding it.
+
+**3. Dry run first** if anything changed:
+
+```bash
+python3 src/web_ui.py --ai-vs-ai --robot mock
+```
+
+**4. Then for real.** It homes on startup — keep hands clear.
+
+```bash
+python3 src/web_ui.py --ai-vs-ai --robot /dev/ttyACM0 \
+    --engine-skill 3 --move-delay 2
+```
+
+Open the UI and press **play**. `--move-delay` is the pause between moves;
+keep it generous the first few games so you have time to reach **HALT**.
+
+**Captures still stop and wait for you** — same blocking prompt as section G,
+with no time limit. Press **Done — piece removed**.
+
+**Promotions are advisory**: swap a queen in when asked. The software already
+records it as a queen either way, so the arm will keep dragging the pawn
+around as one if you don't.
+
+**Watch the first few moves.** Once the physical board and the software
+diverge, nothing will tell you — that's what the camera was for.
 
 ---
 
