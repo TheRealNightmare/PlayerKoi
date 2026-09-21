@@ -591,7 +591,21 @@ def start_server(host, port, buffer, session):
             loop.apply_manual_correction(body["matrix"], body["turn"], self._frame())
             # Saving the editor ends the edit session, so lift the pause.
             loop.set_paused(False)
-            self._send_json(200, {"ok": True})
+
+            # A correction can put captured pieces back on the board. The arm
+            # has already parked those on graveyard slots, and it will not go
+            # and fetch them -- so free the slots for reuse and tell the human
+            # which ones still have a piece sitting on them.
+            payload = {"ok": True}
+            robot = session.robot
+            if robot is not None:
+                on_board = sum(1 for row in body["matrix"] for label in row if label)
+                freed = robot.reconcile_graveyard(on_board)
+                if freed:
+                    payload["retrieve"] = [
+                        {"slot": slot, "x_mm": x, "y_mm": y} for slot, (x, y) in freed
+                    ]
+            self._send_json(200, payload)
 
         def _frame(self):
             """The latest camera frame, or None in a mode that has none."""

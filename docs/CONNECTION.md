@@ -79,19 +79,29 @@ stop there rather than continuing — later steps assume the earlier ones.
 | # | Do | Expect |
 |---|---|---|
 | 1 | Flash `chessbot_v1.ino` | compiles and uploads |
-| 2 | Open the serial monitor at 115200 | `READY ChessBot-V1 r3` — **if the revision is lower, the sketch is stale; re-upload it** |
+| 2 | Open the serial monitor at 115200 | `READY ChessBot-V1 r4` — **if the revision is lower, the sketch is stale; re-upload it** |
 | 3 | **Park the carriage on the origin corner by hand** (physically a8 — see above) | — |
 | 4 | `PING` | `OK PONG` |
 | 5 | `POS` | `OK POS 0.0 0.0` |
 | 6 | `MAG 1` then `MAG 0` | `OK MAG 1` / `OK MAG 0`, coil audibly grabs and releases |
-| 7 | `GOTO a1`, then `POS` | `OK POS -210.0 0.0` — **this is the pitch check** |
+| 7 | `GOTO a1`, then `POS` | `OK POS -350.0 0.0` — **this is the pitch check** |
 | 8 | `HOME` | `OK HOME`, carriage returns to h1 |
 | 9 | `MOVE e2e4 w\|b` | `OK MOVE e2e4`, a pawn is dragged cleanly |
 | 10 | `KNIGHT b1c3 w\|b` | `OK KNIGHT b1c3`, weaves without disturbing the pawns |
+| 11 | `MM -350 -50`, `MM -400 0`, `MM 50 350` | `OK MM …` each time — **the graveyard reach check** |
+| 12 | `BURY e2 -350 -50 w` | `OK BURY e2`, the pawn is carried off the board and *set down*, not dropped |
 
-Step 7 is the one that matters. If `POS` doesn't read `-210 0`, the 30mm pitch
+Step 7 is the one that matters. If `POS` doesn't read `-350 0`, the 50mm pitch
 is wrong and everything downstream — the planner's clearance arithmetic, the
 camera's square mapping — is built on a false number. Fix it here.
+
+Steps 11–12 are new with the V2 frame. Step 11 proves the carriage can reach
+past the board edge at all: on the V1 travel limits every one of those three
+coordinates was an `ERR out of range`, so it fails loudly if the sketch is
+stale in a way the banner alone would not catch. Step 12 then proves a piece
+survives the trip — watch the set-down, not the drive. If the piece jumps or
+rattles on landing, `RELEASE` is too short; that is the same fade a normal
+move uses, so it is worth fixing here rather than discovering it mid-game.
 
 Then the Python side, on the Pi:
 
@@ -115,6 +125,7 @@ move has finished"; the Pi never has to guess.
 | `MOVE e7e5 w\|b` | `OK MOVE e7e5` | straight drag between square centres |
 | `KNIGHT b8c6 w\|b` | `OK KNIGHT b8c6` | weaves along the gridlines, for knights and castling rooks |
 | `GOTO e4` | `OK GOTO e4` | repositions the carriage, magnet untouched |
+| `BURY e4 -350 -50 w\|b` | `OK BURY e4` | lifts the piece on `e4` and parks it on a graveyard slot. The destination is a **raw machine coordinate**, not a square — the slots sit outside the 8×8 and have no name. Set down with the same faded release a move uses. `w\|b` is required here, unlike on `MOVE`. The host picks the slot (`src/graveyard.py`); the firmware only drives to it |
 | `MAG 0\|1\|2` | `OK MAG n` | coil off / attract / repel |
 | `PULSE` | `OK PULSE` | raw full-power reverse kick, for the bench. A game move uses the gentler faded release |
 | `POL` | `OK POL 1` | what holds a WHITE piece: 1 = repel, 0 = attract |
@@ -143,10 +154,11 @@ firmware is right.
 
 | Constant | Value |
 |---|---|
-| Square pitch | 30.0 mm, both axes |
+| Square pitch | 50.0 mm, both axes |
 | Origin `(0, 0)` | centre of **h1** — also the park position |
-| a1 | `(-210, 0)` — x runs negative toward the a-file |
-| Travel limits | x `-210..0`, y `0..210` |
+| a1 | `(-350, 0)` — x runs negative toward the a-file |
+| Travel limits | x `-425..75`, y `-75..425` — a full square past every board edge |
+| Graveyard slots | y `-50` / `400` (past rank 1 / 8), x `-400` / `50` (past the a / h file) |
 | Steps/mm | 10 (200 steps/rev × 1/2 microstepping ÷ 40 mm/rev) |
 | Feed rate | 40 mm/s |
 | Magnet, dragging | PWM 255 |

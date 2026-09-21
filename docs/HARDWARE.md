@@ -9,22 +9,48 @@ Pi side: [`src/robot.py`](../src/robot.py) and [`src/robot_moves.py`](../src/rob
 
 ## Board geometry
 
+This is the **V2** board. V1 was 230 × 230 mm on 28.75 mm squares, on a
+295 × 300 mm PCB; git history has those numbers if you are driving the old
+hardware.
+
 | | |
 |---|---|
-| Square | **30 mm** |
-| Playing area | **240 × 240 mm** (8 × 30) |
-| PCB | **280 × 300 mm**, M3 mounting holes at the corners |
-| a1 → h8 centres | 210 mm on each axis |
+| Square | **50 mm** |
+| Playing area | **400 × 400 mm** (8 × 50) |
+| Gantry travel | **500 × 500 mm** — a full square past every board edge |
+| Panel | **570 × 570 mm**, 7.5 mm corner radius, M3 holes on a 7.5 mm inset |
+| a1 → h8 centres | 350 mm on each axis |
+| Captured pieces | 50 mm strip on **all four sides**, 8 slots each — 32 shared, corners left empty. The arm parks them itself (`BURY`, firmware r4) |
 
-The PCB *is* the playing surface — the printed sticker
-(`ChessBot_Sticker_green_grey.pdf`, 295 × 300 mm) is 1:1 and carries the
-grid, with a dot at each square's centre. Those dots are the positions the
-gantry's `GOTO` coordinates address, and they're what to click when running
-`src/calibrate.py`.
+The panel is the playing surface, and unlike V1 it is **not** a PCB — 570 mm
+is past most fabs' limits and the board carries no copper. It is laser-cut
+5 mm acrylic or 6 mm MDF. The printed sticker
+(`design/chessboard_400mm_sq50mm.pdf`, 570 × 570 mm) goes on top at 1:1 and
+carries the grid, with a dot at each square's centre and at each graveyard
+slot. Those dots are the positions the gantry's `GOTO` coordinates address,
+and they're what to click when running `src/calibrate.py`.
 
-Everything downstream falls out of the 30 mm square, including the tight
-clearances — see [Clearances](#clearances-the-thing-to-watch) below, which is
-the main hazard on a board this small.
+Both are generated, not drawn by hand:
+
+```bash
+python3 tools/make_board.py     # design/ChessBot_V2_board.{dxf,ai,svg,step}
+python3 tools/make_sticker.py   # design/chessboard_400mm_sq50mm.pdf
+```
+
+| File | For |
+|---|---|
+| `.dxf` | the laser shop — `CUT` / `HOLES` / `GUIDE` layers |
+| `.ai` | Illustrator, every path editable |
+| `.svg` | a quick look in a browser |
+| `.step` | 3D solid, to drop into the CAD assembly next to `ChessBot V1.step` |
+
+The STEP model is **5 mm thick** by default (cast acrylic); pass
+`--thickness 6` for MDF. It carries only the cut geometry — outline and
+holes. The grid and graveyard lines are sticker registration marks, not
+features of the part, so they are deliberately absent from the solid.
+
+`tools/read_board_ai.py` reads the original V1 Illustrator file, which is
+where the hole pattern and corner radius came from.
 
 ## Bill of materials
 
@@ -39,6 +65,29 @@ the main hazard on a board this small.
 | Power supply | 7.5 V, 36 W, 5.5×2.1 mm barrel | 1 |
 | Barrel jack extension | 5.5×2.1 mm | 1 |
 | Electrolytic capacitor | 100 µF / 25 V | 2 |
+
+### Mechanical — V2 (what changes when scaling up)
+
+The electronics above are unchanged from V1. The frame is not:
+
+| Part | V1 | **V2** | Qty |
+|---|---|---|---|
+| Linear rod, Ø8 mm hardened | 250 mm | **545 mm** | 2 |
+| Linear rod, Ø8 mm hardened | 265 mm | **580 mm** | 2 |
+| Panel | 295 × 300 mm PCB | **570 × 570 mm**, 5 mm acrylic / 6 mm MDF | 1 |
+| GT2 6 mm open belt | — | **2.5 m** | 2 |
+| LM8UU bearings, pulleys, steppers | unchanged | unchanged | — |
+
+Rod lengths are the V1 lengths scaled by the travel ratio (500 / 230 ≈ 2.174)
+and rounded up. Buy a 600 × 600 mm sheet and cut the panel from it — that is a
+standard stock size and 570 is not.
+
+**Rod sag is the accepted risk at this size.** An unsupported Ø8 mm rod over a
+~500 mm span deflects under the carriage in a way it did not over 250 mm. If
+the carriage binds, or the magnet's grip varies noticeably between the middle
+of the board and the edges, the fix is Ø10/Ø12 mm rod or SBR12 supported rail
+— both of which change the bearing blocks and therefore the panel's hole
+pattern, so it is a re-cut, not a swap.
 
 ## Two power domains
 
@@ -155,58 +204,62 @@ D0/D1 (USB serial — never use them), D3, D5, D6, D11, D13, A2–A5. D9/D10 are
 Timer1, which `AccelStepper` never touches, so magnet PWM and stepping don't
 interfere.
 
-## Why 1/4 microstepping, and where 600 steps/square comes from
+## Why 1/4 microstepping, and where 1000 steps/square comes from
 
 ```
 NEMA 17, 1.8°           200 full steps / rev
 1/4 microstepping       200 × 4        =  800 steps / rev
 20-tooth GT2 pulley     20 × 2 mm      =   40 mm / rev
                         800 / 40 mm    =   20 steps / mm
-30 mm square            20 × 30        =  600 steps / square
+50 mm square            20 × 50        = 1000 steps / square
 ```
 
-`STEPS_PER_SQUARE = 600` is therefore **derived, not measured** — the bring-up
-step below verifies it rather than tuning it.
+`STEPS_PER_SQUARE = 1000` is therefore **derived, not measured** — the
+bring-up step below verifies it rather than tuning it.
 
-1/4 rather than 1/8 because on a 30 mm square the Uno's step rate is the
-limit, not precision. 1/4 still resolves 0.05 mm, which is 600× finer than
+1/4 rather than 1/8 because the Uno's step rate is the limit, not precision —
+and more so on V2, where every move is 1.74× longer in millimetres. 1/4 still
+resolves 0.05 mm, which is 1000× finer than
 anything that matters here, and it halves the pulses per millimetre:
 
-| | steps/square | speed at 1500 steps/s | board traverse |
+| | steps/square | speed at 1500 steps/s | board traverse (350 mm) |
 |---|---|---|---|
-| 1/8 | 1200 | 37.5 mm/s | ~6.4 s |
-| **1/4** | **600** | **75 mm/s** | **~3.2 s** |
+| 1/8 | 2000 | 37.5 mm/s | ~9.3 s |
+| **1/4** | **1000** | **75 mm/s** | **~4.7 s** |
 
 The TMC2208 interpolates internally to 256 microsteps regardless, so coarser
 external stepping costs nothing in smoothness or noise.
 
-## Clearances: the thing to watch
+## Clearances: no longer the thing to watch
 
-30 mm squares are small, and this is where it shows. Half a square — the
-midline of the gap between two pieces — is only **15 mm** from each of them.
+This was V1's main hazard and it is the single biggest thing V2 bought. On
+28.75 mm squares the midline of the gap between two pieces sat 14.4 mm from
+each — *inside* the 13–15 mm bases — and the magnet's pole face came within
+about 2 mm of a flanking piece's centre. On 50 mm squares:
 
-| | |
-|---|---|
-| Gap midline → each flanking piece's centre | 15.0 mm |
-| Piece base diameter | 13–15 mm |
-| **Clearance when squeezing between two pieces** | **0–2 mm** |
-| Magnet radius (25 mm coil) | 12.5 mm |
-| Magnet edge → flanking piece's centre | 2.5 mm |
+| | V1 (28.75 mm) | **V2 (50 mm)** |
+|---|---|---|
+| Gap midline → each flanking piece's centre | 14.4 mm | **25.0 mm** |
+| Piece base diameter | 13–15 mm | 13–15 mm |
+| **Clearance when squeezing between two pieces** | **0–1.9 mm** | **≈10 mm** |
+| Magnet radius (25 mm coil) | 12.5 mm | 12.5 mm |
+| Magnet edge → flanking piece's centre | 1.9 mm | **12.5 mm** |
 
-`src/robot_moves.py` handles this by shifting the routing line toward
-whichever flank it can prove is empty (`LATTICE_BIAS`), which takes the
-traversal to 21 mm and the move's worst point to 17.4 mm. That covers about
-two moves in three. It cannot help when both flanks are occupied — most
-notably a knight leaving the back rank in the opening, where the rank-7 pawn
-wall is solid — and there 15 mm is simply the geometric maximum.
+`src/robot_moves.py` still shifts the routing line toward whichever flank it
+can prove is empty (`LATTICE_BIAS`), taking the traversal from 25 mm to
+35 mm. That is now margin on top of margin rather than the thing keeping
+pieces upright, and it is kept because it costs nothing and would matter
+again if the pieces or the coil changed.
 
-A unit-test invariant asserts the arm never routes closer than 15 mm to a
-piece it isn't carrying (verified over ~32,000 planned moves; ~2.5% of moves
-actually reach that floor).
+A unit-test invariant asserts the arm never routes closer than **half a
+square** to a piece it isn't carrying. It is expressed in squares, not
+millimetres, so it survives a rescale.
 
 **If pieces get caught or dragged on the rig, in order:** lower `MAG_EDGE` in
-`src/robot_moves.py`; then check the bases really are ≤ 15 mm; then consider
-a smaller coil, which is the proper fix for a 30 mm board.
+`src/robot_moves.py`; then check the bases really are ≤ 15 mm. The "fit a
+smaller coil" advice was specific to the 28.75 mm board and no longer
+applies — if anything, a 50 mm square wants a *stronger* grab, because a
+piece can now sit further from the pole face. See Risks in the V2 notes.
 
 ## Four things that will bite otherwise
 
@@ -263,11 +316,11 @@ guess, so this checks the hardware matches rather than tuning the number:
 
 ```
 gantry> HOME
-gantry> GOTO 7 0        # must travel exactly 210 mm (7 × 30) along a→h
-gantry> GOTO 7 7        # 210 mm on the other axis too, both motors together
+gantry> GOTO 7 0        # must travel exactly 350 mm (7 × 50) along a→h
+gantry> GOTO 7 7        # 350 mm on the other axis too, both motors together
 ```
 
-Measure with a ruler. If it isn't 210 mm, **fix the hardware, don't fudge the
+Measure with a ruler. If it isn't 350 mm, **fix the hardware, don't fudge the
 constant** — the pulley isn't 20-tooth, or the MS1/MS2 jumpers aren't set for
 1/4 microstepping. A wrong `STEPS_PER_SQUARE` compounds: the error grows with
 every square travelled, so the arm drifts further off with each move.
@@ -290,7 +343,7 @@ gantry> GOTO 1 7        # b8
 gantry> MAG 170
 gantry> GOTO 1.5 6.5
 gantry> MAG 110         # MAG_EDGE
-gantry> GOTO 1.5 5.5    # the squeeze: 15 mm from b7 and c7
+gantry> GOTO 1.5 5.5    # the squeeze: 25 mm from b7 and c7
 gantry> MAG 170
 gantry> GOTO 2 5        # c6
 gantry> PULSE

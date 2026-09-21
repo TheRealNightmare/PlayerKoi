@@ -9,6 +9,7 @@ leaves the robot thread blocked on a prompt nobody will answer.
 
 import os
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -17,11 +18,26 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import chess  # noqa: E402
 
+import rig  # noqa: E402
 import session as session_mod  # noqa: E402
 from headless_loop import HeadlessLoop  # noqa: E402
 from robot import MockGantry, Robot, RobotController  # noqa: E402
 from session import AI_VS_AI, MENU, NORMAL, ModeError, Session  # noqa: E402
 import robot_moves_legacy  # noqa: E402
+
+
+# Temp config files handed to the Robots these tests build; removed at exit so
+# a run leaves nothing behind.
+_TEMP_CONFIGS = []
+
+
+def tearDownModule():
+    for path in _TEMP_CONFIGS:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    _TEMP_CONFIGS.clear()
 
 
 class StubEngine:
@@ -82,7 +98,16 @@ def make_session(with_robot=True, calibration=None, classifier=None, engine=None
     HeadlessLoop plus a fake camera stream -- close enough in shape to test
     the lifecycle without importing picamera2."""
     engine = engine or StubEngine()
-    robot = Robot(MockGantry(), planner=robot_moves_legacy) if with_robot else None
+    robot = None
+    if with_robot:
+        # A temp path for the graveyard pile. Session.reset() clears it, which
+        # writes to disk -- without this the suite edits the repo's real
+        # config/rig.json every run.
+        fd, config_path = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        _TEMP_CONFIGS.append(config_path)
+        robot = Robot(MockGantry(), planner=robot_moves_legacy,
+                      config_path=config_path)
     built = []
 
     def build_ai(settings):
@@ -323,7 +348,12 @@ class TestStoppingWhileBlocked(unittest.TestCase):
         controller = sess.robot_controller
 
         board = chess.Board("rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2")
-        move = chess.Move.from_uci("e4d5")  # a capture: blocking prompt
+        move = chess.Move.from_uci("e4d5")
+        # A capture only blocks when there is nowhere to put the victim: the
+        # arm otherwise buries it on a free graveyard slot and never waits.
+        # Fill the ring, which is what this test actually needs -- some step
+        # that stops and asks, so stop() can be shown to release it.
+        sess.robot.graveyard = list(range(rig.GRAVEYARD_SLOTS))
         sess.loop.set_expected_move(move)
         done = threading.Event()
         result = {}

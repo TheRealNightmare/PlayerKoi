@@ -12,20 +12,37 @@ So what is left here is chess rules, and only chess rules:
     which colour is carried   the w|b suffix -- white magnets are reversed on
                               this set, so the coil polarity follows it
     what has to come off      captures, including en passant's offset victim
-    what a human must do      remove a captured piece, swap in a queen
+    which slot it goes to     the pile is host-side state; the firmware only
+                              drives to the coordinate it is handed
+    what a human must do      swap in a queen
 
 Same Step type and same plan() signature as robot_moves, so Robot can take
 either module as its planner.
 
-Captures are handled the way RunChess handles them: there is no graveyard --
-the gantry's travel is exactly the 8x8 board, with nothing outside it -- and
-no topple, so a human lifts the captured piece off before the attacker is
-dragged in. That makes the prompt BLOCKING, unlike the promotion prompt which
-is merely advisory and comes last.
+CAPTURES
+
+The V1 rig had no graveyard -- travel was exactly the 8x8, with nothing
+outside it -- so a capture stopped the machine and a human lifted the piece
+off before the attacker was dragged in. The V2 frame reaches a full square
+past every edge, so the arm now parks the captured piece itself, on one of the
+32 slots ringing the board (src/graveyard.py), with the firmware's BURY.
+
+That removes the only blocking prompt in an ordinary move. The promotion
+prompt stays, because no amount of travel lets the arm fetch a queen.
+
+Two things about BURY are easy to get wrong and are handled in _bury():
+
+  * the destination is a RAW MACHINE COORDINATE, not a square, because slots
+    sit outside the 8x8 and have no name. It therefore needs rig.orient_mm(),
+    not rig.orient() -- see the note there.
+  * which slot depends on what is already in the pile, so plan() has to be
+    told. It cannot work that out from `board`: python-chess knows a piece was
+    captured, not where the arm put it.
 """
 
 import chess
 
+import graveyard
 import rig
 from robot_moves import _PIECE_WORDS, Step
 
@@ -37,26 +54,57 @@ def _describe(square, piece):
     return name, word, colour
 
 
-def _remove_prompt(square, piece):
-    """A blocking prompt: nothing else happens until a human confirms the
-    captured piece is off the board. Dragging the attacker onto an occupied
-    square would just shove two pieces around."""
+def _bury(square, piece, slot, origin_square=None):
+    """Lift the captured piece off `square` and park it on graveyard `slot`.
+
+    Returns (Step, slot) so the caller can add the slot to the pile -- plan()
+    is pure, and the pile belongs to whoever is running the game.
+
+    The square in the command is rotated like every other square bound for the
+    firmware. The COORDINATE is rotated too, but by orient_mm(), because a
+    slot has no file/rank for orient() to flip. Both have to happen: rotating
+    one and not the other sends the arm to the right slot from the wrong
+    square, or the wrong slot from the right one.
+    """
+    name, word, colour = _describe(square, piece)
+    x_mm, y_mm = rig.orient_mm(*rig.graveyard_slot_to_mm(slot), origin=origin_square)
+    token = rig.colour_token(piece is not None and piece.color == chess.WHITE)
+    return (
+        Step(
+            kind="command",
+            command=f"BURY {rig.orient_square(name, origin_square)} "
+                    f"{x_mm:.2f} {y_mm:.2f} {token}",
+            note=f"park the captured {colour} {word} from {name} on slot {slot}",
+        ),
+        slot,
+    )
+
+
+def _full_graveyard_prompt(square, piece):
+    """The fallback when all 32 slots are taken.
+
+    It cannot happen in a legal game -- 30 pieces can be captured and there
+    are 32 slots -- but plan() is also handed positions set up by hand from
+    the web UI's correction flow, and a made-up position with a stale pile
+    can reach it. Better a prompt than an exception mid-move.
+    """
     name, word, colour = _describe(square, piece)
     return Step(
         kind="prompt",
         blocking=True,
-        note=f"waiting for the {colour} {word} on {name} to be removed",
-        prompt=f"Take the {colour} {word.upper()} off {name}, then confirm",
+        note=f"graveyard full -- waiting for the {colour} {word} on {name}",
+        prompt=f"Graveyard is full. Take the {colour} {word.upper()} off {name}, "
+               f"then confirm",
     )
 
 
-def plan(board, move, topple_delay_s=None, origin_square=None):
+def plan(board, move, topple_delay_s=None, origin_square=None, occupied=()):
     """Gantry commands to physically play `move` in `board` -- the position
     *before* the move, exactly like robot_moves.plan() and describe_move().
 
     Returns a list of Step. `topple_delay_s` is accepted and ignored: this
-    firmware has no TOPPLE, and the capture wait is a human confirmation
-    rather than a fixed delay. It stays in the signature so the two planners
+    firmware has no TOPPLE, and a capture is now driven to a graveyard slot
+    rather than waited on. It stays in the signature so the two planners
     remain interchangeable.
 
     `origin_square` is which real square the carriage parks on; it rotates the
@@ -64,26 +112,58 @@ def plan(board, move, topple_delay_s=None, origin_square=None):
     gantry. Defaults to rig.ORIGIN_SQUARE, the measured value for this machine.
     Only Step.command is rotated -- see the comment on the MOVE step.
 
+    `occupied` is the graveyard slots already holding a piece. plan() cannot
+    derive it: python-chess knows a piece was captured, not where the arm put
+    it. Defaults to empty, which is right for a fresh game and for every
+    caller that never captures.
+
+    Use plan_with_slots() instead if you need to know which slot was used --
+    this returns only the steps, so that the signature keeps matching
+    robot_moves.plan().
+
     Raises ValueError if the move isn't legal here. Not defensive noise:
     is_capture/is_en_passant answer for the side to move, so a move for the
-    wrong side yields a plan that asks a human to remove the wrong piece.
+    wrong side yields a plan that buries the wrong piece.
     """
+    return plan_with_slots(board, move, origin_square=origin_square,
+                           occupied=occupied)[0]
+
+
+def plan_with_slots(board, move, origin_square=None, occupied=()):
+    """(steps, slots_used). The pile is the caller's to keep, so the slots a
+    plan consumes have to come back out with it -- see Session."""
     if move not in board.legal_moves:
         raise ValueError(f"{move.uci()} is not legal in this position ({board.fen()})")
 
     steps = []
+    pile = set(occupied)
+    used = []
 
     # Captures first -- the destination has to be clear before anything is
     # dragged onto it. En passant's victim is BESIDE the destination, not on
     # it, which is the case hand-written rules get wrong, so ask python-chess
     # rather than reasoning about it here.
+    victim = None
     if board.is_en_passant(move):
         victim = chess.square(
             chess.square_file(move.to_square), chess.square_rank(move.from_square)
         )
-        steps.append(_remove_prompt(victim, board.piece_at(victim)))
     elif board.is_capture(move):
-        steps.append(_remove_prompt(move.to_square, board.piece_at(move.to_square)))
+        victim = move.to_square
+
+    if victim is not None:
+        # Nearest free slot to where the piece actually stands, so the drag
+        # off the board is as short as it can be. Board space, not machine
+        # space: _bury() applies the orientation.
+        slot = graveyard.nearest_free_slot_for_square(
+            chess.square_file(victim), chess.square_rank(victim), occupied=pile)
+        if slot is None:
+            steps.append(_full_graveyard_prompt(victim, board.piece_at(victim)))
+        else:
+            step, slot = _bury(victim, board.piece_at(victim), slot, origin_square)
+            steps.append(step)
+            pile.add(slot)
+            used.append(slot)
 
     mover = board.piece_at(move.from_square)
     origin, word, _ = _describe(move.from_square, mover)
@@ -145,4 +225,4 @@ def plan(board, move, topple_delay_s=None, origin_square=None):
             )
         )
 
-    return steps
+    return steps, used

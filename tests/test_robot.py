@@ -12,6 +12,7 @@ loop's classifier is monkeypatched exactly as in test_tracking_loop.py.
 
 import os
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -29,6 +30,7 @@ import tracking_loop  # noqa: E402
 from move_resolver import standard_starting_matrix  # noqa: E402
 from robot import RobotController  # noqa: E402
 import rig  # noqa: E402
+import rig_config  # noqa: E402
 from square_classifier import ALL_SQUARES, BLACK, EMPTY, WHITE  # noqa: E402
 
 
@@ -296,10 +298,32 @@ class TestForceSettle(unittest.TestCase):
 
 
 class TestBlockingPrompts(unittest.TestCase):
-    """A capture on the legacy firmware stops the arm until a human has
-    lifted the victim. The thing that must not happen is the sequence
-    sailing past an unanswered prompt and dragging a piece onto an occupied
-    square."""
+    """The arm must never sail past an unanswered blocking prompt and drag a
+    piece onto an occupied square.
+
+    An ordinary capture no longer blocks -- the arm buries the victim on a
+    graveyard slot instead of waiting for a human. What still blocks is a
+    capture with nowhere to put the piece, so these drive that: a full ring.
+    It cannot arise in a legal game (30 pieces, 32 slots), but plan() is also
+    handed hand-built positions by the correction flow, and the refusal path
+    is the one that must not rot.
+    """
+
+    def _robot(self, **kwargs):
+        """A Robot whose pile is a temp file, never the repo's config.
+
+        Without this every test here rewrites config/rig.json and the suite
+        starts depending on what the previous run happened to leave behind.
+        """
+        fd, path = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        self.addCleanup(os.unlink, path)
+        kwargs.setdefault("planner", robot_moves_legacy)
+        robot = robot_mod.Robot(robot_mod.MockGantry(), config_path=path, **kwargs)
+        # Every slot taken, so the capture below has nowhere to go and falls
+        # back to asking a human.
+        robot.graveyard = list(range(rig.GRAVEYARD_SLOTS))
+        return robot
 
     def _captured_position(self):
         board = chess.Board()
@@ -310,7 +334,7 @@ class TestBlockingPrompts(unittest.TestCase):
     def test_an_unanswered_prompt_stops_the_move(self):
         # The default callback refuses, which is the safe direction: a
         # blocking prompt with nobody listening must not be skipped.
-        robot = robot_mod.Robot(robot_mod.MockGantry(), planner=robot_moves_legacy)
+        robot = self._robot()
         robot.home()
         board, move = self._captured_position()
         with self.assertRaises(robot_mod.GantryError):
@@ -319,8 +343,7 @@ class TestBlockingPrompts(unittest.TestCase):
                          "the drag must not be sent when the prompt went unanswered")
 
     def test_confirming_lets_the_drag_through(self):
-        robot = robot_mod.Robot(robot_mod.MockGantry(), planner=robot_moves_legacy,
-                                on_prompt=lambda step: True)
+        robot = self._robot(on_prompt=lambda step: True)
         robot.home()
         board, move = self._captured_position()
         robot.play(board, move)
@@ -328,20 +351,19 @@ class TestBlockingPrompts(unittest.TestCase):
 
     def test_the_prompt_arrives_before_the_drag(self):
         seen = []
-        link = robot_mod.MockGantry()
 
         def answer(step):
-            seen.append(list(link.commands))
+            seen.append(list(robot._link.commands))
             return True
 
-        robot = robot_mod.Robot(link, planner=robot_moves_legacy, on_prompt=answer)
+        robot = self._robot(on_prompt=answer)
         robot.home()
         board, move = self._captured_position()
         robot.play(board, move)
         self.assertEqual(seen, [["HOME"]], "nothing may be dragged before the board is clear")
 
     def test_controller_confirm_releases_the_waiting_move(self):
-        robot = robot_mod.Robot(robot_mod.MockGantry(), planner=robot_moves_legacy)
+        robot = self._robot()
         robot.home()
         controller = robot_mod.RobotController(robot, mock.Mock())
         board, move = self._captured_position()
@@ -372,7 +394,7 @@ class TestBlockingPrompts(unittest.TestCase):
     def test_halting_frees_a_blocked_prompt(self):
         # Otherwise a halt requested while the arm waits would leave the
         # robot thread parked on the Event forever.
-        robot = robot_mod.Robot(robot_mod.MockGantry(), planner=robot_moves_legacy)
+        robot = self._robot()
         robot.home()
         controller = robot_mod.RobotController(robot, mock.Mock())
         board, move = self._captured_position()
@@ -392,6 +414,177 @@ class TestBlockingPrompts(unittest.TestCase):
         thread.join(timeout=2.0)
         self.assertFalse(thread.is_alive(), "halting must not leave the arm blocked")
         self.assertTrue(robot.halted)
+
+
+class TestGraveyardPile(unittest.TestCase):
+    """Which slots are taken, and when that is written down.
+
+    The pile is the one bit of Robot state that outlives the process, because
+    the pieces physically outlive it too -- they are still sitting on the
+    board after a reboot.
+    """
+
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        os.unlink(self.path)
+        self.addCleanup(self._cleanup)
+
+    def _cleanup(self):
+        try:
+            os.unlink(self.path)
+        except OSError:
+            pass
+
+    def _robot(self, link=None, **kwargs):
+        return robot_mod.Robot(link or robot_mod.MockGantry(),
+                               planner=robot_moves_legacy,
+                               config_path=self.path, **kwargs)
+
+    def _capture(self):
+        board = chess.Board()
+        for san in ["e4", "d5"]:
+            board.push_san(san)
+        return board, chess.Move.from_uci("e4d5")
+
+    def test_a_fresh_rig_starts_with_an_empty_ring(self):
+        self.assertEqual(self._robot().graveyard, [])
+
+    def test_a_capture_fills_a_slot(self):
+        robot = self._robot()
+        robot.home()
+        robot.play(*self._capture())
+        self.assertEqual(len(robot.graveyard), 1)
+
+    def test_the_pile_survives_a_restart(self):
+        robot = self._robot()
+        robot.home()
+        robot.play(*self._capture())
+        self.assertEqual(self._robot().graveyard, robot.graveyard)
+
+    def test_successive_captures_take_different_slots(self):
+        robot = self._robot()
+        robot.home()
+        board = chess.Board()
+        taken = set()
+        for san in ["e4", "d5", "exd5", "Qxd5", "Nc3", "Qxa2", "Rxa2"]:
+            move = board.parse_san(san)
+            if board.is_capture(move):
+                robot.play(board, move)
+                self.assertGreater(len(robot.graveyard), len(taken),
+                                   f"{san} reused a slot")
+                taken = set(robot.graveyard)
+            board.push(move)
+        self.assertGreaterEqual(len(taken), 3)
+
+    def test_a_failed_move_does_not_consume_a_slot(self):
+        """Committing before the firmware acked would strand a real slot for
+        the rest of the game, and nothing would ever free it."""
+        class Refusing(robot_mod.MockGantry):
+            def send(self, command):
+                if command.startswith("BURY"):
+                    raise robot_mod.GantryError("ERR out of range")
+                return super().send(command)
+
+        robot = self._robot(link=Refusing())
+        robot.home()
+        with self.assertRaises(robot_mod.GantryError):
+            robot.play(*self._capture())
+        self.assertEqual(robot.graveyard, [])
+        self.assertEqual(rig_config.load(self.path)["graveyard"], [])
+
+    def test_a_quiet_move_writes_nothing(self):
+        robot = self._robot()
+        robot.home()
+        robot.play(chess.Board(), chess.Move.from_uci("e2e4"))
+        self.assertFalse(os.path.exists(self.path),
+                         "a move with no capture should not touch the config")
+
+    def test_clearing_empties_the_ring_and_the_file(self):
+        robot = self._robot()
+        robot.home()
+        robot.play(*self._capture())
+        robot.clear_graveyard()
+        self.assertEqual(robot.graveyard, [])
+        self.assertEqual(rig_config.load(self.path)["graveyard"], [])
+
+    def test_freeing_a_slot_says_where_the_piece_is(self):
+        """A correction undoes the capture, but the piece is still sitting on
+        the slot -- the caller has to be able to tell the human which one."""
+        robot = self._robot()
+        robot.home()
+        robot.play(*self._capture())
+        slot = next(iter(robot.graveyard))
+        where = robot.free_graveyard_slot(slot)
+        self.assertEqual(where, rig.graveyard_slot_to_mm(slot))
+        self.assertNotIn(slot, robot.graveyard)
+        self.assertEqual(rig_config.load(self.path)["graveyard"], [])
+
+    def test_freeing_a_slot_that_is_not_taken_is_harmless(self):
+        robot = self._robot()
+        robot.free_graveyard_slot(9)
+        self.assertEqual(robot.graveyard, [])
+
+    def test_the_native_planner_needs_no_pile(self):
+        """robot_moves has no plan_with_slots, and must still work -- Robot
+        asks for the capability rather than branching on the module."""
+        robot = robot_mod.Robot(robot_mod.MockGantry(), planner=robot_moves,
+                                config_path=self.path)
+        robot.home()
+        robot.play(chess.Board(), chess.Move.from_uci("e2e4"))
+        self.assertEqual(robot.graveyard, [])
+
+    def test_the_pile_keeps_burial_order(self):
+        robot = self._robot()
+        robot.home()
+        board = chess.Board()
+        order = []
+        for san in ["e4", "d5", "exd5", "Qxd5", "Nc3", "Qxa2", "Rxa2"]:
+            move = board.parse_san(san)
+            if board.is_capture(move):
+                before = list(robot.graveyard)
+                robot.play(board, move)
+                order.append(robot.graveyard[-1])
+                self.assertEqual(robot.graveyard[:len(before)], before,
+                                 "an earlier burial must not be reordered")
+            board.push(move)
+        self.assertEqual(robot.graveyard, order)
+
+    def test_a_correction_frees_the_most_recent_slots(self):
+        """The count gives away how many captures were undone; burial order
+        gives away which slots they were."""
+        robot = self._robot()
+        robot.home()
+        board = chess.Board()
+        for san in ["e4", "d5", "exd5", "Qxd5", "Nc3", "Qxa2", "Rxa2"]:
+            move = board.parse_san(san)
+            if board.is_capture(move):
+                robot.play(board, move)
+            board.push(move)
+        buried = list(robot.graveyard)
+        self.assertGreaterEqual(len(buried), 3)
+
+        # Put one piece back: 32 - on_board should be one fewer than the pile.
+        freed = robot.reconcile_graveyard(32 - (len(buried) - 1))
+        self.assertEqual([slot for slot, _ in freed], [buried[-1]],
+                         "the LAST piece buried is the one an undo undoes")
+        self.assertEqual(robot.graveyard, buried[:-1])
+        self.assertEqual(freed[0][1], rig.graveyard_slot_to_mm(buried[-1]))
+
+    def test_a_correction_that_changes_nothing_frees_nothing(self):
+        robot = self._robot()
+        robot.home()
+        robot.play(*self._capture())
+        self.assertEqual(robot.reconcile_graveyard(31), [])
+        self.assertEqual(len(robot.graveyard), 1)
+
+    def test_a_correction_back_to_a_full_board_empties_the_ring(self):
+        robot = self._robot()
+        robot.home()
+        robot.play(*self._capture())
+        freed = robot.reconcile_graveyard(32)
+        self.assertEqual(len(freed), 1)
+        self.assertEqual(robot.graveyard, [])
 
 
 if __name__ == "__main__":

@@ -44,6 +44,36 @@ def _clamp_release(ms):
     return ms
 
 
+def _clean_graveyard(slots):
+    """Occupied slot indices in burial order, or None if unusable.
+
+    Unlike the other two settings this one is not a human's tuning choice --
+    it is bookkeeping the rig writes for itself, so the failure mode is a
+    half-written or hand-edited file rather than a bad guess. Same answer
+    either way: drop it and start from an empty pile. Losing the pile means
+    the arm may drive a piece onto an occupied slot, which is a nudge you can
+    see and fix; refusing to start is not.
+
+    ORDER IS DATA HERE, so this deduplicates rather than sorting. The list is
+    the order pieces were buried, which is what lets a correction undo the
+    LAST capture and name the right slot to lift from -- sorting it would
+    silently point the human at whichever piece happened to have the lowest
+    slot number.
+    """
+    if not isinstance(slots, list):
+        return None
+    cleaned = []
+    for slot in slots:
+        # bool is an int in Python, and True would silently become slot 1.
+        if isinstance(slot, bool) or not isinstance(slot, int):
+            return None
+        if not 0 <= slot < rig.GRAVEYARD_SLOTS:
+            return None
+        if slot not in cleaned:
+            cleaned.append(slot)
+    return cleaned
+
+
 def load(path=None):
     """The saved settings, falling back to rig.py's measured defaults.
 
@@ -52,7 +82,8 @@ def load(path=None):
     than one that starts with the compiled-in values and says so.
     """
     path = Path(path or CONFIG_PATH)
-    settings = {"white_polarity": _default(), "release_ms": rig.DEFAULT_RELEASE_MS}
+    settings = {"white_polarity": _default(), "release_ms": rig.DEFAULT_RELEASE_MS,
+                "graveyard": []}
     try:
         stored = json.loads(path.read_text())
     except (OSError, ValueError):
@@ -64,14 +95,23 @@ def load(path=None):
     release_ms = _clamp_release(stored.get("release_ms"))
     if release_ms is not None:
         settings["release_ms"] = release_ms
+    graveyard = _clean_graveyard(stored.get("graveyard", []))
+    if graveyard is not None:
+        settings["graveyard"] = graveyard
     return settings
 
 
-def save(white_polarity=None, release_ms=None, path=None):
+def save(white_polarity=None, release_ms=None, graveyard=None, path=None):
     """Writes the settings, creating config/ if it isn't there.
 
-    Either value may be omitted, in which case whatever is currently stored is
-    kept -- so changing one control from the UI can't silently reset the other.
+    Any value may be omitted, in which case whatever is currently stored is
+    kept -- so changing one control from the UI can't silently reset the other,
+    and burying a piece can't reset the polarity found at the bench.
+
+    `graveyard` is the full pile, not a slot to add: the caller owns it (see
+    src/graveyard.py) and this only records it. Order is preserved because it
+    is burial order, so pass a list and not a set. [] clears it.
+
     Returns the settings actually stored.
     """
     path = Path(path or CONFIG_PATH)
@@ -88,6 +128,13 @@ def save(white_polarity=None, release_ms=None, path=None):
                 f"release_ms must be {rig.MIN_RELEASE_MS}-{rig.MAX_RELEASE_MS}, "
                 f"not {release_ms!r}")
         settings["release_ms"] = clamped
+    if graveyard is not None:
+        cleaned = _clean_graveyard(list(graveyard))
+        if cleaned is None:
+            raise ValueError(
+                f"graveyard must be slot indices 0..{rig.GRAVEYARD_SLOTS - 1}, "
+                f"not {graveyard!r}")
+        settings["graveyard"] = cleaned
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(settings, indent=2) + "\n")
     return settings

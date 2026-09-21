@@ -15,32 +15,38 @@ knight cross an occupied board without shoving anything.
 
 CLEARANCE, and why the routing line moves around
 
-On this board a square is 30mm, so half a square -- the midline of a gap --
-is only 15mm from the centre of the piece on either side of it. Against
-13-15mm piece bases that leaves between 2mm and nothing, and the 25mm magnet
-is worse still: its pole face reaches to within 2.5mm of a flanking piece's
-centre, easily close enough to drag it along.
+On this board a square is 50mm, so half a square -- the midline of a gap --
+is 25mm from the centre of the piece on either side of it. Against 13-15mm
+piece bases that leaves a clear 10mm, and the 25mm magnet's pole face stops
+12.5mm short of a flanking piece's centre, which is roughly a base-radius of
+daylight.
 
-So _route() does not simply split the gap. When one flank of a traversal is
-verified empty, the line shifts LATTICE_BIAS toward it, putting 21mm between
-the piece being carried and the one it's passing on the long traversal leg
-(and 8.5mm of daylight between that piece and the magnet's edge). The short
-diagonal onto the lattice corner then becomes the tightest point at 17.4mm,
-so a biased move's true worst case is 17.4mm rather than 15.0mm -- a smaller
-win than the traversal figure alone suggests, but a real one, and it applies
-to ~2 moves in 3. Only when both flanks are occupied -- or the empty one is
-off the board -- does it fall back to the 15mm midline, because at that
-point 15mm is the geometric maximum and no amount of cleverness improves
-on it.
+This is the single biggest thing the V2 board bought, and it is worth stating
+plainly because the machinery below was built for the opposite situation. On
+the V1 board a square was 28.75mm: the midline sat 14.4mm from each
+neighbour, inside the 13-15mm bases, and the magnet's pole face came to
+within about 2mm of a flanking piece's centre -- easily close enough to drag
+it along. Clearance was the governing constraint on every routing decision.
+At 50mm it is not. The geometry that used to be marginal now has margin.
 
-tests/test_robot_moves.py asserts the 15mm floor as an invariant over whole
-random games; it has never been breached in ~32,000 planned moves, and only
-about 2.5% of moves reach it at all.
+The bias machinery is kept anyway. When one flank of a traversal is verified
+empty, _route() shifts the line LATTICE_BIAS toward it rather than simply
+splitting the gap, which on this board buys 35mm on the long traversal leg
+instead of 25mm. That is no longer the difference between working and not,
+but it costs nothing and it is the thing that would matter again if the
+pieces or the coil ever change. Only when both flanks are occupied -- or the
+empty one is off the board -- does it fall back to the 25mm midline, which is
+the geometric maximum and cannot be improved on by routing.
 
-That fallback is not hypothetical: in the opening every gap in the rank-7
-pawn wall has a pawn on both sides, so a knight coming off the back rank
-crosses at 15mm no matter what. If pieces catch there, the fix is mechanical
-(narrower bases) or a weaker MAG_EDGE -- not more routing code.
+tests/test_robot_moves.py asserts the half-square floor as an invariant over
+whole random games. The invariant is expressed in SQUARES, not millimetres,
+so it survives a board rescale; what changed with V2 is only what half a
+square is worth in metal.
+
+The both-flanks-occupied fallback is not hypothetical: in the opening every
+gap in the rank-7 pawn wall has a pawn on both sides, so a knight coming off
+the back rank crosses at the bare midline no matter what. On V1 that was the
+known-dangerous case. On V2 it is 25mm and unremarkable.
 
 Special-move handling is derived from python-chess (board.is_castling,
 is_en_passant, ...) rather than hand-written rules, for the same reason
@@ -56,13 +62,13 @@ import rig
 # Board geometry, mirrored from src/rig.py (and through it from the
 # firmware, which is where these were measured) so the clearance arithmetic
 # above can be re-derived rather than taken on trust.
-SQUARE_MM = rig.SQUARE_MM   # 30.0; 240x240mm playing area
+SQUARE_MM = rig.SQUARE_MM   # 50.0; 400x400mm playing area
 PIECE_BASE_MM = 15.0    # worst case of the measured 13-15mm bases
 MAGNET_MM = 25.0        # pole face diameter
 
 # How far to shift a traversal line off the midline when one side is known
-# to be empty, in squares. 0.2 -> 21mm from the occupied flank instead of
-# 15mm. Raising it buys more clearance from that flank but pushes the magnet
+# to be empty, in squares. 0.2 -> 35mm from the occupied flank instead of
+# 25mm. Raising it buys more clearance from that flank but pushes the magnet
 # further under the empty square, so it can't exceed 0.5 (which would put
 # the carriage over the neighbouring square's centre).
 LATTICE_BIAS = 0.2
@@ -75,13 +81,13 @@ LATTICE_BIAS = 0.2
 MAG_HOLD = 170
 MAG_EDGE = 110
 
-# Where the carriage rests between moves, in file/rank. Travel is exactly
-# the board, so this is a square centre with the coil de-energised.
+# Where the carriage rests between moves, in file/rank. A square centre, with
+# the coil de-energised.
 #
 # It is h1, not a1: h1 is the machine's own origin and the position the
 # firmware assumes at power-on (there are no limit switches to discover it).
 # Parking anywhere else means a human re-parking by eye before HOME, and
-# being 210mm out is silent -- nothing reports it, every later coordinate is
+# being a whole board out is silent -- nothing reports it, every later coordinate is
 # just wrong. See rig.PARK_SQUARE.
 PARK = (7.0, 0.0)
 
@@ -136,22 +142,30 @@ def _xy(square):
     return chess.square_file(square), chess.square_rank(square)
 
 
+# The reachable range for a routing coordinate, in files/ranks. The V2 frame
+# reaches a full square (50mm) past every board edge, so a line may sit half a
+# square outside the 0..7 square centres; beyond that the carriage stalls or
+# the firmware answers ERR out of range, losing the move mid-drag with the
+# coil live.
+#
+# On V1 this was 0..7 -- the measured corners WERE the travel limits -- and the
+# comment here said edge weaves paid for that by being folded onto occupied
+# square-centre lines. Worth knowing before trusting that story: they were not.
+# LATTICE_BIAS keeps every line the planner produces comfortably inside the
+# board, and instrumenting this function over 25 full random games showed it
+# binding zero times in ~30k calls, under the old bounds as much as these.
+#
+# So this is a safety net that has never caught anything, and widening it
+# changes no plan. It is widened anyway because a net belongs at the real
+# physical limit rather than one derived from a frame that no longer exists --
+# if routing ever does want the half-square line, V2 can reach it. The
+# firmware's clampWeave() is correspondingly a no-op (FOLD_EDGE_WEAVE = false).
+_MIN_LINE, _MAX_LINE = -0.5, 7.5
+
+
 def _fold_to_travel(value):
-    """Fold a coordinate back onto the board.
-
-    The measured corners ARE the travel limits on this machine -- there is no
-    room beyond a1 or h8 in any direction (rig.MIN_X_MM..MAX_X_MM). But a
-    routing line for an edge piece naturally wants to sit half a square
-    outside the board, which is simply unreachable: the carriage stops, or
-    the firmware rejects it with ERR out of range.
-
-    So fold it inward, which is what the firmware's own clampWeave() does
-    (FOLD_EDGE_WEAVE). The cost is known and accepted rather than solved: a
-    folded line runs down a real square-centre line instead of a gap, so an
-    edge weave can brush pieces sitting on those squares. Fixing that needs
-    a bigger frame, not more routing code.
-    """
-    return min(7.0, max(0.0, value))
+    """Clamp a file/rank routing coordinate to what the frame can reach."""
+    return min(_MAX_LINE, max(_MIN_LINE, value))
 
 
 def _goto(x, y, note):
@@ -255,8 +269,8 @@ def _route(from_square, to_square, board, label):
     consume one of them at each end; a rook-style move offsets only
     perpendicular), which is what makes the clearance question tractable:
     exactly two lines of squares flank it, and _bias() shifts the line toward
-    whichever of them is empty. See this module's docstring for why 15mm of
-    midline clearance isn't enough on a 30mm board.
+    whichever of them is empty. See this module's docstring for what that
+    bias is worth now that a square is 50mm rather than 28.75mm.
     """
     fx, fy = _xy(from_square)
     tx, ty = _xy(to_square)

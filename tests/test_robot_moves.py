@@ -112,7 +112,7 @@ class TestKnightRouting(unittest.TestCase):
 
         # b8 (1,7) -> corner (1.5,6.5) -> along the b/c gap to (1.5,5.5)
         # -> down into c6 (2,5). Both b7 and c7 hold pawns here, so the
-        # traversal has to split the gap: 15mm from each, which is the most
+        # traversal has to split the gap: 25mm from each, which is the most
         # that geometry allows. See TestLatticeClearance for the cases where
         # it can do better.
         self.assertEqual(
@@ -144,9 +144,11 @@ class TestKnightRouting(unittest.TestCase):
 
 
 class TestLatticeClearance(unittest.TestCase):
-    """On 30mm squares the midline of a gap is only 15mm from the pieces on
-    either side -- against 13-15mm bases, and a 25mm magnet, that's nothing.
-    So a traversal shifts toward a flank it can prove is empty.
+    """A traversal shifts toward a flank it can prove is empty, rather than
+    splitting the gap. On 50mm squares the midline is already 25mm from the
+    pieces on either side, so this is margin on top of margin -- on the old
+    28.75mm board it was the difference between clearing a piece and dragging
+    it (see the robot_moves docstring).
 
     These are the tests that decide whether the arm knocks pieces over, so
     they assert exact coordinates rather than 'roughly avoids things'.
@@ -166,9 +168,9 @@ class TestLatticeClearance(unittest.TestCase):
         self.assertEqual(points[1:3], [(1.3, 6.5), (1.3, 5.5)])
 
     def test_stays_on_the_midline_when_both_flanks_are_occupied(self):
-        # The opening pawn wall. Nothing to be done -- 15mm each side is the
-        # geometric maximum, and pretending otherwise would just move the
-        # knight closer to one of them.
+        # The opening pawn wall. Nothing to be done -- half a square each side
+        # is the geometric maximum, and pretending otherwise would just move
+        # the knight closer to one of them.
         board = chess.Board()
         board.push_san("e4")
         points = gotos(robot_moves.plan(board, chess.Move.from_uci("b8c6")))
@@ -408,15 +410,21 @@ def closest_approach(board, move):
 class TestTravelInvariant(unittest.TestCase):
     """The other load-bearing property: every waypoint is reachable.
 
-    On this machine the measured corners ARE the travel limits -- there is no
-    room past a1 or h8 in any direction (rig.MIN_X_MM..MAX_X_MM). But routing
-    naturally wants to put an edge piece's line half a square outside the
-    board, which the carriage simply cannot reach: it stalls, or the firmware
-    answers ERR out of range and the move is lost mid-drag with the coil live.
+    Routing naturally wants to put an edge piece's line half a square outside
+    the board. On the V1 frame that was unreachable -- the measured corners
+    WERE the travel limits -- so _goto folded those lines back onto the board,
+    at the cost of running them down occupied square-centre lines.
 
-    So _goto folds coordinates back inside, mirroring the firmware's own
-    clampWeave(). These tests are what stop that fold being quietly removed.
+    The V2 frame reaches a full square (50mm) past every board edge, so the
+    half-square line is now legal and the clamp opens up to exactly that: file
+    and rank may run -0.5..7.5, and nothing may go beyond. That bound is not
+    cosmetic -- past it the carriage stalls, or the firmware answers ERR out
+    of range and the move is lost mid-drag with the coil live. These tests are
+    what stop the clamp being quietly widened or removed.
     """
+
+    # The half-square margin the V2 frame buys, in squares.
+    LOW, HIGH = -0.5, 7.5
 
     def test_no_waypoint_leaves_the_board_over_full_games(self):
         random.seed(11)
@@ -426,26 +434,32 @@ class TestTravelInvariant(unittest.TestCase):
             while not board.is_game_over() and board.fullmove_number < 90:
                 move = random.choice(list(board.legal_moves))
                 for x, y in gotos(robot_moves.plan(board, move)):
-                    self.assertGreaterEqual(min(x, y), 0.0, f"{move.uci()} in {board.fen()}")
-                    self.assertLessEqual(max(x, y), 7.0, f"{move.uci()} in {board.fen()}")
+                    self.assertGreaterEqual(min(x, y), self.LOW, f"{move.uci()} in {board.fen()}")
+                    self.assertLessEqual(max(x, y), self.HIGH, f"{move.uci()} in {board.fen()}")
                 checked += 1
                 board.push(move)
         self.assertGreater(checked, 2000, "sanity: the sweep should cover thousands of moves")
 
-    def test_an_edge_knight_is_folded_back_on(self):
-        # b1c3 has nothing outside it, but a-file and h-file knights route
-        # along a line that wants to sit at -0.5 or 7.5.
+    def test_an_edge_knight_stays_within_reach(self):
+        # a-file and h-file knights are the case with nothing outside them to
+        # route through, so they are where a plan would leave the frame if it
+        # ever did. (In practice LATTICE_BIAS keeps these lines inside the
+        # board entirely -- see the note on _fold_to_travel.)
         board = chess.Board()
         board.push_san("a4")
         board.push_san("a5")
         for x, y in gotos(robot_moves.plan(board, chess.Move.from_uci("b1a3"))):
-            self.assertGreaterEqual(min(x, y), 0.0)
-            self.assertLessEqual(max(x, y), 7.0)
+            self.assertGreaterEqual(min(x, y), self.LOW)
+            self.assertLessEqual(max(x, y), self.HIGH)
 
-    def test_the_fold_is_a_clamp_not_a_wrap(self):
-        self.assertEqual(robot_moves._fold_to_travel(-0.5), 0.0)
-        self.assertEqual(robot_moves._fold_to_travel(7.5), 7.0)
+    def test_the_clamp_is_a_clamp_not_a_wrap(self):
+        # The half-square margin is reachable and passes through untouched...
+        self.assertEqual(robot_moves._fold_to_travel(-0.5), -0.5)
+        self.assertEqual(robot_moves._fold_to_travel(7.5), 7.5)
         self.assertEqual(robot_moves._fold_to_travel(3.5), 3.5)   # interior untouched
+        # ...but anything past it is still pulled back, not wrapped around.
+        self.assertEqual(robot_moves._fold_to_travel(-2.0), -0.5)
+        self.assertEqual(robot_moves._fold_to_travel(9.0), 7.5)
 
     def test_the_park_square_is_reachable(self):
         x, y = robot_moves.PARK
@@ -454,11 +468,11 @@ class TestTravelInvariant(unittest.TestCase):
 
 class TestClearanceInvariant(unittest.TestCase):
     """The load-bearing property: while carrying a piece, the arm never comes
-    closer than half a square (15mm on this board) to any other piece.
+    closer than half a square (25mm on this board) to any other piece.
 
-    15mm is the geometric floor -- the midline of a gap -- and against 13-15mm
-    bases it's already tight, so anything closer means pieces get knocked
-    over. Asserted over whole random games rather than hand-picked positions,
+    Half a square is the geometric floor -- the midline of a gap. The bound is
+    asserted in squares rather than millimetres so it survives a board
+    rescale; what a square is worth in metal is rig.SQUARE_MM. Asserted over whole random games rather than hand-picked positions,
     because the cases that would violate it are crowded middlegames nobody
     thinks to write down.
     """

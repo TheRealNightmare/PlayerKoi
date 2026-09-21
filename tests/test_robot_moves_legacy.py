@@ -67,28 +67,66 @@ class TestQuietMoves(unittest.TestCase):
 
 
 class TestCaptures(unittest.TestCase):
+    """The captured piece is now driven to a graveyard slot rather than
+    waited on. The ordering property is unchanged and still the point: the
+    destination has to be empty before the attacker is dragged onto it."""
+
     def setUp(self):
         self.board = chess.Board()
         for san in ["e4", "d5"]:
             self.board.push_san(san)
 
-    def test_the_human_is_asked_before_the_piece_is_dragged(self):
+    def test_the_victim_leaves_before_the_attacker_arrives(self):
         # Order is the entire point. Dragging first would shove two pieces.
-        steps = plan_uci(self.board, "e4d5")
+        issued = commands(plan_uci(self.board, "e4d5"))
+        self.assertEqual(len(issued), 2)
+        self.assertTrue(issued[0].startswith("BURY d5 "), issued[0])
+        self.assertEqual(issued[1], "MOVE e4d5 w")
+
+    def test_a_capture_no_longer_stops_for_a_human(self):
+        """The whole point of the bigger frame: no blocking prompt in an
+        ordinary capture, because the arm can put the piece somewhere."""
+        self.assertEqual(prompts(plan_uci(self.board, "e4d5")), [])
+
+    def test_the_bury_is_tagged_with_the_VICTIM_colour(self):
+        """Not the capturer's. The coil is carrying the black pawn here, and
+        white magnets are reversed on this set -- the wrong token shoves the
+        piece off the carriage instead of holding it."""
+        bury = commands(plan_uci(self.board, "e4d5"))[0]
+        self.assertTrue(bury.endswith(" b"), bury)
+
+    def test_the_bury_drives_to_a_real_slot(self):
+        bury = commands(plan_uci(self.board, "e4d5"))[0]
+        _, square, x, y, _ = bury.split()
+        self.assertEqual(square, "d5")
+        self.assertIn((float(x), float(y)),
+                      [legacy.rig.graveyard_slot_to_mm(s)
+                       for s in range(legacy.rig.GRAVEYARD_SLOTS)])
+
+    def test_the_note_says_where_the_piece_went(self):
+        step = plan_uci(self.board, "e4d5")[0]
+        self.assertIn("d5", step.note)
+        self.assertIn("black", step.note)
+        self.assertIn("slot", step.note)
+
+    def test_an_occupied_slot_is_not_reused(self):
+        first = commands(plan_uci(self.board, "e4d5"))[0]
+        _, used = legacy.plan_with_slots(
+            self.board, chess.Move.from_uci("e4d5"), origin_square="h1")
+        again = commands(legacy.plan(
+            self.board, chess.Move.from_uci("e4d5"),
+            origin_square="h1", occupied=set(used)))[0]
+        self.assertNotEqual(first, again)
+
+    def test_a_full_ring_falls_back_to_asking(self):
+        """Unreachable in a legal game -- 30 pieces, 32 slots -- but the UI
+        can hand plan() a made-up position with a stale pile."""
+        steps = legacy.plan(self.board, chess.Move.from_uci("e4d5"),
+                            origin_square="h1",
+                            occupied=set(range(legacy.rig.GRAVEYARD_SLOTS)))
         self.assertEqual(steps[0].kind, "prompt")
-        self.assertEqual(steps[1].command, "MOVE e4d5 w")
-
-    def test_the_capture_prompt_blocks(self):
-        self.assertTrue(plan_uci(self.board, "e4d5")[0].blocking)
-
-    def test_the_prompt_names_the_victim_square_and_colour(self):
-        prompt = plan_uci(self.board, "e4d5")[0].prompt
-        self.assertIn("d5", prompt)
-        self.assertIn("black", prompt)
-        self.assertIn("PAWN", prompt)
-
-    def test_a_capture_is_still_one_drag(self):
-        self.assertEqual(commands(plan_uci(self.board, "e4d5")), ["MOVE e4d5 w"])
+        self.assertTrue(steps[0].blocking)
+        self.assertIn("d5", steps[0].prompt)
 
 
 class TestEnPassant(unittest.TestCase):
@@ -101,16 +139,18 @@ class TestEnPassant(unittest.TestCase):
         for san in ["e4", "a6", "e5", "d5"]:
             self.board.push_san(san)
 
-    def test_the_prompt_names_the_pawn_not_the_destination(self):
-        prompt = plan_uci(self.board, "e5d6")[0].prompt
-        self.assertIn("d5", prompt)      # where the pawn actually is
-        self.assertNotIn("d6", prompt)   # where the capturer is going
+    def test_the_bury_lifts_the_pawn_not_the_destination(self):
+        bury = commands(plan_uci(self.board, "e5d6"))[0]
+        self.assertTrue(bury.startswith("BURY d5 "), bury)   # where the pawn is
+        self.assertFalse(bury.startswith("BURY d6 "), bury)  # where white lands
 
-    def test_the_prompt_still_blocks(self):
-        self.assertTrue(plan_uci(self.board, "e5d6")[0].blocking)
+    def test_the_note_names_the_pawn_not_the_destination(self):
+        note = plan_uci(self.board, "e5d6")[0].note
+        self.assertIn("d5", note)
+        self.assertNotIn("d6", note)
 
-    def test_the_drag_goes_to_the_destination(self):
-        self.assertEqual(commands(plan_uci(self.board, "e5d6")), ["MOVE e5d6 w"])
+    def test_the_drag_still_goes_to_the_destination(self):
+        self.assertEqual(commands(plan_uci(self.board, "e5d6"))[1], "MOVE e5d6 w")
 
 
 class TestCastling(unittest.TestCase):
@@ -177,15 +217,15 @@ class TestPromotion(unittest.TestCase):
     def test_underpromotion_names_the_right_piece(self):
         self.assertIn("KNIGHT", prompts(plan_uci(self.board, "b7b8n"))[-1].prompt)
 
-    def test_a_capturing_promotion_blocks_first_then_advises(self):
+    def test_a_capturing_promotion_buries_first_then_advises(self):
         steps = plan_uci(self.board, "b7a8q")
-        self.assertTrue(steps[0].blocking)          # clear the rook
-        self.assertIn("a8", steps[0].prompt)
+        self.assertTrue(steps[0].command.startswith("BURY a8 "))  # clear the rook
         self.assertEqual(steps[1].command, "MOVE b7a8 w")
         self.assertFalse(steps[-1].blocking)        # then swap the queen in
 
     def test_the_promotion_suffix_is_not_sent_to_the_firmware(self):
         # The protocol takes four characters; a stray 'q' is ERR bad square.
+        # (This move is a quiet promotion, so every command is a MOVE.)
         for command in commands(plan_uci(self.board, "b7b8q")):
             self.assertEqual(len(command.split()[1]), 4, command)
 
@@ -203,7 +243,15 @@ class TestEveryLegalMovePlans(unittest.TestCase):
             while not board.is_game_over() and board.fullmove_number < 90:
                 move = random.choice(list(board.legal_moves))
                 for command in commands(legacy.plan(board, move)):
-                    verb, squares, polarity = command.split()
+                    parts = command.split()
+                    if parts[0] == "BURY":
+                        # BURY <square> <x> <y> <w|b>
+                        self.assertEqual(len(parts), 5, command)
+                        self.assertIsNotNone(chess.parse_square(parts[1]))
+                        float(parts[2]), float(parts[3])   # or ERR usage
+                        self.assertIn(parts[4], ("w", "b"), command)
+                        continue
+                    verb, squares, polarity = parts
                     self.assertIn(verb, ("MOVE", "KNIGHT"))
                     self.assertEqual(len(squares), 4, command)
                     # Both halves must be real squares, or the firmware
@@ -214,7 +262,9 @@ class TestEveryLegalMovePlans(unittest.TestCase):
                 board.push(move)
         self.assertGreater(checked, 1000, "sanity: the sweep should cover many moves")
 
-    def test_every_capture_is_preceded_by_a_blocking_prompt(self):
+    def test_every_capture_buries_the_victim_first(self):
+        """The ordering property, swept over real games: the destination is
+        always cleared before the attacker is dragged onto it."""
         random.seed(3)
         captures = 0
         for _ in range(20):
@@ -222,10 +272,26 @@ class TestEveryLegalMovePlans(unittest.TestCase):
             while not board.is_game_over() and board.fullmove_number < 90:
                 move = random.choice(list(board.legal_moves))
                 if board.is_capture(move):
-                    self.assertTrue(legacy.plan(board, move)[0].blocking, move.uci())
+                    issued = commands(legacy.plan(board, move))
+                    self.assertTrue(issued[0].startswith("BURY "),
+                                    f"{move.uci()}: {issued}")
+                    self.assertFalse(issued[1].startswith("BURY "),
+                                     f"{move.uci()}: {issued}")
                     captures += 1
                 board.push(move)
         self.assertGreater(captures, 100, "sanity: the sweep should cover many captures")
+
+    def test_no_capture_ever_stops_for_a_human(self):
+        random.seed(5)
+        for _ in range(10):
+            board = chess.Board()
+            while not board.is_game_over() and board.fullmove_number < 90:
+                move = random.choice(list(board.legal_moves))
+                for step in legacy.plan(board, move):
+                    # Promotion still prompts, but advisory and never blocking.
+                    self.assertFalse(step.kind == "prompt" and step.blocking,
+                                     f"{move.uci()} still blocks")
+                board.push(move)
 
 
 class TestOrientation(unittest.TestCase):
@@ -255,12 +321,26 @@ class TestOrientation(unittest.TestCase):
         self.assertIn("e4", steps[0].note)
         self.assertNotIn("d7", steps[0].note)
 
-    def test_the_capture_prompt_stays_in_real_notation(self):
+    def test_the_capture_note_stays_in_real_notation(self):
         board = chess.Board("rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2")
         steps = plan_uci(board, "e4d5", origin_square="a8")
-        prompt = prompts(steps)[0]
-        self.assertIn("d5", prompt.prompt)
-        self.assertNotIn("e4", prompt.prompt)
+        self.assertIn("d5", steps[0].note)
+        self.assertNotIn("e4", steps[0].note)
+
+    def test_the_bury_square_is_rotated_but_the_coordinate_is_mirrored(self):
+        """The two halves of a BURY rotate by different means: the square by
+        orient(), the millimetres by orient_mm(). Rotating one and not the
+        other sends the arm to the right slot from the wrong square."""
+        import rig
+
+        board = chess.Board("rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2")
+        _, square, x, y, _ = commands(
+            plan_uci(board, "e4d5", origin_square="a8"))[0].split()
+        self.assertEqual(square, rig.orient_square("d5", "a8"))
+        upright = commands(plan_uci(board, "e4d5", origin_square="h1"))[0].split()
+        self.assertEqual(
+            (float(x), float(y)),
+            rig.orient_mm(float(upright[2]), float(upright[3]), origin="a8"))
 
     def test_castling_rotates_both_commands(self):
         board = chess.Board("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1")
@@ -292,7 +372,8 @@ class TestOrientation(unittest.TestCase):
             for step in legacy.plan(board, move, origin_square="a8"):
                 if step.kind == "command":
                     squares = step.command.split()[1]
-                    self.assertEqual(len(squares), 4)
+                    # BURY names one square, MOVE/KNIGHT name two.
+                    self.assertIn(len(squares), (2, 4), step.command)
                     self.assertTrue(all(c in "abcdefgh" for c in squares[::2]))
                     self.assertTrue(all(c in "12345678" for c in squares[1::2]))
             board.push(move)
@@ -332,13 +413,14 @@ class TestMagnetPolarity(unittest.TestCase):
         board = chess.Board("r3k2r/8/8/8/8/8/8/R3K2R b KQkq - 0 1")
         self.assertEqual(self._tokens(plan_uci(board, "e8c8")), ["b", "b"])
 
-    def test_a_capture_is_tagged_by_the_capturer_not_the_victim(self):
-        """The victim is lifted off by hand; the coil only ever carries the
-        piece that is moving."""
+    def test_a_capture_tags_each_command_with_what_it_carries(self):
+        """Since the arm buries the victim, the coil now carries BOTH colours
+        in one move -- the black pawn out to its slot, then the white pawn in.
+        One token per command, each naming what that command lifts."""
         board = chess.Board()
         for san in ("e4", "d5"):
             board.push_san(san)
-        self.assertEqual(self._tokens(plan_uci(board, "e4d5")), ["w"])
+        self.assertEqual(self._tokens(plan_uci(board, "e4d5")), ["b", "w"])
 
     def test_every_command_of_a_whole_game_is_tagged(self):
         board = chess.Board()
@@ -347,11 +429,16 @@ class TestMagnetPolarity(unittest.TestCase):
             if board.is_game_over():
                 board = chess.Board()
             move = random.choice(list(board.legal_moves))
-            expected = "w" if board.turn == chess.WHITE else "b"
+            mover = "w" if board.turn == chess.WHITE else "b"
+            # A BURY carries the captured piece, so it is tagged the opposite
+            # colour: the victim is always the side not to move, en passant
+            # included.
+            victim = "b" if mover == "w" else "w"
             for command in commands(legacy.plan(board, move)):
                 parts = command.split()
-                self.assertEqual(len(parts), 3, command)
-                self.assertEqual(parts[-1], expected, command)
+                self.assertIn(len(parts), (3, 5), command)
+                self.assertEqual(parts[-1], victim if parts[0] == "BURY" else mover,
+                                 command)
             board.push(move)
 
 

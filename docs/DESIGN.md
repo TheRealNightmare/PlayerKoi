@@ -84,8 +84,9 @@ similar-looking pieces).
 | Power supply | 7.5 V, 36 W, 5.5 × 2.1 mm barrel | 1 |
 | Barrel jack extension | 5.5 × 2.1 mm | 1 |
 | Electrolytic capacitor | 100 µF / 25 V, one per driver VM | 2 |
-| PCB | 280 × 300 mm, M3 corner holes — the playing surface | 1 |
-| Printed sticker | 295 × 300 mm at 1:1, 240 mm grid, dot per square | 1 |
+| Panel | 570 × 570 mm laser-cut acrylic/MDF, M3 holes — the playing surface | 1 |
+| Printed sticker | 570 × 570 mm at 1:1, 400 mm grid, dot per square and per graveyard slot | 1 |
+| Linear rod, Ø8 mm | 545 mm ×2 and 580 mm ×2 | 4 |
 
 ### Power — two domains, one tie
 
@@ -140,10 +141,11 @@ Full wiring tables, per-module pinouts and the power-on order:
 
 | | |
 |---|---|
-| Square | **30 mm** |
-| Playing area | **240 × 240 mm** |
-| PCB | **280 × 300 mm** |
-| a1 → h8 centres | 210 mm per axis |
+| Square | **50 mm** |
+| Playing area | **400 × 400 mm** |
+| Gantry travel | **500 × 500 mm** |
+| Panel | **570 × 570 mm** |
+| a1 → h8 centres | 350 mm per axis |
 | Coordinate origin | a1's centre = `(0, 0)` |
 
 Coordinates are in **squares**, x = file (0 = a … 7 = h), y = rank (0 = rank
@@ -158,21 +160,22 @@ NEMA 17, 1.8°        200 full steps / rev
 1/4 microstepping    × 4            =  800 steps / rev
 20-tooth GT2         20 × 2 mm      =   40 mm / rev
                      800 / 40       =   20 steps / mm
-30 mm square         × 30           =  600 steps / square
+50 mm square         × 50           = 1000 steps / square
 ```
 
-`STEPS_PER_SQUARE = 600`. Bring-up *verifies* this (`GOTO 7 0` must travel
-exactly 210 mm) rather than tuning it. If it's wrong, the pulley isn't 20T or
+`STEPS_PER_SQUARE = 1000`. Bring-up *verifies* this (`GOTO 7 0` must travel
+exactly 350 mm) rather than tuning it. If it's wrong, the pulley isn't 20T or
 the MS jumpers are wrong — fix the hardware, because the error compounds with
 every square travelled.
 
-1/4 rather than 1/8 because on a 30 mm square the Uno's step rate is the
-limit, not precision. 1/4 still resolves 0.05 mm:
+1/4 rather than 1/8 because the Uno's step rate is the limit, not precision —
+more so on the 50 mm board, where every move is 1.74× longer in millimetres.
+1/4 still resolves 0.05 mm:
 
 | | steps/square | at 1500 steps/s | board traverse |
 |---|---|---|---|
-| 1/8 | 1200 | 37.5 mm/s | ~6.4 s |
-| **1/4** | **600** | **75 mm/s** | **~3.2 s** |
+| 1/8 | 2000 | 37.5 mm/s | ~9.3 s |
+| **1/4** | **1000** | **75 mm/s** | **~4.7 s** |
 
 The TMC2208 interpolates to 256 microsteps internally, so coarser external
 stepping costs nothing in smoothness.
@@ -482,7 +485,7 @@ Notable flags: `--robot`, `--topple-delay`, `--harvest`, `--min-conf`,
 | Arduino is a dumb executor | Rules on a microcontroller are rules you can't test. All chess logic stays in python-chess |
 | CoreXY | Both motors fixed to the frame; the 45° transform is three lines of firmware |
 | Blocking, acked serial protocol | The Pi never has to infer when motion finished |
-| Captures topple in place | Gantry travel is exactly the board — there's no room for a graveyard |
+| Captured pieces are parked, not toppled | V1 travel was exactly the board, so a capture stopped the arm and a human lifted the piece off. V2 reaches a full square past every edge, so `BURY` (firmware r4) drives the victim to the nearest free slot of a 32-slot ring. `src/graveyard.py` picks the slot; the pile persists in `config/rig.json` |
 | Fixed topple delay, not vision-gated | Simpler; if it elapses and the piece is still there, the incoming move disturbs it and the settle flags anyway |
 | Camera verifies the arm's own moves | Reuses `set_expected_move` unchanged. A mechanical slip becomes a flag instead of silent corruption |
 | Halt on desync, don't retry | Never stack a second move on a position that isn't real |
@@ -557,7 +560,7 @@ order matters:
 3. **Homing** — both switches found, backed off, re-approached. An axis
    running *away* from its switch is fixed by swapping one coil pair on that
    motor, not in code.
-4. **Verify geometry** — `GOTO 7 0` must travel **exactly 210 mm**.
+4. **Verify geometry** — `GOTO 7 0` must travel **exactly 350 mm**.
 5. **Home offset** — `GOTO 0 0` must sit on a1's printed dot.
 6. **Speed** — raise `MAX_SPEED` only if the motors start cleanly from rest.
 7. **Clearance — before any game.** Drive a knight out of the opening

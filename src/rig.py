@@ -32,21 +32,37 @@ at all -- the firmware takes square names and does its own arithmetic -- so
 this conversion is for bench work and for the dormant native path.
 """
 
-# Board geometry. 30mm pitch on BOTH axes: the earlier 200mm Y span was belt
-# slip and was fixed mechanically, so there is no separate Y pitch.
-SQUARE_MM = 30.0
+# Board geometry. V2: 400x400mm playing area on a 50mm pitch, BOTH axes -- the
+# earlier 200mm Y span was belt slip and was fixed mechanically, so there is no
+# separate Y pitch.
+SQUARE_MM = 50.0
+BOARD_MM = SQUARE_MM * 8        # 400, the playing area
 
 # a1's centre in machine coordinates. The origin (0, 0) is h1's centre, which
 # is also the park position, so the a-file is 7 squares negative in x.
-A1_X_MM = -210.0
+A1_X_MM = -350.0
 A1_Y_MM = 0.0
 
-# The measured corners ARE the travel limits -- there is no room beyond them
-# in any direction. This is why knight and castling weaves have to fold back
-# inward at the board edge rather than stepping half a square outside it
-# (clampWeave in the firmware, _fold_to_travel in robot_moves).
-MIN_X_MM, MAX_X_MM = -210.0, 0.0
-MIN_Y_MM, MAX_Y_MM = 0.0, 210.0
+# Travel limits. On V1 these were the board corners exactly, which is why
+# weaves had to fold back inward at the edge. V2 reaches 50mm past every board
+# edge, a 500x500mm envelope: square centres span x -350..0, the outer squares
+# extend half a square further to x -375..25 and y -25..375, plus the margin.
+GRAVEYARD_DEPTH_MM = 50.0
+MIN_X_MM, MAX_X_MM = -425.0, 75.0
+MIN_Y_MM, MAX_Y_MM = -75.0, 425.0
+
+# Where captured pieces go: a ring of parking slots in the 50mm margin, one
+# strip on each of the four sides, eight slots per strip on the board's own
+# file/rank centre lines. 32 in total, shared between both colours.
+#
+# The four 50x50mm corner cells are deliberately left empty. A corner slot
+# would sit on no centre line at all, so its dot would not line up with the
+# printed grid, and 32 already exceeds the 30 pieces that can ever be
+# captured -- there is nothing to gain by squeezing in four more.
+GRAVEYARD_Y_LOW_MM = -SQUARE_MM             # -50, beyond rank 1
+GRAVEYARD_Y_HIGH_MM = BOARD_MM              # 400, beyond rank 8
+GRAVEYARD_X_LOW_MM = A1_X_MM - SQUARE_MM    # -400, beyond the a-file
+GRAVEYARD_X_HIGH_MM = SQUARE_MM             # 50, beyond the h-file
 
 # Motion scale: 200 steps/rev at 1/2 microstepping over a 20-tooth GT2 pulley
 # on 2mm belt = 400 steps per 40mm = 10 steps/mm. The microstepping jumpers
@@ -119,7 +135,10 @@ READY_BANNER = "READY ChessBot-V1"
 #       square. That silence is why this check exists.
 #   r2  w|b suffix on MOVE/KNIGHT, plus POL and POLTEST.
 #   r3  the faded release, plus RELEASE to tune it.
-FIRMWARE_REV = 3
+#   r4  BURY, for parking a captured piece on a graveyard slot. The first
+#       command that drives to a raw machine coordinate in normal play, so an
+#       r3 board cannot fake it -- it has no verb that reaches off the board.
+FIRMWARE_REV = 4
 
 
 def banner_rev(banner):
@@ -202,6 +221,100 @@ def square_to_mm(file_, rank):
     return (A1_X_MM + file_ * SQUARE_MM, A1_Y_MM + rank * SQUARE_MM)
 
 
+# The board's centre in board-space mm -- the point every orientation flip is
+# symmetric about. a1 and h8 centres are 7 squares apart, so the middle is 3.5.
+BOARD_CENTRE_X_MM = A1_X_MM + 3.5 * SQUARE_MM
+BOARD_CENTRE_Y_MM = A1_Y_MM + 3.5 * SQUARE_MM
+
+
+def orient_mm(x_mm, y_mm, origin=None):
+    """Board-space mm -> machine mm, applying how the board is seated.
+
+    The mm counterpart of orient(). It exists because orient() can only rotate
+    file/rank indices, and a graveyard slot has neither -- it sits outside the
+    8x8, so there is no index to flip. Reflecting the millimetres about the
+    board centre does the same job and works for any point, on the board or
+    off it.
+
+    This is NOT optional on this rig. ORIGIN_SQUARE is "a8", a 180 degree
+    rotation, so a slot handed to the firmware unmirrored lands on the
+    diagonally opposite slot -- the arm drives a captured piece the full width
+    of the board to the wrong place, and nothing reports it.
+
+    Like orient(), it is its own inverse for every supported origin.
+    """
+    origin = ORIGIN_SQUARE if origin is None else origin
+    try:
+        flip_file, flip_rank = _ORIENTATIONS[origin]
+    except KeyError:
+        raise ValueError(
+            f"unknown board origin {origin!r} -- expected one of {', '.join(_ORIENTATIONS)}"
+        )
+    if flip_file:
+        x_mm = 2 * BOARD_CENTRE_X_MM - x_mm
+    if flip_rank:
+        y_mm = 2 * BOARD_CENTRE_Y_MM - y_mm
+    return (x_mm, y_mm)
+
+
 def within_travel(x_mm, y_mm):
     """Whether a machine coordinate is physically reachable."""
     return MIN_X_MM <= x_mm <= MAX_X_MM and MIN_Y_MM <= y_mm <= MAX_Y_MM
+
+
+# The four strips, named for the board edge each sits beyond. Slots are
+# numbered counter-clockwise from SOUTH's a-file end, 8 per strip:
+#
+#              NORTH  16..23  (right to left)
+#           +-------------------+
+#   WEST    |                   |   EAST
+#   24..31  |      the 8x8      |   8..15
+#   (top    |                   |   (bottom
+#    down)  +-------------------+    up)
+#              SOUTH  0..7  (left to right)
+#
+# Counter-clockwise rather than "all of one edge, then all of the next in
+# reading order" so that consecutive indices are always physically adjacent,
+# including across the corner joins. Anything that walks the ring -- filling
+# it in order, finding the next free slot near a full one -- then gets
+# adjacency for free instead of special-casing four seams.
+SOUTH, EAST, NORTH, WEST = "south", "east", "north", "west"
+GRAVEYARD_STRIPS = (SOUTH, EAST, NORTH, WEST)
+
+SLOTS_PER_STRIP = 8
+GRAVEYARD_SLOTS = SLOTS_PER_STRIP * len(GRAVEYARD_STRIPS)   # 32
+
+
+def graveyard_strip(slot):
+    """Which of the four strips a slot index falls on."""
+    if not 0 <= slot < GRAVEYARD_SLOTS:
+        raise ValueError(f"graveyard slot must be 0..{GRAVEYARD_SLOTS - 1}, not {slot}")
+    return GRAVEYARD_STRIPS[slot // SLOTS_PER_STRIP]
+
+
+def graveyard_slot_to_mm(slot):
+    """Where to park a captured piece, in machine mm.
+
+    `slot` is 0..31 around the ring (see the diagram above). Every slot sits
+    on a board file or rank centre line, so the printed sticker's graveyard
+    dots line up with the board's own columns and rows.
+
+    There is no colour argument: all 32 slots are a single shared pool, and
+    choosing between them is policy rather than geometry -- see
+    graveyard.nearest_free_slot(). This only says where slot n is.
+
+    Mirrors square_to_mm(), and carries the same caveat: the result is in
+    board space. This rig is seated 180 degrees round (ORIGIN_SQUARE), and
+    orient() only rotates file/rank indices, which a graveyard slot does not
+    have -- it sits outside the 8x8. So on a rotated rig, mirror the result
+    about the board centre rather than reaching for orient().
+    """
+    strip = graveyard_strip(slot)
+    i = slot % SLOTS_PER_STRIP
+    if strip == SOUTH:                      # a-file end to h-file end
+        return (A1_X_MM + i * SQUARE_MM, GRAVEYARD_Y_LOW_MM)
+    if strip == EAST:                       # rank 1 up to rank 8
+        return (GRAVEYARD_X_HIGH_MM, A1_Y_MM + i * SQUARE_MM)
+    if strip == NORTH:                      # h-file end back to a-file end
+        return (A1_X_MM + (7 - i) * SQUARE_MM, GRAVEYARD_Y_HIGH_MM)
+    return (GRAVEYARD_X_LOW_MM, A1_Y_MM + (7 - i) * SQUARE_MM)   # WEST, top down

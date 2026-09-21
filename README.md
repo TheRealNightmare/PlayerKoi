@@ -31,6 +31,12 @@ is the robot arm's circuit and bring-up procedure.
 - Third-party IMX219 CSI camera module, rigidly mounted directly overhead
   the board, looking straight down
 - Standard tournament Staunton chess set
+- **The V2 board**: a 400 × 400mm playing area on 50mm squares, printed as a
+  sticker on a 570 × 570mm laser-cut panel, with the CoreXY gantry reaching
+  500 × 500mm -- a full square past every edge, which is where captured
+  pieces are parked. V1 was 230 × 230mm on 28.75mm squares; git history has
+  those numbers. Geometry, bill of materials and the panel drawings are in
+  [`docs/HARDWARE.md`](docs/HARDWARE.md).
 
 ## One-time Pi setup
 
@@ -205,15 +211,15 @@ What it does physically:
 - **Knights**, and the **castling rook** (which has to get past the king
   that just jumped over it), ride the lattice lines *between* squares
   instead, at reduced magnet power -- and not down the middle of the gap:
-  on 30mm squares the midline is only 15mm from the pieces either side, so
-  the route shifts toward whichever flank it can prove is empty. At the board
-  edge there is no room to step outside, so those routes fold back onto a
-  square centre line -- the one case where a weave passes closer than usual.
-- **Captures** stop the arm and ask you to lift the piece off, with a
-  **Done — piece removed** button in the UI. Nothing moves until you confirm:
-  dragging onto an occupied square would just shove two pieces around. There
-  is no graveyard because the gantry's travel is exactly the 8×8 board. En
-  passant asks for the pawn *beside* the destination, not on it.
+  the route shifts toward whichever flank it can prove is empty. On 50mm
+  squares the midline is already 25mm from the pieces either side, so this is
+  margin on top of margin; on the old 28.75mm board it was the difference
+  between clearing a piece and dragging it.
+- **Captures** are driven off the board by the arm itself. The victim is
+  lifted first -- dragging onto an occupied square would just shove two
+  pieces around -- and parked on the nearest free slot of a 32-slot ring in
+  the 50mm margin around the board. No human, no waiting. En passant lifts
+  the pawn *beside* the destination, not on it.
 - **Promotion** moves the pawn and then asks you to swap in a queen. The
   arm can't fetch one, and vision can't tell a queen from a pawn anyway --
   the tracked state already records the promotion, so the board just has to
@@ -293,39 +299,47 @@ always knows piece *type*, never needing to re-derive it from vision.
   pipeline. Consensus/delta-matching logic is unit-tested off-Pi with a
   fake model (see `tests/`), but classifier accuracy itself can only be
   judged after training on real photos.
-- **The arm's captures need a human.** There's no graveyard area, because the
-  gantry's travel is exactly the 8x8 board, so a captured piece is lifted off
-  by hand. The arm waits for you to confirm rather than for a timer, so it
-  can't run out of patience and disturb a piece you haven't cleared yet -- but
-  it does mean an unattended game stops at the first capture.
+- **The camera has not been re-mounted for the bigger board.** The IMX219 is
+  positioned for the old 230mm board; at 400mm it has to be raised and the
+  rig recalibrated, and the classifier's crops rescaled with it. The vision
+  *code* needs no change -- it works in normalised 0..8 board space off the
+  homography and never sees millimetres -- but nothing here plays a game
+  until that is done.
 - **There are no limit switches.** `HOME` drives to the assumed origin instead
   of seeking it, so position is dead reckoning from a manual park on h1. A
   missed step or a power-on with the carriage elsewhere corrupts every
   coordinate afterwards, and nothing detects it -- the camera confirming each
   move is what eventually catches it, by flagging and halting.
-- **30mm squares leave very little routing clearance, and that's the
-  arm's real limitation.** The midline between two pieces is 15mm from each,
-  against 13-15mm piece bases and a 25mm magnet whose edge comes within
-  2.5mm of them. Routing shifts toward an empty flank wherever it can (about
-  two moves in three, taking the worst point to 17.4mm), but when both
-  flanks are occupied -- a knight leaving the back rank past the opening
-  pawn wall, most of all -- 15mm is the geometric maximum and no routing
-  fixes it. Test that specific move before playing a real game; see
-  [`docs/HARDWARE.md`](docs/HARDWARE.md). If it catches, the remedies are a
-  weaker `MAG_EDGE`, narrower piece bases, or a smaller coil.
+- **Routing clearance used to be the arm's real limitation, and is not any
+  more.** On the old 28.75mm board the midline between two pieces was 14.4mm
+  from each -- *inside* the 13-15mm piece bases -- and the 25mm magnet's edge
+  came within about 2mm of a flanking piece's centre. At 50mm the midline is
+  25mm and the pole face stops 12.5mm short. What replaces it as the thing to
+  watch is the opposite problem: a piece can now sit much further from the
+  coil, and the 50N magnet's grab at that offset is **untested**. See
+  [`docs/HARDWARE.md`](docs/HARDWARE.md).
+- **Ø8mm rod over a ~500mm span will sag** under the carriage in a way it did
+  not over 250mm. Accepted for cost; if the carriage binds or the grip varies
+  between the middle of the board and the edges, the fix is Ø10/Ø12mm rod or
+  supported rail -- which changes the bearing blocks, so it is a re-cut.
 - Not yet built: puzzle mode, AI coach, past-match analysis, remote play.
 
 ## Repo layout
 
 ```
-config/       generated calibration data (git-ignored)
+config/       generated calibration data, plus rig.json -- the settings
+              that must survive a restart (magnet polarity, release fade,
+              and which graveyard slots hold a captured piece)
+design/       generated board artwork: the printed sticker, and the panel
+              as DXF / AI / SVG / STEP. Rebuild with tools/, don't hand-edit
 docs/         DESIGN.md -- the full system document (architecture, geometry,
               protocols, decisions, risks)
               HARDWARE.md -- robot arm circuit, wiring, bring-up
               CONNECTION.md -- what to flash, how to wire it, bring-up
               order, the full command reference, troubleshooting
 firmware/     chessbot_v1/ -- THE SKETCH TO FLASH. Takes whole moves
-              (MOVE e2e4, KNIGHT b1c3) and routes them itself
+              (MOVE e2e4, KNIGHT b1c3, BURY e4 -350 -50 w) and routes them
+              itself
               chess_gantry/ -- dormant; the unbuilt limit-switch rebuild,
               which takes GOTO/MAG/PULSE/TOPPLE instead. Do not flash
 models/       exported NCNN classifier (git-ignored, copied from training
@@ -333,13 +347,18 @@ models/       exported NCNN classifier (git-ignored, copied from training
 src/          capture, calibration, square classification, board-state
               helpers, event-gated tracking loop, legal-move resolution,
               web UI, and the robot arm (rig.py holds the machine's measured
-              constants; robot_moves_legacy.py turns a move into firmware
-              commands, robot_moves.py plans a waypoint path for the
-              dormant native rig, robot.py drives and verifies either)
+              constants; graveyard.py picks which slot a captured piece goes
+              to; robot_moves_legacy.py turns a move into firmware commands,
+              robot_moves.py plans a waypoint path for the dormant native
+              rig, robot.py drives and verifies either)
 tests/        unit tests for move resolution, the classifier's consensus
-              wrapper, the tracking loop's delta computation, and the
-              robot's path planning + halt-on-mismatch behaviour (no
-              camera, gantry or trained model required -- fakes throughout)
+              wrapper, the tracking loop's delta computation, the robot's
+              path planning + halt-on-mismatch behaviour, and the board
+              geometry (no camera, gantry or trained model required --
+              fakes throughout)
+tools/        generators for everything in design/, plus read_board_ai.py,
+              which reads the hole pattern out of the original Illustrator
+              file. No dependencies beyond the standard library
 training/     dataset collection + training + export instructions (see
               training/NOTES.md) -- most steps run off-Pi
 ```

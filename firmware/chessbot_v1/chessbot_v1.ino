@@ -32,6 +32,14 @@
                           polarity flips with it. Omitting it means "not
                           reversed", which is what the bench console wants.
      GOTO e4           -> OK GOTO e4        reposition, magnet untouched
+     BURY e4 -350 -50 w
+                       -> OK BURY e4        lift the piece on e4 and park it
+                          on a graveyard slot, given as a RAW MACHINE
+                          COORDINATE -- the slots sit outside the 8x8, so
+                          there is no square name for them. Set down with the
+                          same faded release a move uses. The w|b is required
+                          here, unlike on MOVE. The host picks the slot; see
+                          src/graveyard.py.
      POL               -> OK POL 1          read the white-magnet polarity
      POL 0|1           -> OK POL <n>        1 = white is held by REPEL
      POLTEST e2        -> OK POLTEST e2     park there, then attract 2s /
@@ -76,30 +84,54 @@ const bool invertX = false;
 const bool invertY = false;
 
 // ---------- board geometry ----------
+// V2 BOARD: 400x400mm playing area, 50mm squares, 500x500mm travel.
+// (V1 was 230x230 at 28.75mm with travel that stopped dead at the board
+// edge. If you are driving the old hardware, git log has those numbers.)
+//
 // Origin (0,0) = park position = centre of h1.
 // a1 is 7 squares to the LEFT, so its X is negative.
 // Measured from the machine, not from the printed sticker:
 //   h1 centre = (   0.0,   0.0)   <- park position, the origin
-//   a1 centre = (-210.0,   0.0)
-//   h8 centre = (   0.0, 210.0)
-//   a8 centre = (-210.0, 210.0)
+//   a1 centre = (-350.0,   0.0)
+//   h8 centre = (   0.0, 350.0)
+//   a8 centre = (-350.0, 350.0)
 //
-// Board is square: 30mm pitch on both axes. (The earlier 200mm Y span was
+// Board is square: 50mm pitch on both axes. (The earlier 200mm Y span was
 // belt slip, fixed by re-belting — do NOT reintroduce a separate Y pitch.)
-const float SQUARE_MM = 30.0;
+const float SQUARE_MM = 50.0;
 
-const float A1_X_MM = -210.0;
+const float A1_X_MM = -350.0;
 const float A1_Y_MM =    0.0;
 
-// The measured corners ARE the travel limits — there is no room beyond
-// them in any direction. Anything outside is physically unreachable.
-const float MIN_X = -210.0, MAX_X =   0.0;
-const float MIN_Y =    0.0, MAX_Y = 210.0;
+// Travel limits. Unlike V1 these are NOT the board corners: the frame now
+// reaches 50mm past every board edge. Square centres span x -350..0 and the
+// outer squares extend half a square further, so the board occupies
+// x -375..25, y -25..375; adding the 50mm margin on each side gives a
+// 500x500 envelope.
+const float MIN_X = -425.0, MAX_X =  75.0;
+const float MIN_Y =  -75.0, MAX_Y = 425.0;
 
-// Knight and castling weaves normally step half a square OUTSIDE the
-// board. At the four edges that would exceed the limits above, so the
-// weave is folded inward instead. See clampWeave().
-const bool  FOLD_EDGE_WEAVE = true;
+// Captured pieces. The 50mm margin is deep enough for a row of eight on each
+// of the four sides -- 32 slots in all, shared between both colours, on the
+// board's own file and rank centre lines. The four corner cells are left
+// empty: a corner slot sits on no centre line, and 32 already outnumbers the
+// 30 pieces that can ever be captured.
+//
+// The sketch does not CHOOSE a slot -- that needs to know what is already in
+// the pile, which only the host tracks (src/graveyard.py). It only drives to
+// the coordinate it is given, via BURY. So these four numbers are the
+// machine's own record of where the ring is, alongside SQUARE_MM and the
+// travel limits; nothing below reads them. src/rig.py mirrors them.
+const float GRAVEYARD_Y_LOW  =  -50.0;  // beyond rank 1
+const float GRAVEYARD_Y_HIGH =  400.0;  // beyond rank 8
+const float GRAVEYARD_X_LOW  = -400.0;  // beyond the a-file
+const float GRAVEYARD_X_HIGH =   50.0;  // beyond the h-file
+
+// Knight and castling weaves step half a square OUTSIDE the board. On V1
+// that exceeded the travel limits at the four edges and had to be folded
+// inward; with 50mm of margin on every side a 25mm weave always fits, so
+// the fold is no longer needed. See clampWeave(), which is now a no-op.
+const bool  FOLD_EDGE_WEAVE = false;
 
 // ---------- speed ----------
 float feedRateMMS = 40.0;
@@ -111,7 +143,7 @@ unsigned int stepDelayUS;
 // about. It rides in the READY banner, and src/robot.py refuses to drive a
 // board older than it expects -- r1 had no polarity suffix at all and would
 // silently attract for every move, shoving every white piece off its square.
-#define FIRMWARE_REV 3
+#define FIRMWARE_REV 4
 
 // Measured on this set: the white pieces' magnets are the other way up, so
 // they need the opposite coil polarity from the black ones. This is only the
@@ -219,6 +251,16 @@ void handleCommand(String line) {
     if (!parseColour(arg, rev))          { Serial.println("ERR colour w|b"); return; }
     if (!doKnight(f0, r0, f1, r1, rev))  { Serial.println("ERR out of range"); return; }
     Serial.println("OK KNIGHT " + arg);
+  }
+
+  // BURY <square> <x_mm> <y_mm> <w|b>  -- park a captured piece off the board
+  else if (cmd == "BURY") {
+    int f, r;
+    float tx, ty;
+    bool rev;
+    if (!parseBury(arg, f, r, tx, ty, rev)) { Serial.println("ERR usage BURY <square> <x> <y> <w|b>"); return; }
+    if (!doBury(f, r, tx, ty, rev))         { Serial.println("ERR out of range"); return; }
+    Serial.println("OK BURY " + arg.substring(0, 2));
   }
 
   else if (cmd == "GOTO") {
@@ -380,6 +422,39 @@ bool parseColour(const String &arg, bool &reversed) {
   return false;
 }
 
+// Parse "e4 -350 -50 w": the square to lift from, the raw machine coordinate
+// to park on, and which colour is being carried.
+//
+// The colour is required here, unlike on MOVE. MOVE tolerates a missing one
+// because r1 boards had no colour at all and a bench console typing
+// "MOVE e2e4" should still work. BURY is new in r4, so there is no older
+// spelling to stay compatible with -- and defaulting the polarity on a verb
+// that drags a piece the width of the board would mean silently shoving it
+// off the carriage the whole way.
+bool parseBury(String a, int &f, int &r, float &x, float &y, bool &reversed) {
+  a.trim();
+  if (a.length() < 2) return false;
+
+  f = a.charAt(0) - 'a';
+  r = a.charAt(1) - '1';
+  if (f < 0 || f > 7 || r < 0 || r > 7) return false;
+
+  String rest = a.substring(2);
+  rest.trim();
+
+  // Split off the trailing colour token, leaving "<x> <y>" for parseXY.
+  int sp = rest.lastIndexOf(' ');
+  if (sp < 0) return false;
+  String colour = rest.substring(sp + 1);
+  colour.trim();
+  colour.toLowerCase();
+  if (colour == "w")      reversed = whiteReversed;
+  else if (colour == "b") reversed = false;
+  else return false;
+
+  return parseXY(rest.substring(0, sp), x, y);
+}
+
 // ============================================================
 //  PIECE MOVES
 // ============================================================
@@ -387,6 +462,27 @@ bool doMove(int f0, int r0, int f1, int r1, bool reversed) {
   if (!gotoSquare(f0, r0)) return false;
   magHold(MAG_FULL, reversed);
   if (!gotoSquare(f1, r1)) { magOff(); return false; }
+  magRelease(reversed);
+  return true;
+}
+
+// Park a captured piece on a graveyard slot. Same shape as doMove, and
+// deliberately so — grip, drag, set down with the same faded release — but
+// the destination is a raw machine coordinate rather than a square, because
+// the slots sit OUTSIDE the 8x8 and have no file/rank to name them.
+//
+// moveTo() is what makes that safe: it is the same MIN_X..MAX_X / MIN_Y..MAX_Y
+// guard every other motion goes through, so a bad host coordinate is an
+// "ERR out of range" and not the carriage walking into the frame. It is the
+// only thing standing between a wrong number and the machine, since unlike a
+// square there is no alphabet to constrain what arrives.
+//
+// The host owns which slot: it knows what is already in the pile and the
+// firmware does not. See src/graveyard.py.
+bool doBury(int f0, int r0, float tx, float ty, bool reversed) {
+  if (!gotoSquare(f0, r0)) return false;
+  magHold(MAG_FULL, reversed);
+  if (!moveTo(tx, ty)) { magOff(); return false; }
   magRelease(reversed);
   return true;
 }

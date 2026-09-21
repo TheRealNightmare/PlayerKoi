@@ -293,6 +293,12 @@ class Session:
             self.engine_controller.configure(enabled=False)
         if self.robot_controller is not None:
             self.robot_controller.cancel()
+        if self._robot is not None:
+            # A new game starts from the standard position, which means the
+            # graveyard ring is empty -- or is about to be emptied by hand.
+            # Keeping the old pile would make the arm skip slots that are
+            # actually free for the whole next game.
+            self._robot.clear_graveyard()
 
         ok, error = self.park()
 

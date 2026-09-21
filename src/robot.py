@@ -156,8 +156,14 @@ class Robot:
     """
 
     def __init__(self, link, topple_delay_s=robot_moves.DEFAULT_TOPPLE_DELAY_S, on_status=None,
-                 planner=robot_moves, on_prompt=None):
+                 planner=robot_moves, on_prompt=None, config_path=None):
         self._link = link
+        # Where the graveyard pile is kept. Injectable so a test can point it
+        # at a temp file: this is the one piece of Robot state that is written
+        # back to disk during an ordinary move, and without this the suite
+        # rewrites the real config/rig.json and the tests start depending on
+        # what the last run left behind.
+        self._config_path = config_path
         self._topple_delay_s = topple_delay_s
         self._on_status = on_status or (lambda note, prompt: None)
         # Which planner turns a move into steps. robot_moves emits low-level
@@ -169,6 +175,20 @@ class Robot:
         # with nobody to answer it would otherwise be silently skipped and
         # the arm would drag a piece onto an occupied square.
         self._on_prompt = on_prompt or (lambda step: False)
+        # Which graveyard slots already hold a captured piece. Loaded from
+        # disk rather than started empty, because the pile outlives the
+        # process: the pieces are still physically sitting there after a Pi
+        # reboot, and an arm that thinks the ring is empty drives the next
+        # capture on top of one of them.
+        #
+        # Only committed once the BURY has actually been acknowledged -- see
+        # play(). A slot marked full by a move that failed mid-drag would
+        # strand a real slot forever.
+        #
+        # A list, not a set: the order is burial order, which is what lets a
+        # correction undo the last capture and name the right slot to lift
+        # from. graveyard.nearest_free_slot() only membership-tests it.
+        self.graveyard = list(rig_config.load(self._config_path).get("graveyard", ()))
         self._lock = Lock()
         self.homed = False
         self.halted = False
@@ -303,7 +323,16 @@ class Robot:
                 raise GantryError("robot has not been homed")
             self.busy = True
 
-        steps = self._planner.plan(board, move, topple_delay_s=self._topple_delay_s)
+        # The legacy planner buries captures on a graveyard slot and has to be
+        # told what is already in the ring; robot_moves (the native planner)
+        # has no such argument. Ask rather than branch on which module it is,
+        # so a third planner is not a change here.
+        buried = []
+        if hasattr(self._planner, "plan_with_slots"):
+            steps, buried = self._planner.plan_with_slots(
+                board, move, occupied=self.graveyard)
+        else:
+            steps = self._planner.plan(board, move, topple_delay_s=self._topple_delay_s)
         try:
             for step in steps:
                 self._on_status(step.note, step.prompt)
@@ -334,7 +363,58 @@ class Robot:
                 self.busy = False
             self._on_status(None, None)
 
+        # Only now, with every step acknowledged, is the piece really on that
+        # slot. Committing earlier would leak a slot on any failed move.
+        if buried:
+            self.graveyard.extend(buried)
+            rig_config.save(graveyard=self.graveyard, path=self._config_path)
+
         return steps
+
+    def clear_graveyard(self):
+        """Forget the pile -- a new game, with the ring cleared by hand.
+
+        Deliberately does not move the arm. Putting 30 pieces back in their
+        box is a human job, and an arm that tried would be fetching pieces it
+        cannot identify (vision reads empty/white/black, not piece type).
+        """
+        self.graveyard = []
+        rig_config.save(graveyard=[], path=self._config_path)
+
+    def free_graveyard_slot(self, slot):
+        """Give a slot back, after a capture is undone by a correction.
+
+        Returns where that piece is sitting, so the UI can say which one to
+        lift -- this never moves the arm. Retrieving a buried piece would be
+        the riskiest motion in the system, and a correction already means the
+        board and the model disagree, which is the worst moment to trust it.
+        """
+        if slot in self.graveyard:
+            self.graveyard.remove(slot)
+            rig_config.save(graveyard=self.graveyard, path=self._config_path)
+        return rig.graveyard_slot_to_mm(slot)
+
+    def reconcile_graveyard(self, pieces_on_board):
+        """Match the pile to a corrected position, and say what to pick up.
+
+        A manual correction replaces the whole board rather than naming a move,
+        so there is nothing to tell us which capture was undone. But the count
+        gives it away: 32 pieces exist, so anything not on the board is in the
+        ring. If the correction put pieces back, the pile is too long.
+
+        Frees from the END, because that is burial order -- the last capture
+        is the one an undo is undoing. Returns [(slot, (x_mm, y_mm))] for the
+        pieces a human now has to lift, most recent first. Never moves the arm:
+        fetching a buried piece back is the riskiest motion in the system, and
+        a correction means the board and the model already disagree, which is
+        the worst possible moment to trust it.
+        """
+        expected = max(0, 32 - int(pieces_on_board))
+        freed = []
+        while len(self.graveyard) > expected:
+            slot = self.graveyard[-1]
+            freed.append((slot, self.free_graveyard_slot(slot)))
+        return freed
 
     def close(self):
         try:

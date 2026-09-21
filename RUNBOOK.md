@@ -17,6 +17,7 @@ here is executable as written — no placeholders to substitute.
 | Put a trained model on the Pi | [E](#e-export-and-deploy) |
 | Play against the engine | [F](#f-playing-against-the-engine) |
 | Play against the robot arm | [G](#g-playing-with-the-robot-arm) |
+| Reprint the board sticker, or re-cut the panel | [J](#j-the-board-itself) |
 | Watch the machine play itself | [G2](#g2-ai-vs-ai-no-camera) |
 | Just start it and pick a mode | [G0](#g0-the-player-koi-menu) |
 | Something broke | [H](#h-gotchas-that-have-actually-bitten) · [I](#i-tuning-knobs) |
@@ -473,9 +474,23 @@ constant is wrong — try the others with `--board-origin`.
 
 **2. First time on a rebuilt/re-flashed rig,** verify the geometry and the
 clearance before anything touches a real game — `GOTO 7 0` must travel exactly
-210 mm, and a knight must leave the back rank without catching the pawns
+350 mm, and a knight must leave the back rank without catching the pawns
 either side. Both procedures are in
 [docs/HARDWARE.md](docs/HARDWARE.md#bring-up-and-calibration), steps 4 and 7.
+
+Also check the arm can reach past the board edge, which is new with the V2
+frame and is what captures depend on:
+
+```
+MM -350 -50        # the slot past a1        → OK MM, not ERR out of range
+MM -400 0          # the slot past the a-file
+MM 50 350          # the slot past the h-file
+BURY e2 -350 -50 w # carry a real pawn off — watch the set-down, not the drive
+```
+
+An `ERR out of range` here means the board is flashed with V1's travel limits.
+A piece that *jumps* on landing rather than settling means `RELEASE` is too
+short; it is the same fade an ordinary move uses, so fix it here.
 
 **3. Dry run if anything changed** (firmware, wiring, the code):
 
@@ -492,10 +507,16 @@ python3 src/web_ui.py --robot /dev/ttyACM0 --harvest
 Toggle the engine on as usual. From then on it plays its own moves: you move
 White, the arm answers.
 
-**When it captures**, it topples the piece, retreats to the corner, and waits
-5 seconds (`--topple-delay`) for you to lift it off. Take it off promptly —
-if it's still lying there when the arm comes back, the incoming piece shoves
-it and the settle flags.
+**When it captures**, it carries the piece off the board itself: the victim
+is lifted first, driven to the nearest free slot in the 50mm margin around
+the board, and set down there. Nothing is asked of you. The 32 slots are
+shared between both colours, so the pile is not a scoreboard — the arm takes
+whichever is nearest, to keep the trip short.
+
+The only time a capture stops is if all 32 slots are full, which cannot
+happen in a legal game (30 pieces can be captured) but can if a hand-built
+position and a stale pile disagree. Then it falls back to asking you to lift
+the piece, as it always used to.
 
 **When it promotes**, the UI asks you to swap a queen in. Do it; the software
 already thinks it's a queen.
@@ -520,7 +541,8 @@ itself; 0 is the old instant behaviour if you want to compare.
 `firmware/chessbot_v1/chessbot_v1.ino`. The arm refuses to move until you do,
 and that is deliberate: an old board accepts the polarity suffix and silently
 ignores it, so every white move would shove a piece. Check with the startup
-line — it should say `firmware r3` or higher.
+line — it should say `firmware r4` or higher. (r4 added `BURY`; without it
+the arm has no way to park a captured piece.)
 
 **Bench console** for poking the gantry directly, without any chess:
 
@@ -578,8 +600,8 @@ is where pieces get dropped. Over a full game that takes knight weaves from
 roughly 15% of moves to zero. Pass `--no-noob` to play normally. It costs two
 engine searches per move, so budget ~2x `--engine-think`.
 
-**Captures still stop and wait for you** — same blocking prompt as section G,
-with no time limit. Press **Done — piece removed**.
+**Captures no longer stop for you** — the arm parks the piece on a graveyard
+slot and carries straight on. See section G.
 
 **Promotions are advisory**: swap a queen in when asked. The software already
 records it as a queen either way, so the arm will keep dragging the pawn
@@ -637,16 +659,19 @@ longer.
 | Engine too strong | Skill slider in the UI (0–20; 0 is genuinely beatable) |
 | Board diagram wrong | **Undo last move** for one bad move; **Edit board** for a full resync |
 | Arm drops pieces mid-drag | Raise `MAG_HOLD`/`MAG_EDGE` in `src/robot_moves.py` (the firmware clamps at `MAG_MAX_PWM`) |
-| **Neighbouring pieces dragged along as the arm passes** | Lower `MAG_EDGE`. On 30 mm squares the magnet's edge comes within 2.5 mm of a flanking piece's centre — see Clearances in [docs/HARDWARE.md](docs/HARDWARE.md) |
-| **Knight catches pieces leaving the back rank** | The opening pawn wall is the one case routing can't improve on (15 mm each side). Narrower bases or a smaller coil; no software fix |
+| **Neighbouring pieces dragged along as the arm passes** | Lower `MAG_EDGE`. This was the V1 board's defining problem; on 50 mm squares the magnet's edge stops 12.5 mm short of a flanking piece's centre, so if it still happens suspect the coil or the piece bases rather than the routing — see Clearances in [docs/HARDWARE.md](docs/HARDWARE.md) |
+| **A captured piece is dropped rather than set down, and rattles** | Raise `RELEASE` — `BURY` uses the same faded release a move does, so tuning it fixes both |
+| **`ERR out of range` on a capture** | The board is flashed with travel limits that stop at the board edge. Re-upload `chessbot_v1.ino`; V2 needs x `-425..75`, y `-75..425` |
+| **The arm skips slots that are visibly empty** | The saved pile in `config/rig.json` is stale. Reset the game from the menu, which clears it |
+| **Knight catches pieces leaving the back rank** | The opening pawn wall is the one case routing can't improve on — but on 50 mm squares that is still 25 mm each side, so this should no longer happen. If it does, the coil is too strong or reaching too far: lower `MAG_EDGE` |
 | Magnet coil getting hot | Lower `MAG_MAX_PWM` in the sketch, or feed the DRV8872 from a 5 V buck |
 | Pieces land off-centre | Tune `PULSE_REVERSE_MS`/`PULSE_HOLD_MS` in the sketch |
-| Piece knocked off the board when toppled | Lower `TOPPLE_MS` in the sketch |
-| Arm drifts a bit further off every move | `STEPS_PER_SQUARE` should be exactly 600 — verify `GOTO 7 0` travels 210 mm. If it does, the motors are stalling: lower `MAX_SPEED` |
+| Piece knocked off the board when toppled | Only the dormant native planner topples; the live one carries captures off. Lower `TOPPLE_MS` in `chess_gantry` if you are running that |
+| Arm drifts a bit further off every move | `STEPS_PER_SQUARE` should be exactly 1000 — verify `GOTO 7 0` travels 350 mm. If it does, the motors are stalling: lower `MAX_SPEED` |
 | Arm too slow | `MAX_SPEED` 1500 → 2500 steps/s (75 → 125 mm/s), once the belts are tensioned |
 | Motors buzz but don't turn | `MAX_SPEED` too high to start from rest (no acceleration in `MultiStepper`), or Vref too low |
 | An axis homes away from its switch | Swap one coil pair on that motor — no code change |
-| Not enough time to clear a captured piece | `web_ui.py --topple-delay 10` |
+| Not enough time to clear a captured piece | No longer applies — the arm parks captures itself. `--topple-delay` only affects the dormant native planner |
 | Arm halts constantly | The camera is disagreeing with it — check `debug_classifier.py` before blaming the gantry |
 
 Diagnostics:
@@ -655,3 +680,46 @@ Diagnostics:
 python3 src/debug_classifier.py            # per-square class + confidence
 python3 src/debug_classifier.py --watch    # live motion-gate scores
 ```
+
+## J. The board itself
+
+The printed sticker and the laser-cut panel are **generated**, not drawn by
+hand. Regenerate rather than editing the files in `design/`:
+
+```bash
+python3 tools/make_sticker.py                 # design/chessboard_400mm_sq50mm.pdf
+python3 tools/make_board.py                   # design/ChessBot_V2_board.{dxf,ai,svg,step}
+python3 tools/make_board.py --thickness 6     # ...for 6 mm MDF instead of 5 mm acrylic
+```
+
+No dependencies beyond the standard library, so these run anywhere — the
+repo's `.venv-train` is not needed and is in fact broken (its `pyvenv.cfg`
+points at a `site-packages` under a path it no longer lives at).
+
+**Printing the sticker.** 570 mm is wider than A3, so it needs a wide-format
+or plotter print at **100% scale — "actual size", never "fit to page"**. The
+sheet carries a 100 mm ruler along the bottom for exactly this: measure it
+before sticking anything down. A sticker printed at 97% puts every square's
+dot progressively further from where the machine believes it is, and the
+error is worst at the far corners where you will notice it last.
+
+The dots are not decoration — they are what `src/calibrate.py` asks you to
+click, and what every `GOTO` addresses. There is one per square and one per
+graveyard slot.
+
+**Changing the square size** re-cuts everything downstream, so it is a
+deliberate act:
+
+```bash
+python3 tools/make_sticker.py --square 28.75 --page 295 --no-graveyard   # the V1 board
+```
+
+Then `SQUARE_MM`, `A1_X_MM` and the travel limits have to change in
+`firmware/chessbot_v1/chessbot_v1.ino` **and** `src/rig.py`, which mirrors it.
+The firmware is the source of truth; if the two disagree, the firmware is
+right and `rig.py` is stale. `tests/test_rig.py` and `tests/test_firmware_rev.py`
+check the parts of that contract they can see from Python.
+
+**The sticker colours are load-bearing.** The classifier was trained on crops
+of that specific green and grey, so changing them means retraining — see
+[training/NOTES.md](training/NOTES.md).

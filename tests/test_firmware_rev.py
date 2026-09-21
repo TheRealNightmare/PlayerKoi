@@ -13,6 +13,7 @@ survives a restart.
 
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -52,10 +53,34 @@ class TestBannerParsing(unittest.TestCase):
         self.assertEqual(rig.banner_rev("READY ChessBot-V1 r2"), 2)
         self.assertEqual(rig.banner_rev("READY ChessBot-V1 r17"), 17)
 
-    def test_this_code_expects_at_least_the_release_revision(self):
-        """r2 added the polarity suffix, r3 the faded release. The host sends
-        both on connect, so it needs r3."""
-        self.assertGreaterEqual(rig.FIRMWARE_REV, 3)
+    def test_this_code_expects_at_least_the_bury_revision(self):
+        """r2 added the polarity suffix, r3 the faded release, r4 BURY. The
+        host sends the first two on connect and needs the third for any
+        capture, so it needs r4."""
+        self.assertGreaterEqual(rig.FIRMWARE_REV, 4)
+
+    def test_the_sketch_and_rig_py_agree_on_the_revision(self):
+        """The one that actually matters, and the one nothing checked before.
+
+        rig.FIRMWARE_REV is what the host demands; the #define is what the
+        board announces. Bumping one and not the other is silent in opposite
+        directions -- too low and a board missing the verb is accepted, too
+        high and a correctly flashed board is refused at connect -- and
+        neither shows up until there is hardware on the desk.
+        """
+        sketch = (Path(__file__).resolve().parent.parent
+                  / "firmware" / "chessbot_v1" / "chessbot_v1.ino").read_text()
+        match = re.search(r"^#define\s+FIRMWARE_REV\s+(\d+)", sketch, re.M)
+        self.assertIsNotNone(match, "no FIRMWARE_REV #define in the sketch")
+        self.assertEqual(int(match.group(1)), rig.FIRMWARE_REV)
+
+    def test_the_sketch_implements_what_the_revision_promises(self):
+        """r4 means BURY exists. A rev bump with no verb behind it would pass
+        the check above and still fail on the first capture."""
+        sketch = (Path(__file__).resolve().parent.parent
+                  / "firmware" / "chessbot_v1" / "chessbot_v1.ino").read_text()
+        self.assertIn('cmd == "BURY"', sketch)
+        self.assertIn("bool doBury(", sketch)
 
 
 class TestStaleBoardRefuses(unittest.TestCase):

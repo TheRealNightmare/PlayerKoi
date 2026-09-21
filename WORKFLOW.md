@@ -129,6 +129,18 @@ An **environment** is one combination of room, lighting, camera height, board
 and piece set. Change any of those and it's a new environment with a new tag.
 Do this section once per environment.
 
+> **The V2 board is a new environment, and not optionally.** Going from the
+> 230mm board to the 400mm one changes the board *and* forces the camera
+> higher to keep all 64 squares in frame — two of the four things in that
+> list at once. Every crop collected on the 230mm board shows a square at a
+> different scale and a piece at a different perspective, so the old dataset
+> does not transfer: recalibrate, re-collect, retrain. Nothing in the code
+> needs editing for this — `src/square_geometry.py` works in normalised 0..8
+> board space off the homography and never sees millimetres — which is
+> precisely why a stale calibration fails *silently* rather than loudly.
+
+
+
 ### 3a. Calibrate (once per environment)
 
 Needs a display — HDMI or VNC — because you click on a preview window.
