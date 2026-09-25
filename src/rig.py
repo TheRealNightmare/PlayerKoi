@@ -24,8 +24,10 @@ Two systems meet here, so be explicit about which one is in play:
     file/rank   0..7 on each axis, a1 = (0, 0), h8 = (7, 7). What the chess
                 code (robot_moves, move_resolver) speaks. Fractions are legal
                 and mean the lattice line between two squares.
-    machine mm  what the firmware speaks. The ORIGIN IS h1, not a1, and x
-                runs NEGATIVE toward the a-file. So a1 is at (-210, 0).
+    machine mm  what the firmware speaks. The ORIGIN is the corner of travel
+                beyond h1 (not a square centre, and not a1), and x runs
+                NEGATIVE toward the a-file. So h1 is at (-65, 60) and a1 is
+                at (-415, 60).
 
 square_to_mm() converts. In legacy mode nothing on the Python side sends mm
 at all -- the firmware takes square names and does its own arithmetic -- so
@@ -38,18 +40,20 @@ this conversion is for bench work and for the dormant native path.
 SQUARE_MM = 50.0
 BOARD_MM = SQUARE_MM * 8        # 400, the playing area
 
-# a1's centre in machine coordinates. The origin (0, 0) is h1's centre, which
-# is also the park position, so the a-file is 7 squares negative in x.
-A1_X_MM = -350.0
-A1_Y_MM = 0.0
+# a1's centre in machine coordinates. The origin (0, 0) is the corner of
+# travel beyond h1 -- as far toward the h-file and rank 1 as the carriage
+# goes -- which is also the park position. So every square is at negative x
+# and positive y: h1 is (-65, 60), a8 is (-415, 410).
+A1_X_MM = -415.0
+A1_Y_MM = 60.0
 
-# Travel limits. On V1 these were the board corners exactly, which is why
-# weaves had to fold back inward at the edge. V2 reaches 50mm past every board
-# edge, a 500x500mm envelope: square centres span x -350..0, the outer squares
-# extend half a square further to x -375..25 and y -25..375, plus the margin.
+# Travel limits, MEASURED on the machine by jogging to the frame: 480 x 470mm,
+# not the 500 x 500 the frame was drawn for. The graveyard ring's slot centres
+# span 450mm each way, centred in that reach (15mm clear at each X limit, 10mm
+# at each Y limit), and the board sits one square pitch inside the ring.
 GRAVEYARD_DEPTH_MM = 50.0
-MIN_X_MM, MAX_X_MM = -425.0, 75.0
-MIN_Y_MM, MAX_Y_MM = -75.0, 425.0
+MIN_X_MM, MAX_X_MM = -480.0, 0.0
+MIN_Y_MM, MAX_Y_MM = 0.0, 470.0
 
 # Where captured pieces go: a ring of parking slots in the 50mm margin, one
 # strip on each of the four sides, eight slots per strip on the board's own
@@ -59,10 +63,10 @@ MIN_Y_MM, MAX_Y_MM = -75.0, 425.0
 # would sit on no centre line at all, so its dot would not line up with the
 # printed grid, and 32 already exceeds the 30 pieces that can ever be
 # captured -- there is nothing to gain by squeezing in four more.
-GRAVEYARD_Y_LOW_MM = -SQUARE_MM             # -50, beyond rank 1
-GRAVEYARD_Y_HIGH_MM = BOARD_MM              # 400, beyond rank 8
-GRAVEYARD_X_LOW_MM = A1_X_MM - SQUARE_MM    # -400, beyond the a-file
-GRAVEYARD_X_HIGH_MM = SQUARE_MM             # 50, beyond the h-file
+GRAVEYARD_Y_LOW_MM = A1_Y_MM - SQUARE_MM             # 10, beyond rank 1
+GRAVEYARD_Y_HIGH_MM = A1_Y_MM + BOARD_MM             # 460, beyond rank 8
+GRAVEYARD_X_LOW_MM = A1_X_MM - SQUARE_MM             # -465, beyond the a-file
+GRAVEYARD_X_HIGH_MM = A1_X_MM + BOARD_MM             # -15, beyond the h-file
 
 # Motion scale: 200 steps/rev at 1/2 microstepping over a 20-tooth GT2 pulley
 # on 2mm belt = 400 steps per 40mm = 10 steps/mm. The microstepping jumpers
@@ -117,10 +121,12 @@ def colour_token(is_white):
     return "w" if is_white else "b"
 
 
-# Where the carriage rests, and what a human must park it on before HOME.
-# There are no limit switches: HOME drives to the assumed origin rather than
-# seeking anything, so if the carriage isn't actually on h1 when the board
-# powers up, every coordinate that follows is silently wrong.
+# The square whose outer corner is the origin: where the carriage rests, and
+# where a human must park it before HOME -- in the corner of travel beyond
+# this square, not on its centre. There are no limit switches: HOME drives to
+# the assumed origin rather than seeking anything, so if the carriage isn't
+# actually in that corner when the board powers up, every coordinate that
+# follows is silently wrong.
 PARK_SQUARE = "h1"
 
 BAUD = 115200
@@ -138,7 +144,11 @@ READY_BANNER = "READY ChessBot-V1"
 #   r4  BURY, for parking a captured piece on a graveyard slot. The first
 #       command that drives to a raw machine coordinate in normal play, so an
 #       r3 board cannot fake it -- it has no verb that reaches off the board.
-FIRMWARE_REV = 4
+#   r5  re-measured geometry: the origin moved from h1's centre to the corner
+#       of travel beyond h1, and a1 to (-415, 60). No new verbs, but an r4
+#       board takes the same square names and BURY coordinates and drives
+#       somewhere else -- so it has to be refused just the same.
+FIRMWARE_REV = 5
 
 
 def banner_rev(banner):
@@ -154,10 +164,10 @@ def banner_rev(banner):
 #
 # The one value in this file that is NOT mirrored from the firmware, because
 # the firmware has no concept of it: chessbot_v1 parses square names
-# arithmetically (charAt(0) - 'a') and assumes the carriage parks on h1.
+# arithmetically (charAt(0) - 'a') and assumes the carriage parks beyond h1.
 #
 # On this machine it doesn't. The corner the gantry actually rests on -- the
-# origin, (0, 0) -- is a8, so the whole machine is rotated 180 degrees against
+# origin, (0, 0) -- is beyond a8, so the whole machine is rotated 180 degrees against
 # every square name it is sent. Uncorrected, asking for e2 drives to d7, which
 # is why the arm reached for Black's pieces on White's turn.
 #
@@ -165,7 +175,7 @@ def banner_rev(banner):
 # and the orientation separable: the mm constants above stay true of the
 # hardware, and this stays true of how the board is seated under it.
 #
-# The four values are the real square the carriage parks on:
+# The four values are the real square the carriage parks beyond:
 #
 #     "h1"   what the firmware assumes -- no correction
 #     "a8"   rotated 180 degrees: file AND rank flip     <- this rig

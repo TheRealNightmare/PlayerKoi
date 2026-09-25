@@ -84,8 +84,9 @@ MAG_EDGE = 110
 # Where the carriage rests between moves, in file/rank. A square centre, with
 # the coil de-energised.
 #
-# It is h1, not a1: h1 is the machine's own origin and the position the
-# firmware assumes at power-on (there are no limit switches to discover it).
+# It is h1, not a1: h1 is the square next to the machine's own origin (the
+# chessbot_v1 origin is the corner of travel beyond it), and the firmware
+# assumes that position at power-on (there are no limit switches to discover it).
 # Parking anywhere else means a human re-parking by eye before HOME, and
 # being a whole board out is silent -- nothing reports it, every later coordinate is
 # just wrong. See rig.PARK_SQUARE.

@@ -482,15 +482,25 @@ Also check the arm can reach past the board edge, which is new with the V2
 frame and is what captures depend on:
 
 ```
-MM -350 -50        # the slot past a1        → OK MM, not ERR out of range
-MM -400 0          # the slot past the a-file
-MM 50 350          # the slot past the h-file
-BURY e2 -350 -50 w # carry a real pawn off — watch the set-down, not the drive
+MM -415 10         # the slot past a1        → OK MM, not ERR out of range
+MM -465 60         # the slot past the a-file
+MM -15 410         # the slot past the h-file
+BURY e2 -365 10 w  # carry a real pawn off — watch the set-down, not the drive
 ```
 
 An `ERR out of range` here means the board is flashed with V1's travel limits.
 A piece that *jumps* on landing rather than settling means `RELEASE` is too
 short; it is the same fade an ordinary move uses, so fix it here.
+
+**On a frame that has never moved before**, do the walker instead of the four
+commands above — it covers the same ground exhaustively and with the magnet
+dead, so nothing can be dragged while you find out the frame is wrong. Flash
+`firmware/chessbot_walker/chessbot_walker.ino`, open the serial monitor at
+115200, press `5` to prove the travel limits, `1` for the four corners, then `3` for the graveyard ring, then
+`2` for all 64 squares. Each stop should land on its printed dot.
+**Re-flash `chessbot_v1.ino` before connecting the Pi** — a board left with
+the walker on it looks like a dead serial link.
+See [docs/CONNECTION.md](docs/CONNECTION.md) for the full key list.
 
 **3. Dry run if anything changed** (firmware, wiring, the code):
 
@@ -661,7 +671,7 @@ longer.
 | Arm drops pieces mid-drag | Raise `MAG_HOLD`/`MAG_EDGE` in `src/robot_moves.py` (the firmware clamps at `MAG_MAX_PWM`) |
 | **Neighbouring pieces dragged along as the arm passes** | Lower `MAG_EDGE`. This was the V1 board's defining problem; on 50 mm squares the magnet's edge stops 12.5 mm short of a flanking piece's centre, so if it still happens suspect the coil or the piece bases rather than the routing — see Clearances in [docs/HARDWARE.md](docs/HARDWARE.md) |
 | **A captured piece is dropped rather than set down, and rattles** | Raise `RELEASE` — `BURY` uses the same faded release a move does, so tuning it fixes both |
-| **`ERR out of range` on a capture** | The board is flashed with travel limits that stop at the board edge. Re-upload `chessbot_v1.ino`; V2 needs x `-425..75`, y `-75..425` |
+| **`ERR out of range` on a capture** | The board is flashed with travel limits that stop at the board edge. Re-upload `chessbot_v1.ino`; V2 needs x `-480..0`, y `0..470` (banner `r5`) |
 | **The arm skips slots that are visibly empty** | The saved pile in `config/rig.json` is stale. Reset the game from the menu, which clears it |
 | **Knight catches pieces leaving the back rank** | The opening pawn wall is the one case routing can't improve on — but on 50 mm squares that is still 25 mm each side, so this should no longer happen. If it does, the coil is too strong or reaching too far: lower `MAG_EDGE` |
 | Magnet coil getting hot | Lower `MAG_MAX_PWM` in the sketch, or feed the DRV8872 from a 5 V buck |
@@ -673,6 +683,7 @@ longer.
 | An axis homes away from its switch | Swap one coil pair on that motor — no code change |
 | Not enough time to clear a captured piece | No longer applies — the arm parks captures itself. `--topple-delay` only affects the dormant native planner |
 | Arm halts constantly | The camera is disagreeing with it — check `debug_classifier.py` before blaming the gantry |
+| **The Uno enumerates but answers nothing** | It may still have the bring-up walker flashed. Re-upload `firmware/chessbot_v1/chessbot_v1.ino` |
 
 Diagnostics:
 

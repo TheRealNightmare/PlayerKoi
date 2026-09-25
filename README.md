@@ -33,8 +33,8 @@ is the robot arm's circuit and bring-up procedure.
 - Standard tournament Staunton chess set
 - **The V2 board**: a 400 × 400mm playing area on 50mm squares, printed as a
   sticker on a 570 × 570mm laser-cut panel, with the CoreXY gantry reaching
-  500 × 500mm -- a full square past every edge, which is where captured
-  pieces are parked. V1 was 230 × 230mm on 28.75mm squares; git history has
+  480 × 470mm (measured) -- a graveyard ring one square past every edge,
+  which is where captured pieces are parked. V1 was 230 × 230mm on 28.75mm squares; git history has
   those numbers. Geometry, bill of materials and the panel drawings are in
   [`docs/HARDWARE.md`](docs/HARDWARE.md).
 
@@ -306,7 +306,7 @@ always knows piece *type*, never needing to re-derive it from vision.
   homography and never sees millimetres -- but nothing here plays a game
   until that is done.
 - **There are no limit switches.** `HOME` drives to the assumed origin instead
-  of seeking it, so position is dead reckoning from a manual park on h1. A
+  of seeking it, so position is dead reckoning from a manual park in the corner of travel beyond h1. A
   missed step or a power-on with the carriage elsewhere corrupts every
   coordinate afterwards, and nothing detects it -- the camera confirming each
   move is what eventually catches it, by flagging and halting.
@@ -338,8 +338,12 @@ docs/         DESIGN.md -- the full system document (architecture, geometry,
               CONNECTION.md -- what to flash, how to wire it, bring-up
               order, the full command reference, troubleshooting
 firmware/     chessbot_v1/ -- THE SKETCH TO FLASH. Takes whole moves
-              (MOVE e2e4, KNIGHT b1c3, BURY e4 -350 -50 w) and routes them
+              (MOVE e2e4, KNIGHT b1c3, BURY e4 -215 10 w) and routes them
               itself
+              chessbot_walker/ -- bring-up only. Walks the carriage to all
+              64 squares and all 32 graveyard slots with the magnet dead,
+              to prove a new frame reaches everywhere. Re-flash chessbot_v1
+              before connecting the Pi
               chess_gantry/ -- dormant; the unbuilt limit-switch rebuild,
               which takes GOTO/MAG/PULSE/TOPPLE instead. Do not flash
 models/       exported NCNN classifier (git-ignored, copied from training

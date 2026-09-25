@@ -17,7 +17,7 @@ hardware.
 |---|---|
 | Square | **50 mm** |
 | Playing area | **400 × 400 mm** (8 × 50) |
-| Gantry travel | **500 × 500 mm** — a full square past every board edge |
+| Gantry travel | **480 × 470 mm**, measured — room for a graveyard ring one square past every board edge |
 | Panel | **570 × 570 mm**, 7.5 mm corner radius, M3 holes on a 7.5 mm inset |
 | a1 → h8 centres | 350 mm on each axis |
 | Captured pieces | 50 mm strip on **all four sides**, 8 slots each — 32 shared, corners left empty. The arm parks them itself (`BURY`, firmware r4) |

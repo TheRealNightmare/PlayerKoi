@@ -63,9 +63,10 @@ Three things that are easy to get wrong:
   leaves. `RELEASE <ms>` tunes the fade; `RELEASE 0` restores the old kick if
   you want to see the difference.
 - **There are no limit switches on this build.** Position is dead reckoning
-  from an assumed park at h1. Nothing can detect that it is wrong.
+  from an assumed park in the origin corner — the corner of travel beyond h1,
+  not h1's centre. Nothing can detect that it is wrong.
 - **"h1" here means the firmware's h1, which is physically the a8 corner.**
-  This sketch assumes the board is seated with h1 at the origin; on the built
+  This sketch assumes the board is seated with h1 next to the origin; on the built
   rig it is rotated 180 degrees. The Python side corrects for that
   (`rig.ORIGIN_SQUARE`), so *game* moves are rotated before they arrive but
   the bench commands below are not. Everything in this document is in the
@@ -79,19 +80,19 @@ stop there rather than continuing — later steps assume the earlier ones.
 | # | Do | Expect |
 |---|---|---|
 | 1 | Flash `chessbot_v1.ino` | compiles and uploads |
-| 2 | Open the serial monitor at 115200 | `READY ChessBot-V1 r4` — **if the revision is lower, the sketch is stale; re-upload it** |
-| 3 | **Park the carriage on the origin corner by hand** (physically a8 — see above) | — |
+| 2 | Open the serial monitor at 115200 | `READY ChessBot-V1 r5` — **if the revision is lower, the sketch is stale; re-upload it** |
+| 3 | **Park the carriage in the origin corner by hand** — the corner of travel beyond the firmware's h1 (physically beyond a8 — see above) | — |
 | 4 | `PING` | `OK PONG` |
 | 5 | `POS` | `OK POS 0.0 0.0` |
 | 6 | `MAG 1` then `MAG 0` | `OK MAG 1` / `OK MAG 0`, coil audibly grabs and releases |
-| 7 | `GOTO a1`, then `POS` | `OK POS -350.0 0.0` — **this is the pitch check** |
-| 8 | `HOME` | `OK HOME`, carriage returns to h1 |
+| 7 | `GOTO a1`, then `POS` | `OK POS -415.0 60.0` — **this is the pitch check** |
+| 8 | `HOME` | `OK HOME`, carriage returns to the origin corner |
 | 9 | `MOVE e2e4 w\|b` | `OK MOVE e2e4`, a pawn is dragged cleanly |
 | 10 | `KNIGHT b1c3 w\|b` | `OK KNIGHT b1c3`, weaves without disturbing the pawns |
-| 11 | `MM -350 -50`, `MM -400 0`, `MM 50 350` | `OK MM …` each time — **the graveyard reach check** |
-| 12 | `BURY e2 -350 -50 w` | `OK BURY e2`, the pawn is carried off the board and *set down*, not dropped |
+| 11 | `MM -415 10`, `MM -465 60`, `MM -15 410` | `OK MM …` each time — **the graveyard reach check** |
+| 12 | `BURY e2 -365 10 w` | `OK BURY e2`, the pawn is carried off the board and *set down*, not dropped |
 
-Step 7 is the one that matters. If `POS` doesn't read `-350 0`, the 50mm pitch
+Step 7 is the one that matters. If `POS` doesn't read `-415 60`, the 50mm pitch
 is wrong and everything downstream — the planner's clearance arithmetic, the
 camera's square mapping — is built on a false number. Fix it here.
 
@@ -102,6 +103,43 @@ stale in a way the banner alone would not catch. Step 12 then proves a piece
 survives the trip — watch the set-down, not the drive. If the piece jumps or
 rattles on landing, `RELEASE` is too short; that is the same fade a normal
 move uses, so it is worth fixing here rather than discovering it mid-game.
+
+### Before all of that, on a newly built frame: the walker
+
+The sequence above spot-checks a handful of positions by hand. On a frame that
+has never moved before — new rods, new belts, a panel that may be a couple of
+millimetres out — it is worth proving *every* position first, and doing it
+with the magnet dead so nothing can be dragged or dropped while you find out.
+
+Flash [`firmware/chessbot_walker/chessbot_walker.ino`](../firmware/chessbot_walker/chessbot_walker.ino)
+and open the serial monitor at 115200. It moves nothing until you press a key.
+
+| Key | Walks |
+|---|---|
+| `1` | the four board corners — **do this first** |
+| `2` | all 64 square centres |
+| `3` | all 32 graveyard slots, in ring order |
+| `4` | everything |
+| `5` | the four measured travel limits, at 5 mm/s — the frame test |
+| `g e4` / `g a0` / `g s12` | go to one square or graveyard slot and stay |
+| `c` | calibration: nudge onto a dot with `w` `a` `s` `d`, `t` prints the trim |
+| `h` | back to the origin corner |
+| `p` `q` `+` `-` | pause/resume, abort, faster, slower |
+
+Corners first: four moves catch a wrong pitch or a wrong orientation in about
+ten seconds, before you commit to a 96-position pass. Then `3` — the ring is
+the new ground, the part of the envelope a V1 machine physically could not
+enter, so it is where a short belt or a binding rod shows up. Watch each stop
+land on its printed dot.
+
+The coil is never energised: there is no `analogWrite` anywhere in that
+sketch, which `tests/test_firmware_geometry.py` asserts. The same test keeps
+the walker's copy of the geometry in step with the real firmware's and with
+`src/rig.py` — three copies that would otherwise drift apart.
+
+> **Re-flash `chessbot_v1.ino` before connecting the Pi.** A board left with
+> the walker on it ignores everything the Pi sends, and the symptom looks like
+> a dead serial link rather than the wrong sketch.
 
 Then the Python side, on the Pi:
 
@@ -125,7 +163,7 @@ move has finished"; the Pi never has to guess.
 | `MOVE e7e5 w\|b` | `OK MOVE e7e5` | straight drag between square centres |
 | `KNIGHT b8c6 w\|b` | `OK KNIGHT b8c6` | weaves along the gridlines, for knights and castling rooks |
 | `GOTO e4` | `OK GOTO e4` | repositions the carriage, magnet untouched |
-| `BURY e4 -350 -50 w\|b` | `OK BURY e4` | lifts the piece on `e4` and parks it on a graveyard slot. The destination is a **raw machine coordinate**, not a square — the slots sit outside the 8×8 and have no name. Set down with the same faded release a move uses. `w\|b` is required here, unlike on `MOVE`. The host picks the slot (`src/graveyard.py`); the firmware only drives to it |
+| `BURY e4 -215 10 w\|b` | `OK BURY e4` | lifts the piece on `e4` and parks it on a graveyard slot. The destination is a **raw machine coordinate**, not a square — the slots sit outside the 8×8 and have no name. Set down with the same faded release a move uses. `w\|b` is required here, unlike on `MOVE`. The host picks the slot (`src/graveyard.py`); the firmware only drives to it |
 | `MAG 0\|1\|2` | `OK MAG n` | coil off / attract / repel |
 | `PULSE` | `OK PULSE` | raw full-power reverse kick, for the bench. A game move uses the gentler faded release |
 | `POL` | `OK POL 1` | what holds a WHITE piece: 1 = repel, 0 = attract |
@@ -133,7 +171,7 @@ move has finished"; the Pi never has to guess.
 | `POLTEST e2` | `OK POLTEST e2` | park there, attract 2 s, then repel 2 s. Watch which one holds the piece |
 | `RELEASE` | `OK RELEASE 200` | ms the grip takes to fade when a piece is set down |
 | `RELEASE <ms>` | `OK RELEASE <ms>` | 0–2000. **0 = no fade**, the old instant kick |
-| `HOME` | `OK HOME` | returns to the origin (h1) and drops the coil |
+| `HOME` | `OK HOME` | returns to the origin corner (beyond h1) and drops the coil |
 | `POS` | `OK POS x y` | current position in mm |
 | `MM -105 100` | `OK MM x y` | move to raw machine coordinates |
 | `JOG -5 0` | `OK JOG x y` | relative nudge, mm |
@@ -155,19 +193,19 @@ firmware is right.
 | Constant | Value |
 |---|---|
 | Square pitch | 50.0 mm, both axes |
-| Origin `(0, 0)` | centre of **h1** — also the park position |
-| a1 | `(-350, 0)` — x runs negative toward the a-file |
-| Travel limits | x `-425..75`, y `-75..425` — a full square past every board edge |
-| Graveyard slots | y `-50` / `400` (past rank 1 / 8), x `-400` / `50` (past the a / h file) |
+| Origin `(0, 0)` | the **corner of travel beyond h1** — also the park position |
+| a1 / h1 / h8 | `(-415, 60)` / `(-65, 60)` / `(-65, 410)` — x runs negative toward the a-file |
+| Travel limits | x `-480..0`, y `0..470` — measured, 480 × 470 mm |
+| Graveyard slots | y `10` / `460` (past rank 1 / 8), x `-465` / `-15` (past the a / h file) |
 | Steps/mm | 10 (200 steps/rev × 1/2 microstepping ÷ 40 mm/rev) |
 | Feed rate | 40 mm/s |
 | Magnet, dragging | PWM 255 |
 | Magnet, weaving | PWM 155 |
 
-The measured corners **are** the travel limits — there is no room past a1 or
-h8 in any direction. That is why edge weaves fold back inside the board
-(`clampWeave` in firmware, `_fold_to_travel` in `src/robot_moves.py`) instead
-of stepping half a square out as they would prefer to.
+The graveyard ring sits 15 mm inside the X limits and 10 mm inside the Y
+limits, and the board is one square inside the ring. So edge weaves can step
+half a square out past the board (x `-440` / `-40`, y `35` / `435`) and
+`clampWeave` is a no-op.
 
 `RunChess/chess.txt` holds an older calibration (25.7mm pitch, a1 at
 `-197, 12`) from the 200×200 frame, before belt slip was fixed by re-belting.
@@ -198,8 +236,9 @@ piece bases, or a lower `MAG_DIAG`.
 
 **`ERR out of range`.** The carriage's dead-reckoned position has drifted from
 reality — a missed step, a belt slip, or the board was powered on with the
-carriage somewhere other than h1. There are no limit switches to recover with,
-so: power down, park the carriage on h1 by hand, power up, `HOME`.
+carriage somewhere other than the origin corner. There are no limit switches to
+recover with, so: power down, park the carriage in the origin corner by hand,
+power up, `HOME`.
 
 **The arm won't move and the UI says HALTED.** Something failed mid-sequence
 and the position is no longer trustworthy. Check the board physically, then

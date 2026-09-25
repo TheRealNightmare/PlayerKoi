@@ -17,7 +17,7 @@
 
    ChessBot-V1 firmware — serial command protocol
    Board:  Arduino Uno + CNC Shield V3
-   Motion: CoreXY, origin = BOTTOM RIGHT of travel = h1 centre
+   Motion: CoreXY, origin = BOTTOM RIGHT corner of travel, beyond h1
    Magnet: DRV8833, AIN1 -> D9, AIN2 -> D10
 
    PROTOCOL  (115200 baud, newline terminated)
@@ -32,7 +32,7 @@
                           polarity flips with it. Omitting it means "not
                           reversed", which is what the bench console wants.
      GOTO e4           -> OK GOTO e4        reposition, magnet untouched
-     BURY e4 -350 -50 w
+     BURY e4 -215 10 w
                        -> OK BURY e4        lift the piece on e4 and park it
                           on a graveyard slot, given as a RAW MACHINE
                           COORDINATE -- the slots sit outside the 8x8, so
@@ -51,7 +51,7 @@
      PULSE             -> OK PULSE          raw full-power reverse kick, for
                                             the bench. A game move uses the
                                             gentler faded release instead.
-     HOME              -> OK HOME           return to origin
+     HOME              -> OK HOME           return to the origin corner
      POS               -> OK POS x y        current mm position
      MM -105 100       -> OK MM x y         raw machine coordinates, mm
      JOG -5 0          -> OK JOG x y        relative nudge, mm
@@ -84,32 +84,41 @@ const bool invertX = false;
 const bool invertY = false;
 
 // ---------- board geometry ----------
-// V2 BOARD: 400x400mm playing area, 50mm squares, 500x500mm travel.
+// V2 BOARD: 400x400mm playing area, 50mm squares, 480x470mm of travel.
 // (V1 was 230x230 at 28.75mm with travel that stopped dead at the board
 // edge. If you are driving the old hardware, git log has those numbers.)
 //
-// Origin (0,0) = park position = centre of h1.
-// a1 is 7 squares to the LEFT, so its X is negative.
-// Measured from the machine, not from the printed sticker:
-//   h1 centre = (   0.0,   0.0)   <- park position, the origin
-//   a1 centre = (-350.0,   0.0)
-//   h8 centre = (   0.0, 350.0)
-//   a8 centre = (-350.0, 350.0)
+// Origin (0,0) = park position = the corner of travel beyond h1: as far
+// towards the h-file and rank 1 as the carriage goes. It is parked there by
+// hand before power-up (no limit switches), and HOME returns there. From it
+// the carriage only goes -X (towards the a-file) and +Y (towards rank 8).
+// Measured reach, by jogging to the frame with the walker's calibration mode:
+//
+//     (-480,470) ------------ (0,470)
+//         |                      |
+//     (-480,0)  ------------ (0,0)  <- park here at power-up
+//
+// The graveyard ring's slot centres span 450mm each way, which fits that
+// reach with 15mm clearance at each X limit and 10mm at each Y limit. The
+// board sits one square pitch inside the ring:
+//   a1 centre = (-415.0,  60.0)
+//   h1 centre = ( -65.0,  60.0)
+//   a8 centre = (-415.0, 410.0)
+//   h8 centre = ( -65.0, 410.0)
 //
 // Board is square: 50mm pitch on both axes. (The earlier 200mm Y span was
 // belt slip, fixed by re-belting — do NOT reintroduce a separate Y pitch.)
+// firmware/chessbot_walker/ carries a copy of these numbers and walks every
+// square and slot; tests/test_firmware_geometry.py keeps the copies equal.
 const float SQUARE_MM = 50.0;
 
-const float A1_X_MM = -350.0;
-const float A1_Y_MM =    0.0;
+const float A1_X_MM = -415.0;
+const float A1_Y_MM =   60.0;
 
-// Travel limits. Unlike V1 these are NOT the board corners: the frame now
-// reaches 50mm past every board edge. Square centres span x -350..0 and the
-// outer squares extend half a square further, so the board occupies
-// x -375..25, y -25..375; adding the 50mm margin on each side gives a
-// 500x500 envelope.
-const float MIN_X = -425.0, MAX_X =  75.0;
-const float MIN_Y =  -75.0, MAX_Y = 425.0;
+// Travel limits, as measured. Knight and castling weaves step half a square
+// outside the board (x -440 / -40, y 35 / 435), still inside these.
+const float MIN_X = -480.0, MAX_X =   0.0;
+const float MIN_Y =    0.0, MAX_Y = 470.0;
 
 // Captured pieces. The 50mm margin is deep enough for a row of eight on each
 // of the four sides -- 32 slots in all, shared between both colours, on the
@@ -122,14 +131,14 @@ const float MIN_Y =  -75.0, MAX_Y = 425.0;
 // the coordinate it is given, via BURY. So these four numbers are the
 // machine's own record of where the ring is, alongside SQUARE_MM and the
 // travel limits; nothing below reads them. src/rig.py mirrors them.
-const float GRAVEYARD_Y_LOW  =  -50.0;  // beyond rank 1
-const float GRAVEYARD_Y_HIGH =  400.0;  // beyond rank 8
-const float GRAVEYARD_X_LOW  = -400.0;  // beyond the a-file
-const float GRAVEYARD_X_HIGH =   50.0;  // beyond the h-file
+const float GRAVEYARD_Y_LOW  =   10.0;  // beyond rank 1:     60 - 50
+const float GRAVEYARD_Y_HIGH =  460.0;  // beyond rank 8:    410 + 50
+const float GRAVEYARD_X_LOW  = -465.0;  // beyond the a-file: -415 - 50
+const float GRAVEYARD_X_HIGH =  -15.0;  // beyond the h-file:  -65 + 50
 
 // Knight and castling weaves step half a square OUTSIDE the board. On V1
 // that exceeded the travel limits at the four edges and had to be folded
-// inward; with 50mm of margin on every side a 25mm weave always fits, so
+// inward; with 35-40mm of travel past every board edge a 25mm weave fits, so
 // the fold is no longer needed. See clampWeave(), which is now a no-op.
 const bool  FOLD_EDGE_WEAVE = false;
 
@@ -143,7 +152,10 @@ unsigned int stepDelayUS;
 // about. It rides in the READY banner, and src/robot.py refuses to drive a
 // board older than it expects -- r1 had no polarity suffix at all and would
 // silently attract for every move, shoving every white piece off its square.
-#define FIRMWARE_REV 4
+// r5 is not a protocol change but a geometry one: the origin moved to the
+// travel corner, so an r4 board would take the same square names and BURY
+// coordinates and drive somewhere else. See rig.FIRMWARE_REV.
+#define FIRMWARE_REV 5
 
 // Measured on this set: the white pieces' magnets are the other way up, so
 // they need the opposite coil polarity from the black ones. This is only the
@@ -422,7 +434,7 @@ bool parseColour(const String &arg, bool &reversed) {
   return false;
 }
 
-// Parse "e4 -350 -50 w": the square to lift from, the raw machine coordinate
+// Parse "e4 -215 10 w": the square to lift from, the raw machine coordinate
 // to park on, and which colour is being carried.
 //
 // The colour is required here, unlike on MOVE. MOVE tolerates a missing one

@@ -122,20 +122,24 @@ class TestGraveyardGeometry(unittest.TestCase):
 
     def test_every_slot_sits_one_square_beyond_a_board_edge(self):
         """No slot is on the board, and none is further out than the ring."""
-        lo_x, hi_x = rig.A1_X_MM - rig.SQUARE_MM, rig.SQUARE_MM
-        lo_y, hi_y = -rig.SQUARE_MM, rig.BOARD_MM
+        h8_x = rig.A1_X_MM + 7 * rig.SQUARE_MM
+        h8_y = rig.A1_Y_MM + 7 * rig.SQUARE_MM
+        lo_x, hi_x = rig.A1_X_MM - rig.SQUARE_MM, h8_x + rig.SQUARE_MM
+        lo_y, hi_y = rig.A1_Y_MM - rig.SQUARE_MM, h8_y + rig.SQUARE_MM
         for slot, (x, y) in enumerate(self.slots()):
-            on_a_rank_strip = y in (lo_y, hi_y) and rig.A1_X_MM <= x <= 0.0
-            on_a_file_strip = x in (lo_x, hi_x) and rig.A1_Y_MM <= y <= 350.0
+            on_a_rank_strip = y in (lo_y, hi_y) and rig.A1_X_MM <= x <= h8_x
+            on_a_file_strip = x in (lo_x, hi_x) and rig.A1_Y_MM <= y <= h8_y
             self.assertTrue(on_a_rank_strip or on_a_file_strip,
                             f"slot {slot} at ({x}, {y}) is on neither strip")
 
     def test_the_corners_are_left_empty(self):
         """A corner slot would sit on no board centre line, so its printed dot
         would miss the grid. Nothing should be diagonally out on both axes."""
+        h8_x = rig.A1_X_MM + 7 * rig.SQUARE_MM
+        h8_y = rig.A1_Y_MM + 7 * rig.SQUARE_MM
         for x, y in self.slots():
-            off_x = x < rig.A1_X_MM or x > 0.0
-            off_y = y < rig.A1_Y_MM or y > 350.0
+            off_x = x < rig.A1_X_MM or x > h8_x
+            off_y = y < rig.A1_Y_MM or y > h8_y
             self.assertFalse(off_x and off_y, f"({x}, {y}) is a corner cell")
 
     def test_slots_are_numbered_around_the_ring(self):
@@ -188,7 +192,7 @@ class TestOrientMM(unittest.TestCase):
 
     def test_it_is_its_own_inverse(self):
         for origin in rig.SUPPORTED_ORIGINS:
-            for point in ((-350.0, 0.0), (0.0, 350.0), (-400.0, -50.0), (50.0, 400.0)):
+            for point in ((-415.0, 60.0), (-65.0, 410.0), (-465.0, 10.0), (-15.0, 460.0)):
                 self.assertEqual(rig.orient_mm(*rig.orient_mm(*point, origin=origin),
                                                origin=origin), point)
 

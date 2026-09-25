@@ -294,7 +294,7 @@ homeBtn.onclick = async () => {
   // No limit switches: HOME drives to where it ASSUMES the origin is, so
   // this only tells the truth if the carriage really is parked there.
   const ok = await nrConfirm(
-    "Is the carriage parked on " + PARK_SQUARE + "?",
+    "Is the carriage parked in the corner beyond " + PARK_SQUARE + "?",
     "There are no limit switches -- homing drives to the assumed origin " +
     "rather than finding it. If it is parked anywhere else, every move " +
     "afterwards will be wrong.\n\n" +
@@ -525,7 +525,7 @@ async function doReset(btn, withGame) {
   // anything standing in the way, so this always asks first.
   const ok = await nrConfirm(
     withGame ? "Reset the game and park the arm?" : "Park the arm?",
-    "The carriage will drive to " + PARK_SQUARE + ", crossing the whole " +
+    "The carriage will drive to the corner beyond " + PARK_SQUARE + ", crossing the whole " +
     "board. Clear its path and keep hands clear.",
     { okLabel: withGame ? "Reset & park" : "Park", okColor: "yellow" });
   if (!ok) return;

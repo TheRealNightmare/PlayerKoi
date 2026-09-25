@@ -739,8 +739,9 @@ def _open_robot(args):
         # firmware's idea of the origin; ORIGIN_SQUARE is which real corner
         # that is on this rig, and telling them the wrong one is how the
         # whole board ends up rotated.
-        print(f"Robot: park the carriage on {rig.ORIGIN_SQUARE} before homing -- "
-              "there are no limit switches to find it.")
+        print(f"Robot: park the carriage in the corner of travel beyond "
+              f"{rig.ORIGIN_SQUARE} before homing -- there are no limit switches "
+              "to find it.")
         if rig.ORIGIN_SQUARE != rig.PARK_SQUARE:
             print(f"Robot: board origin {rig.ORIGIN_SQUARE} -- squares are rotated "
                   "before they reach the firmware.")

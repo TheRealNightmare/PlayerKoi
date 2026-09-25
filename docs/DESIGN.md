@@ -143,7 +143,7 @@ Full wiring tables, per-module pinouts and the power-on order:
 |---|---|
 | Square | **50 mm** |
 | Playing area | **400 × 400 mm** |
-| Gantry travel | **500 × 500 mm** |
+| Gantry travel | **480 × 470 mm** (measured) |
 | Panel | **570 × 570 mm** |
 | a1 → h8 centres | 350 mm per axis |
 | Coordinate origin | a1's centre = `(0, 0)` |
