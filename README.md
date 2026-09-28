@@ -210,11 +210,12 @@ What it does physically:
   guarantees a sliding piece has a clear path.
 - **Knights**, and the **castling rook** (which has to get past the king
   that just jumped over it), ride the lattice lines *between* squares
-  instead, at reduced magnet power -- and not down the middle of the gap:
-  the route shifts toward whichever flank it can prove is empty. On 50mm
-  squares the midline is already 25mm from the pieces either side, so this is
-  margin on top of margin; on the old 28.75mm board it was the difference
-  between clearing a piece and dragging it.
+  instead, at reduced magnet power. On `chessbot_v1` that's a square-cornered
+  L of pure X/Y moves: half a square onto the gridline, the long run along it,
+  half a square back onto the target. On 50mm squares every piece passed is
+  25mm centre to centre -- 9mm edge to edge with 16mm bases. (`chess_gantry`'s
+  Pi-side router additionally shifts toward whichever flank it can prove is
+  empty.)
 - **Captures** are driven off the board by the arm itself. The victim is
   lifted first -- dragging onto an occupied square would just shove two
   pieces around -- and parked on the nearest free slot of a 32-slot ring in

@@ -26,7 +26,7 @@
 
      PING              -> OK PONG
      MOVE e7e5 b       -> OK MOVE e7e5 b    straight drag between centres
-     KNIGHT b8c6 b     -> OK KNIGHT b8c6 b  weave along gridlines
+     KNIGHT b8c6 b     -> OK KNIGHT b8c6 b  L along gridlines, axis moves only
                           The trailing w|b is which colour is being carried:
                           white magnets are reversed on this set, so the coil
                           polarity flips with it. Omitting it means "not
@@ -499,21 +499,29 @@ bool doBury(int f0, int r0, float tx, float ty, bool reversed) {
   return true;
 }
 
-// Knight: step half a square diagonally, run along the gridline,
-// then step back onto the destination centre.
+// Knight: a pure L, axis moves only. Half a square along the short axis
+// puts the piece on the gridline between its file (or rank) and the
+// target's, it runs the long axis there, then half a square back onto the
+// destination centre. Every piece it passes is 25mm centre to centre --
+// 9mm edge to edge with 16mm bases on 50mm squares. Castling's rook
+// (dr = 0) steps off its rank the same way, runs, and steps back.
 bool doKnight(int f0, int r0, int f1, int r1, bool reversed) {
-  float sx = (f1 - f0) > 0 ? 0.5 : -0.5;
-  float sy = (r1 - r0) > 0 ? 0.5 : -0.5;
+  int df = f1 - f0, dr = r1 - r0;
+  float sx = df > 0 ? 0.5 : -0.5;
+  float sy = dr > 0 ? 0.5 : -0.5;
+  bool shortIsFile = abs(df) < abs(dr);
+  float hx = shortIsFile ? sx : 0.0;
+  float hy = shortIsFile ? 0.0 : sy;
 
   if (!gotoSquare(f0, r0)) return false;
   magHold(MAG_FULL, reversed);
 
-  if (!gotoSquareF(clampWeave(f0 + sx), clampWeave(r0 + sy))) {
+  if (!gotoSquareF(clampWeave(f0 + hx), clampWeave(r0 + hy))) {
     magOff(); return false;
   }
   magHold(MAG_DIAG, reversed);
 
-  if (!gotoSquareF(clampWeave(f1 - sx), clampWeave(r1 - sy))) {
+  if (!gotoSquareF(clampWeave(f1 - hx), clampWeave(r1 - hy))) {
     magOff(); return false;
   }
   magHold(MAG_FULL, reversed);
