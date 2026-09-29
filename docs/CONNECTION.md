@@ -55,6 +55,9 @@ Three things that are easy to get wrong:
      web UI's Gridline power slider)
   3. coil **off**, then wait the settle pause (1200 ms by default) before
      the carriage moves on
+  Every leg ramps its speed up from 8 mm/s to the feed rate and back down
+  (150 mm/s², `START_MMS` / `ACCEL_MMS2` in the sketch) instead of starting
+  and stopping dead, so a carried piece isn't jerked off the magnet.
   The settle pause is what stops a piece being towed: it gives the core's
   leftover magnetism time to die away. If a piece still follows the carriage,
   raise it (`DWELL <grip> <settle>`, or the web UI's Settle slider).

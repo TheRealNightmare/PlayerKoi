@@ -317,6 +317,24 @@ class TestTheSketchMatchesTheMotionSettings(unittest.TestCase):
         self.assertEqual(float(match.group(1)), rig.FEED_MMS)
         self.assertEqual(rig.FEED_MMS, 40.0)
 
+    def test_the_speed_ramp_matches_rig(self):
+        for name, value in (("START_MMS", rig.START_MMS), ("ACCEL_MMS2", rig.ACCEL_MMS2)):
+            match = re.search(rf"const\s+float\s+{name}\s*=\s*([\d.]+)", self.sketch)
+            self.assertIsNotNone(match, name)
+            self.assertEqual(float(match.group(1)), value, name)
+        self.assertLess(rig.START_MMS, rig.FEED_MMS)
+
+    def test_every_step_is_timed_by_the_ramp(self):
+        """No leg may start or stop at full feed any more."""
+        self.assertNotIn("stepDelayUS", self.sketch)
+        self.assertEqual(self.sketch.count("delayMicroseconds(halfUS);"), 2)
+
+    def test_the_ramp_fits_a_half_square_step(self):
+        """A weave's shortest leg is 25 mm; the ramp up and back down to
+        full feed has to be short enough that it still reaches cruise."""
+        ramp_mm = (rig.FEED_MMS ** 2 - rig.START_MMS ** 2) / (2 * rig.ACCEL_MMS2)
+        self.assertLess(2 * ramp_mm, rig.SQUARE_MM / 2)
+
 
 class TestTheSketchCarriesEveryPieceTheSameWay(unittest.TestCase):
     """r7: coil off -> drive to the source -> hold + grip -> carry ->

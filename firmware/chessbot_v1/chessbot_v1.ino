@@ -149,7 +149,18 @@ const bool  FOLD_EDGE_WEAVE = false;
 // 40mm/s, the proven feed. SPEED changes it at runtime; the host also sends
 // SPEED on connect.
 float feedRateMMS = 40.0;
-unsigned int stepDelayUS;
+
+// Every leg ramps up from START_MMS to the feed rate and back down again,
+// instead of starting and stopping dead. A carried piece rides on nothing but
+// the magnet, and an instant start at full feed jerked knights off the pole
+// on the L's long gridline run. 150 mm/s^2 reaches 40 mm/s in ~5 mm, so even
+// the half-square steps of a weave get most of their ramp.
+const float START_MMS   = 8.0;
+const float ACCEL_MMS2  = 150.0;
+
+// The same three, in step units along the leg's longer motor axis -- the
+// unit the step loop counts in. Set by recalcSpeed().
+float vMaxSteps, vMinSq, twoAccelSteps;
 
 // ---------- magnet ----------
 // Cap at 255 only if the buck really is at ~6V. Lower if running on cells.
@@ -579,7 +590,19 @@ void magPulse() {
 //  MOTION
 // ============================================================
 void recalcSpeed() {
-  stepDelayUS = (unsigned int)(1000000.0 / (2.0 * feedRateMMS * stepsPerMM));
+  vMaxSteps = feedRateMMS * stepsPerMM;
+  float vMin = min(START_MMS, feedRateMMS) * stepsPerMM;
+  vMinSq = vMin * vMin;
+  twoAccelSteps = 2.0 * ACCEL_MMS2 * stepsPerMM;
+}
+
+// Half a step period, in us, for the step `d` steps from the nearer end of
+// the leg: v = sqrt(vMin^2 + 2*a*d), capped at the feed. Symmetric, so the
+// leg decelerates into its end exactly as it accelerated out of its start.
+unsigned int halfPeriodUS(long d) {
+  float v = sqrt(vMinSq + twoAccelSteps * (float)d);
+  if (v > vMaxSteps) v = vMaxSteps;
+  return (unsigned int)(500000.0 / v);
 }
 
 void moveCoreXY(float mmX, float mmY) {
@@ -607,6 +630,8 @@ void moveCoreXY(float mmX, float mmY) {
 
   for (long i = 0; i < maxSteps; i++) {
     bool pA = false, pB = false;
+    long fromEnd = maxSteps - 1 - i;
+    unsigned int halfUS = halfPeriodUS(i < fromEnd ? i : fromEnd);
 
     errA -= stepsA;
     if (errA < 0) { errA += maxSteps; pA = true; }
@@ -615,11 +640,11 @@ void moveCoreXY(float mmX, float mmY) {
 
     if (pA) digitalWrite(stepPinA, HIGH);
     if (pB) digitalWrite(stepPinB, HIGH);
-    delayMicroseconds(stepDelayUS);
+    delayMicroseconds(halfUS);
 
     if (pA) digitalWrite(stepPinA, LOW);
     if (pB) digitalWrite(stepPinB, LOW);
-    delayMicroseconds(stepDelayUS);
+    delayMicroseconds(halfUS);
   }
 
   delay(60);

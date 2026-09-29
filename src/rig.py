@@ -83,6 +83,12 @@ STEPS_PER_MM = (MOTOR_STEPS_PER_REV * MICROSTEPS) / MM_PER_REV   # 10.0
 # re-sends SPEED on every connect. The firmware accepts SPEED 1-100 mm/s.
 FEED_MMS = 40.0
 
+# Every leg ramps from START_MMS up to the feed and back down, rather than
+# starting and stopping dead -- the dead start jerked knights off the magnet
+# on the L's long gridline run. Mirrors the sketch; not runtime-tunable.
+START_MMS = 8.0
+ACCEL_MMS2 = 150.0
+
 # Magnet duty, as a PWM count. FULL drags a piece square-to-square and is
 # fixed; the gridline legs use grid_pct below. Mirrors the firmware --
 # chess_gantry's 170 cap is for different hardware and does not apply.
