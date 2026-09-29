@@ -461,16 +461,23 @@ Full circuit and first-time bring-up: **[docs/HARDWARE.md](docs/HARDWARE.md)**.
 This section is the day-to-day sequence once it's built and calibrated.
 
 **1. Power up in this order** — USB first, barrel jack second, with the
-carriage hand-parked on the **a8** corner.
+carriage hand-parked in the corner of travel beyond **h1** (White's right-hand
+corner).
 
 ```bash
 ls /dev/ttyACM*                      # confirm the Uno enumerated
 ```
 
-The firmware calls that corner `h1`; the board is seated 180 degrees round from
-what the sketch assumes, so `rig.ORIGIN_SQUARE = "a8"` rotates every square on
-its way to the Arduino. If the arm reaches for the wrong colour's pieces, that
-constant is wrong — try the others with `--board-origin`.
+That corner is the firmware's origin (0, 0), and since the r5 re-measurement the
+firmware's square names are the real squares, so `rig.ORIGIN_SQUARE = "h1"`
+sends them unrotated — `GOTO a1` from the web app and from the serial monitor
+land on the same square. If the board is ever re-seated and the arm reaches for
+the wrong squares, try the other corners with `--board-origin`.
+
+The carriage has to be in that corner **every time the web app starts**, not
+just at power-up: opening the serial port resets the Arduino, and it takes
+wherever the carriage is standing as (0, 0). Left mid-board after a serial
+monitor session, every move is offset and the edge squares run off the frame.
 
 **2. First time on a rebuilt/re-flashed rig,** verify the geometry and the
 clearance before anything touches a real game — `GOTO 7 0` must travel exactly
@@ -583,9 +590,8 @@ it is played into a position that no longer exists.
 **1. Set the board up completely.** All 32 pieces, standard position, White at
 the a1 end. This is assumed, never checked.
 
-**2. Park the carriage on the a8 corner** by hand. No limit switches — `HOME`
-drives to the assumed origin rather than finding it. (The firmware calls that
-corner h1; see section G.)
+**2. Park the carriage in the corner beyond h1** by hand. No limit switches —
+`HOME` drives to the assumed origin rather than finding it.
 
 **3. Dry run first** if anything changed:
 

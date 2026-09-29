@@ -21,29 +21,50 @@ ALL_SQUARES = [f"{chr(ord('a') + f)}{r + 1}" for f in range(8) for r in range(8)
 
 
 class TestThisRig(unittest.TestCase):
-    """The measured default: origin a8, a 180 degree rotation."""
+    """The measured default: origin beyond h1, no rotation.
 
-    def test_the_default_is_the_measured_a8_origin(self):
-        self.assertEqual(rig.ORIGIN_SQUARE, "a8")
+    Since the r5 re-measurement the firmware's square names are the real
+    squares -- GOTO a1 typed at the serial monitor lands on a1. A rotation on
+    top of that sent a click on a1 past a8 into the graveyard.
+    """
+
+    def test_the_default_is_the_h1_origin_the_firmware_assumes(self):
+        self.assertEqual(rig.ORIGIN_SQUARE, "h1")
+        self.assertEqual(rig.ORIGIN_SQUARE, rig.PARK_SQUARE)
+
+    def test_every_square_reaches_the_firmware_unchanged(self):
+        for name in ALL_SQUARES:
+            self.assertEqual(rig.orient_square(name), name)
+        self.assertEqual(rig.orient_uci("e2e4"), "e2e4")
+        self.assertEqual(rig.orient_uci("a1h8"), "a1h8")
+
+    def test_graveyard_coordinates_reach_the_firmware_unchanged(self):
+        for slot in range(rig.GRAVEYARD_SLOTS):
+            xy = rig.graveyard_slot_to_mm(slot)
+            self.assertEqual(rig.orient_mm(*xy), xy)
+
+
+class TestRotated180(unittest.TestCase):
+    """The a8 option, for a board seated 180 degrees round."""
 
     def test_the_park_corner_maps_to_the_origin_the_firmware_assumes(self):
-        # The firmware drives to h1 for (0, 0); the carriage is really on a8.
-        self.assertEqual(rig.orient_square("a8"), "h1")
-        self.assertEqual(rig.orient_square("h1"), "a8")
+        self.assertEqual(rig.orient_square("a8", origin="a8"), "h1")
+        self.assertEqual(rig.orient_square("h1", origin="a8"), "a8")
 
     def test_both_file_and_rank_flip(self):
-        self.assertEqual(rig.orient_square("e2"), "d7")
-        self.assertEqual(rig.orient_square("a1"), "h8")
-        self.assertEqual(rig.orient_square("d4"), "e5")
+        self.assertEqual(rig.orient_square("e2", origin="a8"), "d7")
+        self.assertEqual(rig.orient_square("a1", origin="a8"), "h8")
+        self.assertEqual(rig.orient_square("d4", origin="a8"), "e5")
 
     def test_a_uci_move_rotates_both_squares(self):
-        self.assertEqual(rig.orient_uci("e2e4"), "d7d5")
-        self.assertEqual(rig.orient_uci("b1c3"), "g8f6")
+        self.assertEqual(rig.orient_uci("e2e4", origin="a8"), "d7d5")
+        self.assertEqual(rig.orient_uci("b1c3", origin="a8"), "g8f6")
 
     def test_a_promotion_suffix_is_dropped(self):
         """MOVE/KNIGHT take squares; the firmware has no idea what a
         promotion is."""
-        self.assertEqual(rig.orient_uci("a7a8q"), "h2h1")
+        self.assertEqual(rig.orient_uci("a7a8q", origin="a8"), "h2h1")
+        self.assertEqual(rig.orient_uci("a7a8q"), "a7a8")
 
 
 class TestEveryOrientation(unittest.TestCase):

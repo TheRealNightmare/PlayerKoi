@@ -166,22 +166,22 @@ def banner_rev(banner):
 # the firmware has no concept of it: chessbot_v1 parses square names
 # arithmetically (charAt(0) - 'a') and assumes the carriage parks beyond h1.
 #
-# On this machine it doesn't. The corner the gantry actually rests on -- the
-# origin, (0, 0) -- is beyond a8, so the whole machine is rotated 180 degrees against
-# every square name it is sent. Uncorrected, asking for e2 drives to d7, which
-# is why the arm reached for Black's pieces on White's turn.
+# Since the r5 re-measurement that assumption is TRUE on this machine: the
+# origin, (0, 0), is the corner of travel beyond h1 -- White's right-hand
+# corner -- and "GOTO a1" typed into the serial monitor lands on the real a1.
+# So no correction is applied. (Before r5 the board was treated as seated
+# 180 degrees round and this was "a8"; keeping that after the re-measurement
+# rotated every square twice over, sending a1 past a8 into the graveyard.)
 #
-# Correcting it here rather than in the sketch keeps the geometry measurements
-# and the orientation separable: the mm constants above stay true of the
-# hardware, and this stays true of how the board is seated under it.
+# The rotation is kept, and selectable with --board-origin, for a board that
+# is ever re-seated. The four values are the real square the carriage parks
+# beyond:
 #
-# The four values are the real square the carriage parks beyond:
-#
-#     "h1"   what the firmware assumes -- no correction
-#     "a8"   rotated 180 degrees: file AND rank flip     <- this rig
+#     "h1"   what the firmware assumes -- no correction    <- this rig
+#     "a8"   rotated 180 degrees: file AND rank flip
 #     "h8"   ranks flip, files don't (a mirror, from a reversed Y axis)
 #     "a1"   files flip, ranks don't
-ORIGIN_SQUARE = "a8"
+ORIGIN_SQUARE = "h1"
 
 # (flip_file, flip_rank) for each supported origin.
 _ORIENTATIONS = {
@@ -211,7 +211,8 @@ def orient(file_, rank, origin=None):
 
 
 def orient_square(name, origin=None):
-    """"e2" -> "d7" on this rig. For square names bound for the firmware."""
+    """"e2" -> "d7" with origin "a8"; unchanged at the default "h1". For
+    square names bound for the firmware."""
     file_, rank = orient(ord(name[0]) - ord("a"), int(name[1]) - 1, origin)
     return f"{chr(ord('a') + file_)}{rank + 1}"
 
@@ -246,10 +247,11 @@ def orient_mm(x_mm, y_mm, origin=None):
     board centre does the same job and works for any point, on the board or
     off it.
 
-    This is NOT optional on this rig. ORIGIN_SQUARE is "a8", a 180 degree
-    rotation, so a slot handed to the firmware unmirrored lands on the
-    diagonally opposite slot -- the arm drives a captured piece the full width
-    of the board to the wrong place, and nothing reports it.
+    It is the identity at the default origin (h1). On a re-seated board it is
+    NOT optional: with a 180 degree rotation, a slot handed to the firmware
+    unmirrored lands on the diagonally opposite slot -- the arm drives a
+    captured piece the full width of the board to the wrong place, and nothing
+    reports it.
 
     Like orient(), it is its own inverse for every supported origin.
     """
@@ -314,7 +316,7 @@ def graveyard_slot_to_mm(slot):
     graveyard.nearest_free_slot(). This only says where slot n is.
 
     Mirrors square_to_mm(), and carries the same caveat: the result is in
-    board space. This rig is seated 180 degrees round (ORIGIN_SQUARE), and
+    board space. If the board is seated rotated (ORIGIN_SQUARE other than h1),
     orient() only rotates file/rank indices, which a graveyard slot does not
     have -- it sits outside the 8x8. So on a rotated rig, mirror the result
     about the board centre rather than reaching for orient().

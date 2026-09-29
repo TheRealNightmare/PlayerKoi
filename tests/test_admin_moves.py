@@ -214,3 +214,14 @@ class TestConsole(_OriginMixin, unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDefaultOrigin(unittest.TestCase):
+    """The reported bug: a1 on /admin went past a8. At the rig's default
+    origin the page must send exactly what the serial monitor would."""
+
+    def test_squares_go_out_as_typed(self):
+        self.assertEqual(rig.ORIGIN_SQUARE, "h1")
+        self.assertEqual(admin_moves.goto_command("a1"), "GOTO a1")
+        self.assertEqual(admin_moves.goto_command("h8"), "GOTO h8")
+        self.assertEqual(admin_moves.move_command("e2", "e4", "white", False), "MOVE e2e4 w")

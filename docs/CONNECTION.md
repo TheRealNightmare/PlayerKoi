@@ -65,12 +65,11 @@ Three things that are easy to get wrong:
 - **There are no limit switches on this build.** Position is dead reckoning
   from an assumed park in the origin corner — the corner of travel beyond h1,
   not h1's centre. Nothing can detect that it is wrong.
-- **"h1" here means the firmware's h1, which is physically the a8 corner.**
-  This sketch assumes the board is seated with h1 next to the origin; on the built
-  rig it is rotated 180 degrees. The Python side corrects for that
-  (`rig.ORIGIN_SQUARE`), so *game* moves are rotated before they arrive but
-  the bench commands below are not. Everything in this document is in the
-  firmware's own naming.
+- **The firmware's square names are the real squares.** Since r5 the origin is
+  the corner beyond h1, where the board is actually seated, so the Python side
+  applies no rotation (`rig.ORIGIN_SQUARE = "h1"`): a game move and a bench
+  command naming the same square go to the same place. `--board-origin` exists
+  for a board seated any other way round.
 
 ## Bring-up, in order
 
@@ -81,7 +80,7 @@ stop there rather than continuing — later steps assume the earlier ones.
 |---|---|---|
 | 1 | Flash `chessbot_v1.ino` | compiles and uploads |
 | 2 | Open the serial monitor at 115200 | `READY ChessBot-V1 r5` — **if the revision is lower, the sketch is stale; re-upload it** |
-| 3 | **Park the carriage in the origin corner by hand** — the corner of travel beyond the firmware's h1 (physically beyond a8 — see above) | — |
+| 3 | **Park the carriage in the origin corner by hand** — the corner of travel beyond h1 (White's right-hand corner) | — |
 | 4 | `PING` | `OK PONG` |
 | 5 | `POS` | `OK POS 0.0 0.0` |
 | 6 | `MAG 1` then `MAG 0` | `OK MAG 1` / `OK MAG 0`, coil audibly grabs and releases |

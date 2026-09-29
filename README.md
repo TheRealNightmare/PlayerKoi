@@ -213,16 +213,16 @@ python3 src/web_ui.py --robot auto            # the real gantry, port detected
 python3 src/web_ui.py --robot mock            # dry run: logs commands, moves nothing
 ```
 
-**Park the carriage on the a8 corner before homing.** This build has no limit
+**Park the carriage in the corner beyond h1 before starting.** This build has no limit
 switches, so `HOME` drives to where it *assumes* the origin is rather than
 finding it. If the carriage starts anywhere else, every move afterwards is
 silently wrong and nothing will tell you.
 
-The firmware calls that corner `h1` — it assumes the board is seated the other
-way round. On this rig it isn't, so `rig.ORIGIN_SQUARE = "a8"` rotates every
-square 180 degrees on the way to the Arduino (`--board-origin` overrides it).
-Bench commands are deliberately *not* rotated, so `GOTO a1` still means the
-firmware's a1. Wiring, flashing and the full bring-up sequence are
+That corner is the firmware's origin, and the board is seated the way the
+firmware assumes, so squares go to the Arduino unrotated (`rig.ORIGIN_SQUARE =
+"h1"`; `--board-origin` overrides it for a re-seated board). `GOTO a1` means the
+real a1 from the web app and the serial monitor alike. Starting the app resets
+the Arduino, so the carriage must be in that corner then, too. Wiring, flashing and the full bring-up sequence are
 in **[docs/CONNECTION.md](docs/CONNECTION.md)**.
 
 The arm homes on startup, then plays automatically whenever the engine

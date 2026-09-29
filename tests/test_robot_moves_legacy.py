@@ -18,6 +18,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import chess  # noqa: E402
 
+import admin_moves  # noqa: E402
+import rig  # noqa: E402
 import robot_moves  # noqa: E402
 import robot_moves_legacy as legacy  # noqa: E402
 
@@ -462,3 +464,103 @@ class TestInterchangeableWithTheNativePlanner(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _square_fr(name):
+    return ord(name[0]) - ord("a"), int(name[1]) - 1
+
+
+def firmware_waypoints(command):
+    """Every machine-mm point chessbot_v1 drives to for one command.
+
+    Mirrors the sketch rather than trusting the planner: doKnight() steps
+    half a square off the centre line along the short axis, runs, and steps
+    back -- that detour is what reaches past the board edge, so it is the
+    part most worth checking. BURY visits the square, then the slot.
+    """
+    verb, *args = command.split()
+    to_mm = lambda f, r: rig.square_to_mm(f, r)  # noqa: E731
+    if verb == "GOTO":
+        return [to_mm(*_square_fr(args[0]))]
+    if verb == "BURY":
+        return [to_mm(*_square_fr(args[0])), (float(args[1]), float(args[2]))]
+    (f0, r0), (f1, r1) = _square_fr(args[0][:2]), _square_fr(args[0][2:4])
+    if verb == "MOVE":
+        return [to_mm(f0, r0), to_mm(f1, r1)]
+    assert verb == "KNIGHT", command
+    df, dr = f1 - f0, r1 - r0
+    sx, sy = (0.5 if df > 0 else -0.5), (0.5 if dr > 0 else -0.5)
+    short_is_file = abs(df) < abs(dr)
+    hx, hy = (sx, 0.0) if short_is_file else (0.0, sy)
+    return [to_mm(f0, r0), to_mm(f0 + hx, r0 + hy),
+            to_mm(f1 - hx, r1 - hy), to_mm(f1, r1)]
+
+
+class TestEverythingStaysInTravel(unittest.TestCase):
+    """At the rig's default origin, nothing the software sends may drive the
+    carriage off the frame -- the firmware refuses such a move, but only
+    after the moves before it in the same plan have already happened.
+
+    Also the regression test for a click on a1 going past a8: with the
+    default origin every command names the real squares.
+    """
+
+    def assertInTravel(self, command):
+        for x, y in firmware_waypoints(command):
+            self.assertTrue(rig.within_travel(x, y),
+                            f"{command} reaches ({x:.1f}, {y:.1f}), outside "
+                            f"x {rig.MIN_X_MM}..{rig.MAX_X_MM}, "
+                            f"y {rig.MIN_Y_MM}..{rig.MAX_Y_MM}")
+
+    def test_the_default_origin_sends_real_squares(self):
+        self.assertEqual(rig.ORIGIN_SQUARE, "h1")
+        steps = legacy.plan(chess.Board(), chess.Move.from_uci("e2e4"))
+        self.assertEqual(commands(steps), ["MOVE e2e4 w"])
+        steps = legacy.plan(chess.Board(), chess.Move.from_uci("g1f3"))
+        self.assertEqual(commands(steps), ["KNIGHT g1f3 w"])
+
+    def test_every_square(self):
+        for f in "abcdefgh":
+            for r in "12345678":
+                self.assertInTravel(admin_moves.goto_command(f + r))
+
+    def test_every_knight_jump_including_the_weave(self):
+        for f0 in range(8):
+            for r0 in range(8):
+                for df, dr in ((1, 2), (2, 1), (-1, 2), (-2, 1),
+                               (1, -2), (2, -1), (-1, -2), (-2, -1)):
+                    f1, r1 = f0 + df, r0 + dr
+                    if not (0 <= f1 < 8 and 0 <= r1 < 8):
+                        continue
+                    frm = "abcdefgh"[f0] + str(r0 + 1)
+                    to = "abcdefgh"[f1] + str(r1 + 1)
+                    self.assertInTravel(admin_moves.move_command(frm, to, "white", True))
+
+    def test_all_four_castlings(self):
+        for fen, uci in (
+            ("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1", "e1g1"),
+            ("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1", "e1c1"),
+            ("r3k2r/8/8/8/8/8/8/R3K2R b KQkq - 0 1", "e8g8"),
+            ("r3k2r/8/8/8/8/8/8/R3K2R b KQkq - 0 1", "e8c8"),
+        ):
+            for command in commands(legacy.plan(chess.Board(fen), chess.Move.from_uci(uci))):
+                self.assertInTravel(command)
+
+    def test_every_graveyard_slot_from_every_square(self):
+        piece = chess.Piece(chess.PAWN, chess.BLACK)
+        for slot in range(rig.GRAVEYARD_SLOTS):
+            for square in chess.SQUARES:
+                step, _ = legacy._bury(square, piece, slot)
+                self.assertInTravel(step.command)
+
+    def test_random_games_with_a_filling_graveyard(self):
+        random.seed(5)
+        for _ in range(30):
+            board, pile = chess.Board(), []
+            while not board.is_game_over() and board.ply() < 200:
+                move = random.choice(list(board.legal_moves))
+                steps, used = legacy.plan_with_slots(board, move, occupied=pile)
+                pile.extend(used)
+                for command in commands(steps):
+                    self.assertInTravel(command)
+                board.push(move)

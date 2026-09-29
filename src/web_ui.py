@@ -1457,6 +1457,19 @@ def _open_robot(args):
     rig.ORIGIN_SQUARE = args.board_origin
     if args.white_polarity or args.release_ms is not None:
         rig_config.save(white_polarity=args.white_polarity, release_ms=args.release_ms)
+    if args.robot_protocol == "legacy" and args.robot != "mock":
+        # Said BEFORE the port opens, because opening it is the moment that
+        # matters: it resets the Uno, which then takes wherever the carriage
+        # stands as (0, 0). There are no limit switches to correct that, so a
+        # carriage left mid-board -- after the Serial Monitor, say -- offsets
+        # every move and drives the edge squares off the frame.
+        #
+        # Name the corner the human can actually see: ORIGIN_SQUARE is which
+        # real corner the firmware's origin is on this rig.
+        corner = " (White's right-hand corner)" if rig.ORIGIN_SQUARE == "h1" else ""
+        print(f"Robot: the carriage must be hand-parked in the corner of travel "
+              f"beyond {rig.ORIGIN_SQUARE}{corner} right now -- opening the port resets the Arduino, which takes "
+              "wherever the carriage is as its origin.")
     try:
         robot = open_gantry(args.robot, topple_delay_s=args.topple_delay,
                             protocol=args.robot_protocol,
@@ -1477,21 +1490,9 @@ def _open_robot(args):
         print(f"Robot: white pieces are held by {robot.white_polarity.upper()}, "
               f"release fades over {robot.release_ms}ms "
               "(both adjustable in the UI).")
-    if args.robot_protocol == "legacy":
-        # No limit switches on this build: HOME drives to the assumed origin
-        # rather than seeking it, so "homed" is a promise the human makes,
-        # not something the machine measured.
-        #
-        # Name the square the human can actually see. rig.PARK_SQUARE is the
-        # firmware's idea of the origin; ORIGIN_SQUARE is which real corner
-        # that is on this rig, and telling them the wrong one is how the
-        # whole board ends up rotated.
-        print(f"Robot: park the carriage in the corner of travel beyond "
-              f"{rig.ORIGIN_SQUARE} before homing -- there are no limit switches "
-              "to find it.")
-        if rig.ORIGIN_SQUARE != rig.PARK_SQUARE:
-            print(f"Robot: board origin {rig.ORIGIN_SQUARE} -- squares are rotated "
-                  "before they reach the firmware.")
+    if args.robot_protocol == "legacy" and rig.ORIGIN_SQUARE != rig.PARK_SQUARE:
+        print(f"Robot: board origin {rig.ORIGIN_SQUARE} -- squares are rotated "
+              "before they reach the firmware.")
     return robot
 
 
