@@ -92,6 +92,12 @@ class TestStaleBoardRefuses(unittest.TestCase):
         self.assertEqual(robot.firmware_rev, 1)
         self.assertTrue(robot.stale_firmware)
 
+    def test_an_r8_board_is_stale(self):
+        """r8 has no KICK verb, which the host sends on connect."""
+        robot = Robot(MockGantry(banner="READY ChessBot-V1 r8"),
+                      planner=robot_moves_legacy)
+        self.assertTrue(robot.stale_firmware)
+
     def test_an_r7_board_is_stale(self):
         """r7 has no GRID verb, which the host sends on connect."""
         robot = Robot(MockGantry(banner="READY ChessBot-V1 r7"),
@@ -144,7 +150,8 @@ class TestStaleBoardRefuses(unittest.TestCase):
 
 class TestOldSettingsAreIgnored(unittest.TestCase):
     """config/rig.json files written before r7 still carry white_polarity and
-    release_ms. They must load cleanly, and the next save must drop them."""
+    release_ms. They must load cleanly, and the next save must drop them.
+    (kick_duty/kick_ms were dropped in r7 and are valid again since r9.)"""
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp()) / "rig.json"
@@ -155,7 +162,8 @@ class TestOldSettingsAreIgnored(unittest.TestCase):
     def test_an_old_file_still_loads(self):
         settings = rig_config.load(self.tmp)
         self.assertEqual(settings["settle_ms"], 400)
-        for gone in ("white_polarity", "release_ms", "kick_duty", "kick_ms"):
+        self.assertEqual((settings["kick_duty"], settings["kick_ms"]), (110, 20))
+        for gone in ("white_polarity", "release_ms"):
             self.assertNotIn(gone, settings)
 
     def test_the_next_save_drops_the_old_keys(self):
@@ -163,11 +171,11 @@ class TestOldSettingsAreIgnored(unittest.TestCase):
         stored = json.loads(self.tmp.read_text())
         self.assertEqual(stored["grip_ms"], 200)
         self.assertEqual(stored["settle_ms"], 400)
-        for gone in ("white_polarity", "release_ms", "kick_duty", "kick_ms"):
+        for gone in ("white_polarity", "release_ms"):
             self.assertNotIn(gone, stored)
 
     def test_the_removed_settings_cannot_be_saved(self):
-        for gone in ("white_polarity", "release_ms", "kick_duty", "kick_ms"):
+        for gone in ("white_polarity", "release_ms"):
             with self.assertRaises((TypeError, ValueError), msg=gone):
                 rig_config.save(path=self.tmp, **{gone: 1})
 
@@ -181,16 +189,18 @@ class TestSettingsReachTheBoard(unittest.TestCase):
 
         robot = open_gantry("mock")
         commands = robot._link.commands
-        self.assertEqual([c.split()[0] for c in commands], ["POL", "DWELL", "GRID", "SPEED"])
+        self.assertEqual([c.split()[0] for c in commands],
+                         ["POL", "DWELL", "GRID", "KICK", "SPEED"])
         self.assertEqual(commands[-1], "SPEED 40")
         self.assertEqual(set(robot.tuning), set(rig.MOTION_TUNING))
 
-    def test_no_release_or_kick_verbs_are_sent(self):
-        """r7 has no RELEASE or KICK -- sending one would come back ERR."""
+    def test_no_release_verb_is_sent(self):
+        """RELEASE (the old fade) is gone for good -- sending it would come
+        back ERR."""
         from robot import open_gantry
 
         verbs = {c.split()[0] for c in open_gantry("mock")._link.commands}
-        self.assertFalse({"RELEASE", "KICK"} & verbs)
+        self.assertNotIn("RELEASE", verbs)
         self.assertFalse({"MOVE", "KNIGHT", "BURY", "GOTO", "HOME"} & verbs)
 
     def test_a_stale_board_is_sent_nothing(self):
@@ -289,12 +299,15 @@ class TestTheSketchMatchesTheMotionSettings(unittest.TestCase):
         self.assertEqual(match.group(1) == "true", rig.HOLD_BY_REPEL)
 
     def test_the_removed_verbs_are_gone(self):
-        for verb in ("POLTEST", "RELEASE", "KICK"):
+        for verb in ("POLTEST", "RELEASE"):
             self.assertNotIn(f'cmd == "{verb}"', self.sketch, verb)
 
     def test_the_defaults_match_rig(self):
         self.assertEqual(self._const("GRIP_MS"), rig.MOTION_TUNING["grip_ms"][0])
         self.assertEqual(self._const("SETTLE_MS"), rig.MOTION_TUNING["settle_ms"][0])
+        self.assertEqual(self._const("KICK_DUTY"), rig.MOTION_TUNING["kick_duty"][0])
+        self.assertEqual(self._const("KICK_MS"), rig.MOTION_TUNING["kick_ms"][0])
+        self.assertIn('cmd == "KICK"', self.sketch)
 
     def test_the_gridline_power_defaults_to_full_and_matches_rig(self):
         """60% and then 80% both sometimes lost a knight partway along the L."""
@@ -307,33 +320,20 @@ class TestTheSketchMatchesTheMotionSettings(unittest.TestCase):
         self.assertNotIn("MAG_DIAG", self.sketch)
         self.assertEqual(self.sketch.count("magHold(gridDuty())"), 3)
 
-    def test_the_settle_wait_is_1200_ms(self):
-        """300 and then 1000 ms sometimes left the core magnetised enough to
-        tow a piece."""
-        self.assertEqual(rig.MOTION_TUNING["settle_ms"][0], 1200)
+    def test_grip_and_settle_are_a_second_each(self):
+        self.assertEqual(rig.MOTION_TUNING["grip_ms"][0], 1000)
+        self.assertEqual(rig.MOTION_TUNING["settle_ms"][0], 1000)
 
     def test_the_feed_rate_matches_rig(self):
         match = re.search(r"float\s+feedRateMMS\s*=\s*([\d.]+)", self.sketch)
         self.assertEqual(float(match.group(1)), rig.FEED_MMS)
         self.assertEqual(rig.FEED_MMS, 40.0)
 
-    def test_the_speed_ramp_matches_rig(self):
-        for name, value in (("START_MMS", rig.START_MMS), ("ACCEL_MMS2", rig.ACCEL_MMS2)):
-            match = re.search(rf"const\s+float\s+{name}\s*=\s*([\d.]+)", self.sketch)
-            self.assertIsNotNone(match, name)
-            self.assertEqual(float(match.group(1)), value, name)
-        self.assertLess(rig.START_MMS, rig.FEED_MMS)
-
-    def test_every_step_is_timed_by_the_ramp(self):
-        """No leg may start or stop at full feed any more."""
-        self.assertNotIn("stepDelayUS", self.sketch)
-        self.assertEqual(self.sketch.count("delayMicroseconds(halfUS);"), 2)
-
-    def test_the_ramp_fits_a_half_square_step(self):
-        """A weave's shortest leg is 25 mm; the ramp up and back down to
-        full feed has to be short enough that it still reaches cruise."""
-        ramp_mm = (rig.FEED_MMS ** 2 - rig.START_MMS ** 2) / (2 * rig.ACCEL_MMS2)
-        self.assertLess(2 * ramp_mm, rig.SQUARE_MM / 2)
+    def test_every_step_runs_at_constant_speed(self):
+        """No acceleration ramp: every step uses the one feed-rate delay."""
+        self.assertNotIn("ACCEL", self.sketch)
+        self.assertNotIn("halfPeriodUS", self.sketch)
+        self.assertEqual(self.sketch.count("delayMicroseconds(stepDelayUS);"), 2)
 
 
 class TestTheSketchCarriesEveryPieceTheSameWay(unittest.TestCase):
@@ -372,12 +372,23 @@ class TestTheSketchCarriesEveryPieceTheSameWay(unittest.TestCase):
         self.assertIn("if (holdByRepel) magRepel(duty);", body)
         self.assertIn("magAttract(duty);", body)
 
-    def test_the_release_is_a_plain_off_then_the_settle_pause(self):
+    def test_the_release_is_off_then_the_clearing_pulse_then_the_settle(self):
         body = self._body("void magRelease(")
-        self.assertIn("magOff();", body)
-        self.assertIn("delay(settleMS);", body)
-        self.assertLess(body.index("magOff();"), body.index("delay(settleMS);"))
+        off, pulse, settle = (body.index("magOff();"),
+                              body.index("magReverse(kickDuty);"),
+                              body.index("delay(settleMS);"))
+        self.assertLess(off, pulse)
+        self.assertLess(pulse, settle)
+        # The coil is off again before the settle pause starts.
+        self.assertIn("magOff();", body[pulse:settle])
         self.assertNotIn("magHold", body)
+
+    def test_the_clearing_pulse_is_the_opposite_of_the_hold(self):
+        hold = self._body("void magHold(")
+        rev = self._body("void magReverse(")
+        self.assertIn("if (holdByRepel) magRepel(duty);", hold)
+        self.assertIn("if (holdByRepel) magAttract(duty);", rev)
+        self.assertIn("else             magRepel(duty);", rev)
 
     def test_there_is_no_colour_left_in_the_protocol(self):
         for gone in ("whiteReversed", "WHITE_IS_REVERSED", "parseColour", "reversed"):

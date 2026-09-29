@@ -285,7 +285,7 @@ class Robot:
         """Grip/settle pauses and gridline power (rig.MOTION_TUNING).
 
         Any subset may be given; the rest keep their last value, falling back
-        to the defaults. Sent as DWELL and GRID, and re-sent on every connect by
+        to the defaults. Sent as DWELL, GRID and KICK, and re-sent on every connect by
         open_gantry, because opening the port reboots the Uno and it forgets.
         """
         merged = {name: spec[0] for name, spec in rig.MOTION_TUNING.items()}
@@ -302,6 +302,7 @@ class Robot:
             merged[name] = value
         self._link.send(rig_config.dwell_command(merged["grip_ms"], merged["settle_ms"]))
         self._link.send(rig_config.grid_command(merged["grid_pct"]))
+        self._link.send(rig_config.kick_command(merged["kick_duty"], merged["kick_ms"]))
         with self._lock:
             self.tuning = merged
         return dict(merged)
@@ -752,6 +753,7 @@ def _console(robot):
     print("  POL 0|1     what holds every piece: 0 = attract (default), 1 = repel")
     print("  DWELL g s   grip pause before a drag / settle pause after a set-down, ms")
     print("  GRID pct    magnet power on knight/castling/graveyard gridlines, 0-100 %")
+    print("  KICK d ms   weak reverse pulse after a set-down that clears the core (0 0 = off)")
     print("  (check the pitch: GOTO a1 then POS should read -210 0)")
     print("chess_gantry: PING / HOME / GOTO 3.5 4 / MAG 170 / PULSE / TOPPLE / OFF / STATUS")
     print("Ctrl-C or 'quit' to leave (drops the magnet on the way out).\n")

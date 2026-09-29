@@ -277,8 +277,9 @@ class TestClosedLoop(unittest.TestCase):
 
 
 class TestMotionTuning(unittest.TestCase):
-    """Grip/settle pauses reach the board as DWELL, and a value out of range
-    is refused before anything is sent."""
+    """Grip/settle pauses, gridline power and the clearing pulse reach the
+    board as DWELL, GRID and KICK, and a value out of range is refused before
+    anything is sent."""
 
     def test_setting_sends_dwell_with_the_merged_values(self):
         robot = _make_robot()
@@ -287,7 +288,7 @@ class TestMotionTuning(unittest.TestCase):
         self.assertEqual(applied["settle_ms"], 600)
         self.assertEqual(applied["grip_ms"], rig.MOTION_TUNING["grip_ms"][0])
         self.assertEqual(robot._link.commands,
-                         [f"DWELL {applied['grip_ms']} 600", "GRID 100"])
+                         [f"DWELL {applied['grip_ms']} 600", "GRID 100", "KICK 110 20"])
 
     def test_out_of_range_is_refused_before_sending(self):
         robot = _make_robot()
@@ -296,9 +297,10 @@ class TestMotionTuning(unittest.TestCase):
             robot.set_tuning(settle_ms=9999)
         with self.assertRaises(ValueError):
             robot.set_tuning(grid_pct=150)
-        for gone in ("bogus", "kick_duty", "kick_ms"):
-            with self.assertRaises(ValueError, msg=gone):
-                robot.set_tuning(**{gone: 1})
+        with self.assertRaises(ValueError):
+            robot.set_tuning(kick_duty=300)
+        with self.assertRaises(ValueError):
+            robot.set_tuning(bogus=1)
         self.assertEqual(robot._link.commands, [])
 
 

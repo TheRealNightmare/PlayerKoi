@@ -49,18 +49,21 @@ Three things that are easy to get wrong:
   every connect. Every carry — `MOVE`, `KNIGHT` and `BURY` — is the
   same cycle:
   1. coil **off**, then drive to the source square (nothing is dragged there)
-  2. coil **on** (attract, or repel if `POL 1`), wait the grip pause, then carry the piece
+  2. coil **on** (attract, or repel if `POL 1`), wait the grip pause
+     (1000 ms by default), then carry the piece
      (knights, castling rooks and `BURY` run the gridlines between squares
      at the gridline power — 100% by default, set with `GRID <pct>` or the
      web UI's Gridline power slider)
-  3. coil **off**, then wait the settle pause (1200 ms by default) before
-     the carriage moves on
-  Every leg ramps its speed up from 8 mm/s to the feed rate and back down
-  (150 mm/s², `START_MMS` / `ACCEL_MMS2` in the sketch) instead of starting
-  and stopping dead, so a carried piece isn't jerked off the magnet.
-  The settle pause is what stops a piece being towed: it gives the core's
-  leftover magnetism time to die away. If a piece still follows the carriage,
-  raise it (`DWELL <grip> <settle>`, or the web UI's Settle slider).
+  3. coil **off**, a short, weak pulse the opposite way to clear leftover
+     magnetism from the core (`KICK`, 110/255 for 20 ms by default), coil off
+     again, then wait the settle pause (1000 ms by default) before the
+     carriage moves on
+  Every leg runs at a constant speed (the feed rate) from start to stop.
+  Without the clearing pulse, the core stays magnetised and pulls the next
+  piece toward the carriage before it arrives. If that still happens, raise
+  the pulse (`KICK <duty> <ms>`, or the web UI's Clear pulse sliders); if a
+  piece that was just set down gets pushed, lower it. If a piece still
+  follows the carriage away, raise the settle pause (`DWELL`).
 - **There are no limit switches on this build.** Position is dead reckoning
   from an assumed park in the origin corner — the corner of travel beyond h1,
   not h1's centre. Nothing can detect that it is wrong.
@@ -78,11 +81,11 @@ stop there rather than continuing — later steps assume the earlier ones.
 | # | Do | Expect |
 |---|---|---|
 | 1 | Flash `chessbot_v1.ino` | compiles and uploads |
-| 2 | Open the serial monitor at 115200 | `READY ChessBot-V1 r8` — **if the revision is lower, the sketch is stale; re-upload it** |
+| 2 | Open the serial monitor at 115200 | `READY ChessBot-V1 r9` — **if the revision is lower, the sketch is stale; re-upload it** |
 | 3 | **Park the carriage in the origin corner by hand** — the corner of travel beyond h1 (White's right-hand corner) | — |
 | 4 | `PING` | `OK PONG` |
 | 5 | `POS` | `OK POS 0.0 0.0` |
-| 5b | `DWELL`, then `GRID` | `OK DWELL 150 1200`, `OK GRID 100` — grip/settle pauses and gridline power; the web UI's Robot arm sliders change them |
+| 5b | `DWELL`, `GRID`, then `KICK` | `OK DWELL 1000 1000`, `OK GRID 100`, `OK KICK 110 20` — grip/settle pauses, gridline power and the clearing pulse; the web UI's Robot arm sliders change them |
 | 6 | `MAG 1` then `MAG 0` | `OK MAG 1` / `OK MAG 0`, coil audibly grabs and releases |
 | 7 | `GOTO a1`, then `POS` | `OK POS -415.0 60.0` — **this is the pitch check** |
 | 8 | `HOME` | `OK HOME`, carriage returns to the origin corner |
@@ -167,10 +170,12 @@ move has finished"; the Pi never has to guess.
 | `PULSE` | `OK PULSE` | raw full-power reverse kick, for the bench only. No move uses it |
 | `POL` | `OK POL 0` | what holds EVERY piece: 0 = attract (default), 1 = repel |
 | `POL 0\|1` | `OK POL <n>` | set it. RAM only — re-sent by the host on every connect |
-| `DWELL` | `OK DWELL 150 1200` | grip pause before a carry / settle pause after a set-down, ms |
+| `DWELL` | `OK DWELL 1000 1000` | grip pause before a carry / settle pause after a set-down, ms |
 | `DWELL <g> <s>` | `OK DWELL <g> <s>` | set both, 0–2000 ms each. RAM only — re-sent by the host on every connect |
 | `GRID` | `OK GRID 100` | magnet power on every gridline leg (knights, castling rook, `BURY`), % of full |
 | `GRID <pct>` | `OK GRID <pct>` | set it, 0–100. RAM only — re-sent by the host on every connect |
+| `KICK` | `OK KICK 110 20` | the weak reverse pulse after a set-down that clears the core: duty, ms |
+| `KICK <d> <ms>` | `OK KICK <d> <ms>` | set it: duty 0–255, ms 0–200; `KICK 0 0` turns it off. RAM only — re-sent by the host on every connect |
 | `HOME` | `OK HOME` | returns to the origin corner (beyond h1) and drops the coil |
 | `POS` | `OK POS x y` | current position in mm |
 | `MM -105 100` | `OK MM x y` | move to raw machine coordinates |

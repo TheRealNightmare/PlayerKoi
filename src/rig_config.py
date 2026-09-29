@@ -170,6 +170,11 @@ def grid_command(grid_pct):
     return f"GRID {int(grid_pct)}"
 
 
+def kick_command(kick_duty, kick_ms):
+    """The firmware command that sets the clearing pulse after a set-down."""
+    return f"KICK {int(kick_duty)} {int(kick_ms)}"
+
+
 def speed_command(feed_mms=None):
     """The firmware command that sets the feed rate."""
     return f"SPEED {float(rig.FEED_MMS if feed_mms is None else feed_mms):g}"

@@ -30,7 +30,8 @@
                           Every piece on this set has its magnet the same way
                           up, so one polarity holds them all (POL). Each carry is:
                           coil off -> drive to the source -> coil on, grip
-                          pause -> carry -> coil off -> settle pause.
+                          pause -> carry -> coil off -> weak reverse pulse
+                          (KICK) -> settle pause. Constant speed throughout.
      GOTO e4           -> OK GOTO e4        reposition, magnet untouched
      BURY e4 -215 10   -> OK BURY e4        lift the piece on e4 and park it
                           on a graveyard slot, given as a RAW MACHINE
@@ -47,10 +48,13 @@
      GRID              -> OK GRID 100       magnet power on every gridline
                                             leg (knight, castling rook, BURY)
      GRID <pct>        -> OK GRID <pct>     0-100 % of full (RAM only)
-     DWELL             -> OK DWELL 150 1200 pause after gripping, before the
+     DWELL             -> OK DWELL 1000 1000 pause after gripping, before the
                                             drag / pause after setting down,
                                             coil fully off, before moving on
      DWELL <g> <s>     -> OK DWELL <g> <s>  each 0-2000 ms
+     KICK              -> OK KICK 110 20    weak reverse pulse after a set-down
+                                            that clears the core: duty, ms
+     KICK <d> <ms>     -> OK KICK <d> <ms>  duty 0-255, ms 0-200; 0 0 = off
      MAG 0|1|2         -> OK MAG n          off / attract / repel
      PULSE             -> OK PULSE          raw full-power reverse kick, for
                                             the bench only.
@@ -149,18 +153,7 @@ const bool  FOLD_EDGE_WEAVE = false;
 // 40mm/s, the proven feed. SPEED changes it at runtime; the host also sends
 // SPEED on connect.
 float feedRateMMS = 40.0;
-
-// Every leg ramps up from START_MMS to the feed rate and back down again,
-// instead of starting and stopping dead. A carried piece rides on nothing but
-// the magnet, and an instant start at full feed jerked knights off the pole
-// on the L's long gridline run. 150 mm/s^2 reaches 40 mm/s in ~5 mm, so even
-// the half-square steps of a weave get most of their ramp.
-const float START_MMS   = 8.0;
-const float ACCEL_MMS2  = 150.0;
-
-// The same three, in step units along the leg's longer motor axis -- the
-// unit the step loop counts in. Set by recalcSpeed().
-float vMaxSteps, vMinSq, twoAccelSteps;
+unsigned int stepDelayUS;
 
 // ---------- magnet ----------
 // Cap at 255 only if the buck really is at ~6V. Lower if running on cells.
@@ -181,7 +174,10 @@ float vMaxSteps, vMinSq, twoAccelSteps;
 // An r6 board would still hold white by repel and shove it off its square.
 // r8 adds GRID, the gridline magnet power, which the host sends on connect --
 // an r7 board would answer ERR unknown GRID.
-#define FIRMWARE_REV 8
+// r9 brings KICK back: a weak reverse pulse after each set-down to clear the
+// core, sent on connect -- an r8 board would answer ERR unknown KICK. Also a
+// 1 s grip and settle by default, and constant speed (no acceleration ramp).
+#define FIRMWARE_REV 9
 
 // Which way the coil drives to HOLD a piece -- the same for every piece.
 // Attract is what the set was magnetised for; POL 1 flips it to repel, in case
@@ -205,18 +201,31 @@ int gridDuty() { return (int)((long)MAG_FULL * gridPct / 100); }
 // set-down has switched the coil fully OFF, stay put so the core's residual
 // magnetism fades and the piece is at rest before the carriage drives away --
 // leaving at once is what tows it. Both runtime, set by DWELL.
-// SETTLE is 1.2 s: 300 ms, and later 1000 ms, sometimes left the core
-// magnetised enough to tow the piece a few millimetres.
-const int GRIP_MS   = 150;
-const int SETTLE_MS = 1200;
+// GRIP is a full second, so the piece is firmly seated before the drag; the
+// old 150 ms let knights slip off on the gridline run. SETTLE is a second
+// too, after the clearing pulse below.
+const int GRIP_MS   = 1000;
+const int SETTLE_MS = 1000;
 int gripMS   = GRIP_MS;
 int settleMS = SETTLE_MS;
+
+// The clearing pulse after a set-down: a short, WEAK drive the opposite way
+// to the hold, to knock the leftover magnetism out of the core. Without it
+// the core stays magnetised and pulls the next piece toward the carriage
+// while it is still travelling there, coil off. It has to stay weak -- a
+// strong one shoves the piece it has just set down. Runtime, set by KICK;
+// KICK 0 0 turns it off.
+const int KICK_DUTY = 110;
+const int KICK_MS   = 20;
+int kickDuty = KICK_DUTY;
+int kickMS   = KICK_MS;
 
 // ---------- state ----------
 float posX = 0.0, posY = 0.0;
 
 float clampWeave(float v);
 void magHold(int duty);
+void magReverse(int duty);
 void magRelease();
 
 void setup() {
@@ -329,6 +338,18 @@ void handleCommand(String line) {
       gridPct = (int)pct;
     }
     Serial.println("OK GRID " + String(gridPct));
+  }
+
+  // The clearing pulse after a set-down: KICK <duty 0-255> <ms 0-200>.
+  else if (cmd == "KICK") {
+    if (arg.length() > 0) {
+      float d, ms;
+      if (!parseXY(arg, d, ms))            { Serial.println("ERR usage KICK <duty> <ms>"); return; }
+      if (d < 0 || d > 255 || ms < 0 || ms > 200) { Serial.println("ERR kick duty 0-255 ms 0-200"); return; }
+      kickDuty = (int)d;
+      kickMS = (int)ms;
+    }
+    Serial.println("OK KICK " + String(kickDuty) + " " + String(kickMS));
   }
 
   // Pauses around a carried piece: DWELL <grip_ms> <settle_ms>.
@@ -571,11 +592,24 @@ void magHold(int duty) {
   else             magAttract(duty);
 }
 
-// Set a piece down: coil straight off, then stay put for settleMS so the
-// core's residual magnetism dies away before the carriage leaves -- driving
-// off at once is what tows a piece. Pieces still towed: raise settle (DWELL).
+// The opposite of magHold, whichever way POL has it. Only the clearing pulse
+// uses it.
+void magReverse(int duty) {
+  if (holdByRepel) magAttract(duty);
+  else             magRepel(duty);
+}
+
+// Set a piece down: coil off, a moment for the piece to sit, the weak
+// clearing pulse (KICK), coil off again, then stay put for settleMS before
+// the carriage leaves -- driving off at once is what tows a piece.
 void magRelease() {
   magOff();
+  delay(30);
+  if (kickMS > 0 && kickDuty > 0) {
+    magReverse(kickDuty);
+    delay(kickMS);
+    magOff();
+  }
   delay(settleMS);
 }
 
@@ -589,20 +623,9 @@ void magPulse() {
 // ============================================================
 //  MOTION
 // ============================================================
+// Constant feed from the first step to the last -- no acceleration ramp.
 void recalcSpeed() {
-  vMaxSteps = feedRateMMS * stepsPerMM;
-  float vMin = min(START_MMS, feedRateMMS) * stepsPerMM;
-  vMinSq = vMin * vMin;
-  twoAccelSteps = 2.0 * ACCEL_MMS2 * stepsPerMM;
-}
-
-// Half a step period, in us, for the step `d` steps from the nearer end of
-// the leg: v = sqrt(vMin^2 + 2*a*d), capped at the feed. Symmetric, so the
-// leg decelerates into its end exactly as it accelerated out of its start.
-unsigned int halfPeriodUS(long d) {
-  float v = sqrt(vMinSq + twoAccelSteps * (float)d);
-  if (v > vMaxSteps) v = vMaxSteps;
-  return (unsigned int)(500000.0 / v);
+  stepDelayUS = (unsigned int)(1000000.0 / (2.0 * feedRateMMS * stepsPerMM));
 }
 
 void moveCoreXY(float mmX, float mmY) {
@@ -630,8 +653,6 @@ void moveCoreXY(float mmX, float mmY) {
 
   for (long i = 0; i < maxSteps; i++) {
     bool pA = false, pB = false;
-    long fromEnd = maxSteps - 1 - i;
-    unsigned int halfUS = halfPeriodUS(i < fromEnd ? i : fromEnd);
 
     errA -= stepsA;
     if (errA < 0) { errA += maxSteps; pA = true; }
@@ -640,11 +661,11 @@ void moveCoreXY(float mmX, float mmY) {
 
     if (pA) digitalWrite(stepPinA, HIGH);
     if (pB) digitalWrite(stepPinB, HIGH);
-    delayMicroseconds(halfUS);
+    delayMicroseconds(stepDelayUS);
 
     if (pA) digitalWrite(stepPinA, LOW);
     if (pB) digitalWrite(stepPinB, LOW);
-    delayMicroseconds(halfUS);
+    delayMicroseconds(stepDelayUS);
   }
 
   delay(60);

@@ -181,6 +181,12 @@ class TestMotionTuning(ConfigCase):
     def test_the_commands(self):
         self.assertEqual(rig_config.dwell_command(150, 300), "DWELL 150 300")
         self.assertEqual(rig_config.grid_command(80), "GRID 80")
+        self.assertEqual(rig_config.kick_command(110, 20), "KICK 110 20")
+
+    def test_the_clearing_pulse_round_trips(self):
+        rig_config.save(kick_duty=90, kick_ms=40, path=self.path)
+        settings = self.load()
+        self.assertEqual((settings["kick_duty"], settings["kick_ms"]), (90, 40))
 
     def test_the_gridline_power_round_trips_and_is_clamped(self):
         rig_config.save(grid_pct=80, path=self.path)

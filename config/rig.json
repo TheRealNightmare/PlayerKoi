@@ -1,7 +1,9 @@
 {
   "polarity": "attract",
   "graveyard": [],
-  "grip_ms": 150,
-  "settle_ms": 1200,
-  "grid_pct": 100
+  "grip_ms": 1000,
+  "settle_ms": 1000,
+  "grid_pct": 100,
+  "kick_duty": 110,
+  "kick_ms": 20
 }

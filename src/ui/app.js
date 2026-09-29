@@ -256,6 +256,13 @@ const TUNING = [
   // Knights, the castling rook and graveyard trips; straight moves are always full.
   { key: "grid_pct", el: document.getElementById("tuneGridPct"),
     val: document.getElementById("tuneGridPctVal"), unit: "%" },
+  // Weak reverse pulse after each set-down. A piece that slides toward the
+  // carriage before it arrives: raise it. A set-down piece that gets pushed:
+  // lower it.
+  { key: "kick_duty", el: document.getElementById("tuneKickDuty"),
+    val: document.getElementById("tuneKickDutyVal"), unit: "" },
+  { key: "kick_ms", el: document.getElementById("tuneKickMs"),
+    val: document.getElementById("tuneKickMsVal"), unit: " ms" },
 ];
 for (const t of TUNING) {
   t.el.oninput = () => { t.val.textContent = t.el.value + t.unit; };
