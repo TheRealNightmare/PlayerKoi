@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Player Koi Admin</title>
+<link rel="stylesheet" href="/neoretro.css">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body class="admin-page">
+<div id="shell">
+  <header id="brandBar" class="nr-clr nr-border nr-shadow" data-color="green">
+    <h1 id="brand">PLAYER <span>KOI</span> ADMIN</h1>
+    <span id="adminMode" class="nr-badge nr-clr nr-border" data-color="black">menu</span>
+  </header>
+
+  <div id="adminStatus">
+    <a id="adminBack" href="/" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+       data-color="black" data-pressable>&larr; Back</a>
+    <span id="adminRobot" class="nr-badge nr-clr nr-border" data-color="black">no robot</span>
+    <span id="adminPos" class="nr-badge nr-clr nr-border" data-color="blue">X ? · Y ?</span>
+  </div>
+
+  <div id="adminMessage" class="nr-alert nr-clr nr-border" data-color="red" hidden></div>
+  <div id="adminGameNote" class="nr-alert nr-clr nr-border" data-color="yellow" hidden>
+    A game is running. Admin moves pause the engine and update the tracked board.
+    <span id="adminEnginePaused" hidden>Engine is paused &mdash; press play on the game screen to resume.</span>
+  </div>
+
+  <div id="adminLayout">
+    <div class="col">
+      <div id="adminBoardWrap">
+        <div id="adminRanks" class="admin-labels"></div>
+        <div id="adminBoard" class="nr-border nr-shadow"></div>
+        <div></div>
+        <div id="adminFiles" class="admin-labels"></div>
+      </div>
+      <div id="adminHint" class="menu-hint"></div>
+    </div>
+
+    <div class="col admin-side">
+      <section class="nr-card nr-clr nr-border nr-shadow" data-color="black">
+        <div class="nr-card-header"><h2 class="nr-card-title">Tool</h2></div>
+        <div class="admin-toggle">
+          <button id="toolGoto" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+                  data-color="blue" data-pressable>Go to square</button>
+          <button id="toolMove" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+                  data-color="black" data-pressable>Move piece</button>
+        </div>
+        <div id="moveOptions">
+          <div class="admin-toggle">
+            <span class="admin-label">Piece</span>
+            <button id="colWhite" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+                    data-color="blue" data-pressable>White</button>
+            <button id="colBlack" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+                    data-color="black" data-pressable>Black</button>
+          </div>
+          <div class="admin-toggle">
+            <span class="admin-label">Path</span>
+            <button id="pathStraight" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+                    data-color="blue" data-pressable>Straight</button>
+            <button id="pathWeave" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+                    data-color="black" data-pressable>Weave</button>
+          </div>
+          <button id="clearFrom" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+                  data-color="black" data-pressable>Clear selection</button>
+        </div>
+      </section>
+
+      <section class="nr-card nr-clr nr-border nr-shadow" data-color="black">
+        <div class="nr-card-header"><h2 class="nr-card-title">Arm</h2></div>
+        <div class="admin-toggle">
+          <button id="homeBtn" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+                  data-color="yellow" data-pressable>Home</button>
+          <button id="haltBtn" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+                  data-color="red" data-pressable>Halt</button>
+          <button id="posBtn" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+                  data-color="black" data-pressable>Refresh position</button>
+        </div>
+        <div class="admin-toggle">
+          <span class="admin-label">Magnet</span>
+          <button id="magOff" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+                  data-color="black" data-pressable>Off</button>
+          <button id="magAttract" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+                  data-color="magenta" data-pressable>Attract</button>
+          <button id="magRepel" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+                  data-color="cyan" data-pressable>Repel</button>
+        </div>
+      </section>
+
+      <section class="nr-card nr-clr nr-border nr-shadow" data-color="black">
+        <div class="nr-card-header"><h2 class="nr-card-title">Log</h2></div>
+        <ol id="adminLog"></ol>
+      </section>
+    </div>
+  </div>
+</div>
+
+<!-- Same dialog as the main page, for the Home warning. -->
+<dialog id="nrDialog" class="nr-dialog">
+  <form method="dialog" class="nr-dialog-body">
+    <h2 id="nrDialogTitle" class="nr-dialog-title"></h2>
+    <p id="nrDialogText" class="nr-dialog-text"></p>
+    <div class="nr-dialog-actions">
+      <button id="nrDialogCancel" value="cancel"
+              class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+              data-color="black" data-pressable>Cancel</button>
+      <button id="nrDialogOk" value="ok"
+              class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+              data-color="green" data-pressable>OK</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="/admin.js"></script>
+</body>
+</html>

@@ -49,12 +49,14 @@ missing, rather than the process refusing to start.
 import argparse
 import json
 import time
+from collections import deque
 from pathlib import Path
 from threading import Event, Lock, Thread
 
 import chess
 import cv2
 
+import admin_moves
 import coach
 from board_state import load_calibration, matrix_to_fen_placement
 from engine import DEFAULT_SKILL, DEFAULT_THINK_S, ChessEngine, describe_move
@@ -845,6 +847,206 @@ def _validate_correction(body):
     return None
 
 
+class AdminConsole:
+    """What /admin does: drive the arm by hand, square to square.
+
+    Works on the menu and in a running game. In a game the arm is shared with
+    the engine and the board is shared with the tracker, so every action that
+    moves anything first turns the engine off (and leaves it off -- the human
+    resumes from the game screen) and holds tracking paused while it runs. A
+    piece move then rewrites the tracked position to match, through the same
+    correction path the board editor uses; otherwise the camera would see a
+    piece jump and flag it, or the software board in AI vs AI would simply be
+    wrong from then on.
+    """
+
+    LOG_SIZE = 100
+
+    def __init__(self, session, frame_source=lambda: None):
+        self._session = session
+        self._frame = frame_source
+        self._lock = Lock()
+        self._log = deque(maxlen=self.LOG_SIZE)
+        self._pos = None
+        self._engine_paused = False
+
+    def state(self):
+        session = self._session
+        robot = session.robot
+        loop = session.loop
+        with self._lock:
+            log = list(self._log)
+            pos = self._pos
+            engine_paused = self._engine_paused
+        return {
+            "mode": session.mode,
+            "running": session.running,
+            "park_square": rig.ORIGIN_SQUARE,
+            "robot": None if robot is None else {
+                "port": robot.port,
+                "homed": robot.homed,
+                "halted": robot.halted,
+                "busy": robot.busy,
+                "message": robot.message,
+                "white_polarity": robot.white_polarity,
+                "supported": robot.speaks_squares,
+            },
+            "pos": None if pos is None else {"x_mm": pos[0], "y_mm": pos[1]},
+            "matrix": loop.current_matrix if loop is not None else None,
+            "turn": loop.turn if loop is not None else None,
+            "engine_paused": engine_paused and session.running,
+            "log": log[::-1],  # newest first
+        }
+
+    def _record(self, action, command, ok, detail):
+        entry = {"t": time.time(), "action": action, "command": command, "ok": ok}
+        entry["reply" if ok else "error"] = detail
+        with self._lock:
+            self._log.append(entry)
+
+    def action(self, body):
+        """Returns (http_status, payload). Never raises."""
+        name = body.get("action")
+        robot = self._session.robot
+        if robot is None:
+            return 400, {"error": "no robot attached -- start with --robot"}
+        if name != "halt" and not robot.speaks_squares:
+            return 400, {"error": "/admin speaks square names, which only the legacy "
+                                  "(chessbot_v1) firmware understands"}
+        handler = {
+            "goto": self._goto, "move": self._move, "mag": self._mag,
+            "pos": self._query_pos, "home": self._home, "halt": self._halt,
+        }.get(name)
+        if handler is None:
+            return 400, {"error": "action must be one of goto/move/mag/pos/home/halt"}
+        try:
+            status, payload = handler(robot, body)
+        except ValueError as exc:  # a bad square, colour or magnet mode
+            return 400, {"error": str(exc), **self.state()}
+        return status, {**payload, **self.state()}
+
+    # ---- actions ---------------------------------------------------------
+
+    def _send(self, robot, action, command, require_homed=True):
+        try:
+            reply = robot.admin_send(command, require_homed=require_homed)
+        except GantryError as exc:
+            self._record(action, command, False, str(exc))
+            return False, str(exc)
+        self._record(action, command, True, reply)
+        return True, reply
+
+    def _query_pos(self, robot, body=None):
+        ok, reply = self._send(robot, "pos", "POS", require_homed=False)
+        if not ok:
+            return 400, {"error": reply}
+        pos = admin_moves.parse_pos(reply)
+        with self._lock:
+            self._pos = pos
+        return 200, {"ok": True}
+
+    def _quiet_game(self):
+        """Engine off, tracking held. Returns a release callable, or raises
+        GantryError if the engine's own move still holds the arm."""
+        session = self._session
+        if session.robot.busy:
+            raise GantryError("arm is busy -- wait for the current move to finish")
+        controller = session.engine_controller
+        if controller is not None:
+            controller.configure(enabled=False)
+            with self._lock:
+                self._engine_paused = True
+        loop = session.loop
+        if loop is None:
+            return lambda: None
+        # Long enough for a full-board drag; released the moment it's done.
+        loop.set_paused(True, lapse_s=60.0)
+        return lambda: loop.set_paused(False)
+
+    def _run(self, robot, action, command, require_homed=True):
+        """Sends one moving command, quieting a running game around it."""
+        try:
+            release = self._quiet_game()
+        except GantryError as exc:
+            self._record(action, command, False, str(exc))
+            return False, str(exc)
+        try:
+            return self._send(robot, action, command, require_homed)
+        finally:
+            release()
+
+    def _goto(self, robot, body):
+        command = admin_moves.goto_command(body.get("square"))
+        ok, reply = self._run(robot, "goto", command)
+        if not ok:
+            return 409 if "busy" in reply else 400, {"error": reply}
+        self._query_pos(robot)
+        return 200, {"ok": True}
+
+    def _move(self, robot, body):
+        frm, to = body.get("from"), body.get("to")
+        command = admin_moves.move_command(frm, to, body.get("colour"),
+                                           bool(body.get("weave")))
+        loop = self._session.loop
+        moved = None
+        if loop is not None:
+            # Checked before the arm moves: a refusal after the drag would
+            # leave the real board and the tracked one disagreeing.
+            moved, error = admin_moves.apply_to_matrix(loop.current_matrix, frm, to)
+            if error is None:
+                error = _validate_correction({"matrix": moved, "turn": loop.turn})
+            if error is not None:
+                self._record("move", command, False, error)
+                return 400, {"error": error}
+
+        ok, reply = self._run(robot, "move", command)
+        if not ok:
+            return 409 if "busy" in reply else 400, {"error": reply}
+        if moved is not None and self._session.loop is loop:
+            loop.apply_manual_correction(moved, loop.turn, self._frame())
+        self._query_pos(robot)
+        return 200, {"ok": True}
+
+    def _mag(self, robot, body):
+        command = admin_moves.mag_command(body.get("mode"))
+        # Switching the coil OFF is a safety action and must work on a halted
+        # arm; energising it goes through the same quieting as a move.
+        if body.get("mode") == "off":
+            ok, reply = self._send(robot, "mag", command, require_homed=False)
+        else:
+            ok, reply = self._run(robot, "mag", command, require_homed=False)
+        if not ok:
+            return 409 if "busy" in reply else 400, {"error": reply}
+        return 200, {"ok": True}
+
+    def _home(self, robot, body):
+        try:
+            release = self._quiet_game()
+        except GantryError as exc:
+            self._record("home", "HOME", False, str(exc))
+            return 409, {"error": str(exc)}
+        try:
+            ok, error = self._session.park()
+        finally:
+            release()
+        self._record("home", "HOME", ok, None if ok else error)
+        if not ok:
+            return 400, {"error": error}
+        with self._lock:
+            self._pos = None  # parked at the origin; ask rather than assume
+        self._query_pos(robot)
+        return 200, {"ok": True}
+
+    def _halt(self, robot, body):
+        controller = self._session.robot_controller
+        if controller is not None:
+            controller.halt("halted from /admin")
+        else:
+            robot.halt("halted from /admin")
+        self._record("halt", "!", True, "halted -- home to re-enable")
+        return 200, {"ok": True}
+
+
 def start_server(host, port, buffer, session):
     """HTTP server that reads `session` live rather than closing over one
     mode's objects, so a mode switch is visible to the very next request.
@@ -855,11 +1057,21 @@ def start_server(host, port, buffer, session):
     """
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+    def latest_frame():
+        stream = session.capture_stream
+        return None if stream is None else stream.get_latest()[0]
+
+    admin = AdminConsole(session, frame_source=latest_frame)
+
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             path, _, query = self.path.partition("?")
             if path == "/" or path in ("/index.html",):
                 self._send_asset("index.html")
+            elif path in ("/admin", "/admin/"):
+                self._send_asset("admin.html")
+            elif path == "/admin/state.json":
+                self._send_json(200, admin.state())
             elif path == "/state.json":
                 self._send_json(200, self._state_payload())
             elif path == "/board.json":
@@ -951,7 +1163,8 @@ def start_server(host, port, buffer, session):
         def do_POST(self):
             path, _, _query = self.path.partition("?")
             known = ("/board/correct", "/board/undo", "/board/pause", "/engine",
-                     "/robot", "/mode", "/mode/stop", "/reset", "/coach", "/puzzle")
+                     "/robot", "/mode", "/mode/stop", "/reset", "/coach", "/puzzle",
+                     "/admin")
             if path not in known:
                 self.send_error(404)
                 return
@@ -962,6 +1175,13 @@ def start_server(host, port, buffer, session):
                 body = json.loads(raw) if raw else {}
             except json.JSONDecodeError:
                 self._send_json(400, {"error": "invalid JSON body"})
+                return
+
+            # ---- /admin: valid on the menu and in a game alike -------------
+
+            if path == "/admin":
+                status, payload = admin.action(body)
+                self._send_json(status, payload)
                 return
 
             # ---- mode control: valid on the menu, unlike everything else ----

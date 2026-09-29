@@ -310,3 +310,44 @@ body {
 #puzzleProgress { font-size: 13px; font-weight: 700; }
 #puzzleThemes { font-size: 12px; gap: 10px 14px; }
 .menu-hint { font-size: 11px; opacity: 0.65; }
+
+/* --- /admin -------------------------------------------------------------- */
+
+a.nr-btn { text-decoration: none; display: inline-flex; align-items: center; }
+#menuAdminBtn { margin-top: -8px; }
+
+#adminStatus { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: center; }
+#adminMessage, #adminGameNote { max-width: 760px; text-align: center; }
+#adminLayout { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; justify-content: center; }
+.admin-side { align-items: stretch; width: 340px; max-width: 100%; }
+.admin-side .nr-card { width: 100%; }
+
+#adminBoardWrap { display: grid; grid-template-columns: auto auto; gap: 4px; }
+#adminBoard {
+  display: grid;
+  grid-template-columns: repeat(8, min(10vw, 58px));
+  grid-template-rows: repeat(8, min(10vw, 58px));
+  border-radius: var(--radius);
+}
+#adminBoard.locked .sq { cursor: not-allowed; }
+#adminBoard.locked .sq:hover { outline: none; }
+.admin-labels { display: grid; font-size: 12px; font-weight: 700; place-items: center; }
+#adminRanks { grid-template-rows: repeat(8, min(10vw, 58px)); padding-right: 2px; }
+#adminFiles { grid-template-columns: repeat(8, min(10vw, 58px)); }
+#adminHint { max-width: 480px; text-align: center; min-height: 1.4em; }
+#adminHint.error { color: var(--red); font-weight: 700; }
+
+.admin-toggle { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+.admin-label { font-size: 12px; font-weight: 700; min-width: 52px; }
+
+#adminLog {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+}
+#adminLog li { padding: 3px 0; border-bottom: 1px solid var(--bright-black); overflow-wrap: anywhere; }
+#adminLog li.err { color: var(--red); }

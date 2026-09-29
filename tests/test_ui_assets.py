@@ -24,6 +24,8 @@ HTML = (UI / "index.html").read_text()
 JS = (UI / "app.js").read_text()
 NEORETRO = (UI / "neoretro.css").read_text()
 APP_CSS = (UI / "app.css").read_text()
+ADMIN_HTML = (UI / "admin.html").read_text()
+ADMIN_JS = (UI / "admin.js").read_text()
 
 
 class TestAssetsExist(unittest.TestCase):
@@ -85,6 +87,20 @@ class TestMarkupMatchesTheScript(unittest.TestCase):
         wanted = set(re.findall(r'querySelector\("#([A-Za-z0-9_-]+)', JS))
         self.assertEqual(wanted - ids_in_html, set())
 
+    def test_every_id_the_admin_script_looks_up_exists_in_its_page(self):
+        ids_in_html = set(re.findall(r'id="([^"]+)"', ADMIN_HTML))
+        wanted = set(re.findall(r'getElementById\("([^"]+)"\)', ADMIN_JS))
+        self.assertTrue(wanted)
+        self.assertEqual(wanted - ids_in_html, set())
+
+    def test_the_admin_page_links_its_script_and_nothing_is_inline(self):
+        self.assertIn('src="/admin.js"', ADMIN_HTML)
+        self.assertNotIn("<script>", ADMIN_HTML)
+        self.assertNotIn("<style>", ADMIN_HTML)
+
+    def test_the_menu_links_to_admin(self):
+        self.assertIn('href="/admin"', HTML)
+
     def test_the_dialog_the_helper_drives_is_in_the_page(self):
         for name in ("nrDialog", "nrDialogTitle", "nrDialogText",
                      "nrDialogOk", "nrDialogCancel"):
@@ -120,8 +136,8 @@ class TestDesignSystem(unittest.TestCase):
         self.assertIn("--foreground: #3c3836", NEORETRO)
 
     def test_every_data_color_used_is_one_the_system_defines(self):
-        used = set(re.findall(r'data-color="([^"]+)"', HTML))
-        used |= set(re.findall(r'dataset\.color = "([^"]+)"', JS))
+        used = set(re.findall(r'data-color="([^"]+)"', HTML + ADMIN_HTML))
+        used |= set(re.findall(r'dataset\.color = "([^"]+)"', JS + ADMIN_JS))
         # Values assigned from a variable are checked by the branch below.
         used |= {"green", "red", "blue", "yellow", "magenta", "cyan", "black"}
         for color in used:

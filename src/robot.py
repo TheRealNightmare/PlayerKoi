@@ -297,6 +297,45 @@ class Robot:
         bring-up -- the game path always goes through play()."""
         return self._link.send(command)
 
+    @property
+    def speaks_squares(self):
+        """Whether the firmware takes square names (chessbot_v1). The native
+        chess_gantry takes mm waypoints, which /admin does not speak."""
+        return self._planner is not robot_moves
+
+    def admin_send(self, command, require_homed=True):
+        """One hand-driven command from /admin. Returns the firmware's reply.
+
+        Guarded like play(): nothing is sent while another sequence holds the
+        arm, and a failure drops the coil and halts. `require_homed=False` is
+        for POS and MAG -- reading the position and switching the coil off
+        have to keep working on a halted robot, which is when they matter.
+        """
+        with self._lock:
+            if self.stale_firmware:
+                raise GantryError(self.message)
+            if self.busy:
+                raise GantryError("arm is busy -- wait for the current move to finish")
+            if require_homed and self.halted:
+                raise GantryError(f"robot is halted: {self.message} -- home it first")
+            if require_homed and not self.homed:
+                raise GantryError("robot has not been homed")
+            self.busy = True
+        try:
+            self._on_status(f"admin: {command}", None)
+            return self._link.send(command)
+        except GantryError as exc:
+            try:
+                self._link.send("OFF")
+            except GantryError:
+                pass
+            self._fail(str(exc))
+            raise
+        finally:
+            with self._lock:
+                self.busy = False
+            self._on_status(None, None)
+
     def halt(self, reason):
         """Stops the gantry now and refuses further moves until home()."""
         self._link.abort()
@@ -321,6 +360,10 @@ class Robot:
                 raise GantryError(f"robot is halted: {self.message}")
             if not self.homed:
                 raise GantryError("robot has not been homed")
+            if self.busy:
+                # /admin holds the arm. Two sequences interleaving on one
+                # serial line would drag a piece somewhere neither asked for.
+                raise GantryError("arm is busy with another command")
             self.busy = True
 
         # The legacy planner buries captures on a graveyard slot and has to be
