@@ -1,8 +1,9 @@
 """Which mode is running, and what it takes to swap one for another.
 
-The two ways of playing need very different stacks -- normal mode wants a
-camera, a classifier and a tracker; AI vs AI wants none of them -- but they
-share the one thing that is genuinely expensive to rebuild: the gantry.
+The ways of playing need very different stacks -- normal, guided and puzzle
+modes want a camera, a classifier and a tracker; AI vs AI wants none of them --
+but they share the one thing that is genuinely expensive to rebuild: the
+gantry.
 
     for the whole process          rebuilt per mode
     -------------------------      --------------------------------------
@@ -28,10 +29,17 @@ from threading import Event, Lock, Thread
 MENU = "menu"
 NORMAL = "normal"
 AI_VS_AI = "ai_vs_ai"
+GUIDED = "guided"
+PUZZLE = "puzzle"
+
+# Menu order, and everything start() accepts.
+MODES = (AI_VS_AI, NORMAL, GUIDED, PUZZLE)
 
 MODE_TITLES = {
     NORMAL: "Play the engine",
     AI_VS_AI: "AI vs AI",
+    GUIDED: "Guided game",
+    PUZZLE: "Puzzles",
 }
 
 MODE_BLURBS = {
@@ -39,6 +47,10 @@ MODE_BLURBS = {
             "answers for Black.",
     AI_VS_AI: "Stockfish plays both sides and the arm places every move. No "
               "camera -- set all 32 pieces up first.",
+    GUIDED: "Play White with a coach: it shows the best move on the board, "
+            "grades each of yours, and lets you take back a blunder.",
+    PUZZLE: "Set up the position shown, press OK, and find the winning line. "
+            "The camera checks your setup; the arm plays Black.",
 }
 
 
@@ -58,13 +70,21 @@ class Session:
 
     def __init__(self, engine, robot=None, calibration=None, classifier=None,
                  build_normal=None, build_ai=None, poll_interval=0.12, on_mode_change=None,
-                 defaults=None):
+                 defaults=None, build_guided=None, build_puzzle=None, puzzles=None,
+                 puzzle_summary=None):
         self._engine = engine
         self._robot = robot
         self._calibration = Path(calibration) if calibration else None
         self._classifier = Path(classifier) if classifier else None
         self._build_normal = build_normal
         self._build_ai = build_ai
+        self._build_guided = build_guided
+        self._build_puzzle = build_puzzle
+        self._puzzles = Path(puzzles) if puzzles else None
+        # Your puzzle rating etc. for the menu, read fresh each poll so it
+        # reflects the game just finished. Injected for the same reason the
+        # builders are.
+        self._puzzle_summary = puzzle_summary
         self._poll_interval = poll_interval
         self._on_mode_change = on_mode_change or (lambda mode: None)
         # What the menu's controls start at -- whatever the process was
@@ -112,12 +132,18 @@ class Session:
             if self._robot is None:
                 return "no arm attached -- start with --robot"
             return None
-        if mode == NORMAL:
+        if mode in (NORMAL, GUIDED, PUZZLE):
             if self._calibration is None or not self._calibration.exists():
                 return f"no calibration at {self._calibration} -- run src/calibrate.py"
             if self._classifier is None or not self._classifier.exists():
                 return (f"no classifier at {self._classifier} -- see "
                         "training/train_classifier.py and deploy.py")
+            if mode == PUZZLE:
+                # The line comes from the puzzle file; Stockfish isn't used.
+                if self._puzzles is None or not self._puzzles.exists():
+                    return (f"no puzzles at {self._puzzles} -- run "
+                            "tools/make_puzzles.py")
+                return None
             if not self._engine.available:
                 return self._engine.error or "no chess engine"
             return None
@@ -133,25 +159,31 @@ class Session:
                 "reason": self.unavailable_reason(mode),
                 "available": self.unavailable_reason(mode) is None,
             }
-            for mode in (AI_VS_AI, NORMAL)
+            for mode in MODES
         ]
 
     def state(self):
         with self._lock:
             mode, settings = self._mode, dict(self._settings)
-        return {
+        state = {
             "mode": mode,
             "settings": settings,
             "modes": self.available_modes(),
             "defaults": dict(self._defaults),
             "has_robot": self._robot is not None,
         }
+        if self._puzzle_summary is not None:
+            try:
+                state["puzzle_progress"] = self._puzzle_summary()
+            except Exception:
+                pass  # a broken progress file must not take the menu down
+        return state
 
     # ------------------------------------------------------------- start/stop
 
     def start(self, mode, settings=None):
         """Builds the stack for `mode`. Raises ModeError if it can't run."""
-        if mode not in (NORMAL, AI_VS_AI):
+        if mode not in MODES:
             raise ModeError(f"unknown mode {mode!r}")
         reason = self.unavailable_reason(mode)
         if reason is not None:
@@ -160,7 +192,12 @@ class Session:
             raise ModeError(f"{self._mode} is already running -- stop it first")
 
         settings = dict(settings or {})
-        builder = self._build_ai if mode == AI_VS_AI else self._build_normal
+        builder = {
+            AI_VS_AI: self._build_ai,
+            NORMAL: self._build_normal,
+            GUIDED: self._build_guided,
+            PUZZLE: self._build_puzzle,
+        }[mode]
         if builder is None:
             raise ModeError(f"{mode} is not wired up in this process")
 

@@ -601,14 +601,18 @@ python3 src/robot.py --port /dev/ttyACM0 --console
   can only be judged after training on real photos.
 - **`MultiStepper` does not accelerate**, so `MAX_SPEED` is also the start
   speed. Too high and it silently loses steps rather than failing loudly.
-- Not built: puzzle mode, coach, match analysis, remote play.
+- Not built: match analysis, remote play. (Puzzle mode and the coach are in
+  `src/puzzles.py` and `src/coach.py`; see the README.)
 
 ---
 
 ## 13. File map
 
 ```
-config/                  calibration.json (git-ignored, from calibrate.py)
+config/                  calibration.json (git-ignored, from calibrate.py);
+                         puzzles.json (puzzle rating and history)
+data/                    puzzles.csv -- Lichess puzzle slice (CC0), from
+                         tools/make_puzzles.py
 docs/
   DESIGN.md              this document
   HARDWARE.md            circuit, wiring tables, bring-up, calibration
@@ -616,7 +620,7 @@ firmware/
   chess_gantry/          the Arduino Uno sketch — CoreXY + magnet, no chess
 models/                  exported NCNN classifier (git-ignored)
 src/                     capture, calibration, classification, tracking,
-                         resolution, engine, web UI, robot
+                         resolution, engine, coach, puzzles, web UI, robot
 tests/                   92 unit tests — no hardware required
 training/                dataset collection, training, export (mostly off-Pi)
 README.md                overview and workflow

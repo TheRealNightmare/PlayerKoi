@@ -216,5 +216,11 @@ class MoveResolver:
 
         self.board = chess.Board(f"{placement} {turn_char} {castling or '-'} - 0 1")
 
+    def set_board(self, board):
+        """Adopts `board` exactly -- castling rights and en passant included,
+        which resync() would have to guess at. For positions that come from a
+        FEN rather than from the camera (puzzle mode)."""
+        self.board = board.copy(stack=False)
+
     def reset(self):
         self.board = chess.Board()

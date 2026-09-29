@@ -15,6 +15,16 @@ what it takes to swap one for another. The two are very different stacks:
                       sides and the arm places every move, so the position is
                       known rather than observed.
 
+    Guided game       Play the engine, plus the coach (src/coach.py): White's
+                      best move drawn on the board every turn, each of your
+                      moves graded, Black's explained, and the arm held back
+                      after a Mistake or Blunder so it can be taken back.
+
+    Puzzles           The same camera stack, driven by PuzzleController over
+                      src/puzzles.py: show a layout, check it with the camera,
+                      have Black's moves from the stored line placed, judge
+                      White's.
+
 Moves are real algebraic notation (SAN) via python-chess, not a physical
 before/after description. There is no automatic rescan in this design -- when
 a settle can't be resolved with confidence the UI flags it and offers a manual
@@ -45,10 +55,12 @@ from threading import Event, Lock, Thread
 import chess
 import cv2
 
+import coach
 from board_state import load_calibration, matrix_to_fen_placement
 from engine import DEFAULT_SKILL, DEFAULT_THINK_S, ChessEngine, describe_move
 from headless_loop import HeadlessLoop, NullStream
 import move_policy
+import puzzles
 import rig
 import rig_config
 from robot import GantryError, RobotController, open_gantry
@@ -170,8 +182,10 @@ class EngineController:
     thinking.
     """
 
+    kind = "engine"
+
     def __init__(self, loop, engine, think_s=DEFAULT_THINK_S, robot=None,
-                 both_sides=False, move_delay_s=0.0, noob=False):
+                 both_sides=False, move_delay_s=0.0, noob=False, coach_think_s=None):
         self._loop = loop
         self._engine = engine
         self._think_s = think_s
@@ -194,6 +208,24 @@ class EngineController:
         self._headline = None
         self._extra = None
         self._message = None if engine.available else engine.error
+        # Guided mode. The coach reads every position at full strength
+        # (analyse() ignores Skill Level), hints White's best move, grades
+        # White's move once played, and explains Black's. On a Mistake or a
+        # Blunder it holds Black's reply until the human decides whether to
+        # take the move back -- a take-back after the arm has answered would
+        # mean undoing the arm's move too, including a capture it cannot
+        # un-bury.
+        self._coach = coach_think_s is not None
+        self._coach_think_s = coach_think_s
+        self._analysis = {}          # fen -> analyse() result, this game
+        self._reviewed = set()       # fens whose arriving move has been judged
+        self._hint_fen = None
+        self._coach_eval = None
+        self._hint = None
+        self._review = None
+        self._opponent_note = None
+        self._awaiting_fen = None    # set while a Mistake/Blunder waits on a decision
+        self._takeback = None
         # Set by close() to end _run. A mode switch builds a new controller
         # around the same shared engine, so without this each switch would
         # leak a thread that goes on driving the old mode's loop.
@@ -214,8 +246,23 @@ class EngineController:
                 "skill": self._engine.skill,
                 "style": "noob" if self._noob else "normal",
                 "message": self._message,
+                "coach": self._coach_state() if self._coach else None,
             }
 
+    def _coach_state(self):
+        """Called with self._lock held."""
+        evaluation = None
+        if self._coach_eval is not None:
+            evaluation = {"cp": self._coach_eval.get("score_cp"),
+                          "mate": self._coach_eval.get("mate")}
+        return {
+            "eval": evaluation,
+            "hint": self._hint,
+            "review": self._review,
+            "opponent_note": self._opponent_note,
+            "awaiting_decision": self._awaiting_fen is not None,
+            "takeback": self._takeback,
+        }
     def configure(self, enabled=None, skill=None):
         with self._lock:
             if skill is not None:
@@ -254,8 +301,14 @@ class EngineController:
                     self._message = f"engine error: {exc}"
 
     def _maybe_move(self):
+        if not self._engine.available:
+            return
+        # The coach runs whether or not the engine is switched on to play:
+        # hints and grades are useful with Black moved by hand, too.
+        if self._coach and self._coach_step():
+            return  # a Mistake/Blunder is waiting on take back / continue
         with self._lock:
-            if not self._enabled or not self._engine.available:
+            if not self._enabled:
                 return
         # Engine plays Black -- unless it's playing both sides -- and only
         # when nothing is already pending.
@@ -315,6 +368,109 @@ class EngineController:
                 time.sleep(self._move_delay_s)
                 self.notify()
 
+    # ------------------------------------------------------------- the coach
+
+    def _analyse(self, board):
+        """analyse(), cached per position for the life of this game. The hint
+        for a position and the grade of the move played from it need the same
+        search, and a take-back revisits a position already searched."""
+        key = board.fen()
+        if key not in self._analysis:
+            if len(self._analysis) > 512:
+                self._analysis.clear()
+            self._analysis[key] = self._engine.analyse(board, self._coach_think_s)
+        return self._analysis[key]
+
+    def _coach_step(self):
+        """One pass of the coach over the current position. Returns True if
+        Black must hold its reply."""
+        board = self._loop.board_copy
+        fen = board.fen()
+
+        with self._lock:
+            if self._awaiting_fen is not None:
+                if self._awaiting_fen == fen:
+                    return True
+                # Undo, Edit board or Reset moved the game on without an
+                # answer; the question no longer applies.
+                self._awaiting_fen = None
+            if not board.move_stack and self._takeback is None:
+                self._review = self._opponent_note = None
+
+        if board.move_stack and fen not in self._reviewed:
+            self._reviewed.add(fen)
+            played = board.move_stack[-1]
+            before = board.copy()
+            before.pop()
+            after_info = self._analyse(board)
+            if before.turn == chess.WHITE:
+                best_info = self._analyse(before)
+                review = coach.review(before, played, best_info, after_info) if best_info else None
+                with self._lock:
+                    self._review = review
+                    self._takeback = None
+                    self._hint = None
+                    if after_info is not None:
+                        self._coach_eval = after_info
+                    if review is not None and review["label"] in coach.NEEDS_DECISION:
+                        self._awaiting_fen = fen
+                        return True
+            else:
+                note = f"Black played {before.san(played)}: {coach.explain(before, played, after_info)}"
+                with self._lock:
+                    self._opponent_note = note
+                    if after_info is not None:
+                        self._coach_eval = after_info
+
+        if board.turn == chess.WHITE and self._hint_fen != fen:
+            self._hint_fen = fen
+            if board.is_game_over():
+                with self._lock:
+                    self._hint = None
+                return False
+            info = self._analyse(board)
+            with self._lock:
+                self._hint = coach.hint(board, info)
+                if info is not None:
+                    self._coach_eval = info
+        return False
+
+    def coach_decision(self, decision):
+        """Answers the Mistake/Blunder question. Returns (ok, error).
+
+        "takeback" undoes the move in software and says how to undo it on the
+        board; the tracker needs nothing more, since putting the piece back
+        makes the board match the restored position and so reads as no change.
+        "continue" lets Black reply.
+        """
+        if not self._coach:
+            return False, "the coach is not running in this mode"
+        if decision not in ("takeback", "continue"):
+            return False, "decision must be \"takeback\" or \"continue\""
+        with self._lock:
+            if self._awaiting_fen is None:
+                return False, "nothing is waiting for a decision"
+            self._awaiting_fen = None
+
+        if decision == "takeback":
+            board = self._loop.board_copy
+            if not board.move_stack:
+                return False, "nothing to take back"
+            move = board.move_stack[-1]
+            with self._lock:
+                # Forget the grade, so replaying the same move is judged again.
+                self._reviewed.discard(board.fen())
+            board.pop()
+            if self._loop.undo_last_move() is None:
+                return False, "nothing to take back"
+            with self._lock:
+                self._takeback = coach.takeback_instruction(board, move)
+                self._review = None
+            # The restored position gets a fresh hint.
+            self._hint_fen = None
+        self.notify()
+        return True, None
+
     def close(self, timeout=2.0):
         """Stops the thread. Deliberately does NOT close the engine: the
         Stockfish process is shared across modes and owned by whoever built
@@ -325,6 +481,339 @@ class EngineController:
             self._enabled = False
         self._wake.set()
         self._thread.join(timeout=timeout)
+
+
+class PuzzleController:
+    """Runs puzzle mode: shows a layout, checks it with the camera, has Black's
+    moves from the line placed, and judges White's.
+
+    Sits in the slot Session keeps for EngineController and answers the same
+    calls (configure/attach_robot/notify/close/state), so Session needs no
+    special case for it. The puzzle logic proper -- picking, scoring, the
+    state machine -- is puzzles.py; this is the part that touches the loop and
+    the arm.
+
+    Black's replies are the stored line, never Stockfish: the puzzle is only a
+    puzzle if the defence is the one it was built around.
+    """
+
+    kind = "puzzle"
+
+    def __init__(self, loop, bank, progress, filters=None, robot=None, graveyard=None,
+                 rng=None):
+        self._loop = loop
+        self._bank = bank
+        self._progress = progress
+        self._filters = dict(filters or {})
+        self._robot = robot
+        # The Robot (not the controller), whose graveyard ring the human has to
+        # empty before a new puzzle -- None without an arm.
+        self._graveyard = graveyard
+        self._rng = rng
+        self._lock = Lock()
+        self._wake = Event()
+        self._stopped = Event()
+
+        self._run = None
+        self._mismatches = None
+        self._message = None
+        self._instruction = None
+        self._extra = None
+        self._hint_square = None
+        self._solution = None
+        self._solution_uci = None
+        self._rating_delta = None
+        self._base_len = 0          # move_stack length when the current step began
+        self._opponent_armed = False
+
+        self._next_puzzle()
+        self._thread = Thread(target=self._run_thread, daemon=True)
+        self._thread.start()
+
+    # -------------------------------------------------------- Session's calls
+
+    def configure(self, enabled=None, skill=None):
+        """Session calls configure(enabled=False) on Reset and on Stop. For a
+        puzzle that means: stop whatever the line was doing and go back to
+        setting this same puzzle up."""
+        if enabled is False:
+            with self._lock:
+                run = self._run
+            if run is not None:
+                self._setup(run.puzzle)
+        self.notify()
+
+    def attach_robot(self, robot):
+        with self._lock:
+            self._robot = robot
+
+    def notify(self):
+        self._wake.set()
+
+    def close(self, timeout=2.0):
+        self._stopped.set()
+        self._wake.set()
+        self._thread.join(timeout=timeout)
+        self._loop.set_paused(False)
+
+    def state(self):
+        with self._lock:
+            run = self._run
+            board = self._loop.board_copy
+            expected = self._loop.expected_move
+            phase = run.phase if run else None
+            target = run.puzzle.target_matrix() if run and phase == puzzles.SETUP else None
+            # Live rather than stored: Reset re-seeds the tracked board after
+            # the setup began, and the list has to be against what's there.
+            diff = puzzles.setup_diff(self._loop.current_matrix, target) if target else None
+            return {
+                "phase": phase,
+                "puzzle": run.puzzle.info() if run else None,
+                "target": target,
+                "diff": diff,
+                "mismatches": self._mismatches,
+                "graveyard_pieces": len(self._graveyard.graveyard) if self._graveyard else 0,
+                "to_move": "white" if board.turn == chess.WHITE else "black",
+                "instruction": self._instruction,
+                "extra": self._extra,
+                "expected_uci": expected.uci() if expected is not None else None,
+                "hint_square": self._hint_square,
+                "solution": self._solution,
+                "solution_uci": self._solution_uci,
+                "wrong_note": run.wrong_note if run else None,
+                "result": run.result() if run and run.finished else None,
+                "rating_delta": self._rating_delta,
+                "progress": self._progress.summary(),
+                "message": self._message,
+            }
+
+    # ------------------------------------------------------- the UI's actions
+
+    def action(self, name):
+        """One of ready/hint/solution/skip/next. Returns (ok, payload) where
+        payload is an error string on failure, else extra fields for the
+        reply."""
+        with self._lock:
+            run = self._run
+        if run is None:
+            if name in ("next", "skip"):
+                self._next_puzzle()
+                return True, {}
+            return False, self._message or "no puzzle loaded"
+
+        if name == "ready":
+            return self._ready(run)
+        if name == "hint":
+            if run.phase != puzzles.SOLVING:
+                return False, "a hint is only for your own move"
+            with self._lock:
+                self._hint_square = run.hint()
+            return True, {}
+        if name == "solution":
+            if run.finished or run.phase == puzzles.SETUP:
+                return False, "no puzzle in progress"
+            board = self._loop.board_copy
+            remaining = run.solution[run.index:]
+            with self._lock:
+                run.reveal()
+                self._solution = coach.line_san(board, remaining, limit=len(remaining))
+                self._solution_uci = [m.uci() for m in remaining]
+            self._finish(run)
+            return True, {}
+        if name in ("skip", "next"):
+            if not run.finished and not run.recorded and run.phase != puzzles.SETUP:
+                # Walking away mid-line: a miss already made still counts.
+                self._record(run, puzzles.FAILED if run.failed_once else puzzles.SKIPPED)
+            elif run.phase == puzzles.SETUP and not run.recorded and name == "skip":
+                self._record(run, puzzles.SKIPPED)
+            self._next_puzzle()
+            return True, {}
+        return False, f"unknown puzzle action {name!r}"
+
+    def _ready(self, run):
+        """The human says the board is set up. Make the camera agree first."""
+        if run.phase != puzzles.SETUP:
+            return False, "the puzzle has already started"
+        read = self._loop.read_board()
+        if read is None:
+            return False, "no camera frame yet -- try again in a moment"
+        mismatches = puzzles.color_mismatches(read, run.puzzle.target_matrix())
+        with self._lock:
+            self._mismatches = mismatches or None
+        if mismatches:
+            return False, (f"{len(mismatches)} square(s) don't match the puzzle: "
+                           + ", ".join(m["square"] for m in mismatches[:8]))
+
+        self._loop.set_position(run.puzzle.board())
+        if self._graveyard is not None:
+            # Whatever the ring held belongs to the last game; the human has
+            # just been told to clear it along with the rest of the setup.
+            self._graveyard.clear_graveyard()
+        with self._lock:
+            self._message = None
+            run.begin()
+            self._opponent_armed = False
+        # Only after begin(): the thread re-pauses on every pass it still
+        # sees SETUP, and would otherwise hold tracking for a full lapse.
+        self._loop.set_paused(False)
+        self.notify()
+        return True, {}
+
+    # ---------------------------------------------------------------- driving
+
+    def _run_thread(self):
+        while not self._stopped.is_set():
+            self._wake.wait(timeout=1.0)
+            self._wake.clear()
+            if self._stopped.is_set():
+                return
+            try:
+                self._step()
+            except Exception as exc:
+                with self._lock:
+                    self._message = f"puzzle error: {exc}"
+
+    def _step(self):
+        with self._lock:
+            run = self._run
+        if run is None:
+            return
+        if run.phase == puzzles.SETUP:
+            # Held paused while pieces are being moved around, so the tracker
+            # doesn't flag every half-built position. Refreshed here once a
+            # second; if this thread dies the pause lapses on its own.
+            self._loop.set_paused(True)
+            return
+        board = self._loop.board_copy
+        if len(board.move_stack) < self._base_len:
+            # Undo or Edit board went behind us. Follow rather than fight.
+            self._base_len = len(board.move_stack)
+        if run.phase == puzzles.OPPONENT:
+            self._step_opponent(run, board)
+        elif run.phase == puzzles.SOLVING:
+            self._step_solving(run, board)
+
+    def _step_opponent(self, run, board):
+        move = run.next_move
+        if self._opponent_armed:
+            if len(board.move_stack) > self._base_len:
+                # The tracker accepted it -- camera-confirmed after the arm, or
+                # placed by hand and matched against expected_move.
+                with self._lock:
+                    self._opponent_armed = False
+                    self._instruction = self._extra = None
+                    run.opponent_done()
+                    self._base_len = len(board.move_stack)
+                    self._hint_square = None
+                if run.finished:
+                    self._finish(run)
+            return
+
+        if move not in board.legal_moves:
+            with self._lock:
+                self._message = "the board no longer matches the puzzle -- press Next or Reset"
+            return
+        headline, extra = describe_move(board, move)
+        with self._lock:
+            self._opponent_armed = True
+            self._base_len = len(board.move_stack)
+            self._instruction, self._extra = headline, extra
+        # Whatever lands on the board next must be this move, arm or hand.
+        self._loop.set_expected_move(move)
+        robot = self._robot
+        if robot is not None and robot.ready:
+            ok, error = robot.execute(board, move)
+            if not ok:
+                with self._lock:
+                    self._message = f"robot stopped: {error} -- place Black's move by hand"
+        self.notify()  # look for the accepted move straight away
+
+    def _step_solving(self, run, board):
+        if len(board.move_stack) <= self._base_len:
+            return
+        played = board.move_stack[-1]
+        before = board.copy()
+        before.pop()
+        if run.player_moved(before, played):
+            with self._lock:
+                self._base_len = len(board.move_stack)
+                self._hint_square = None
+            if run.finished:
+                self._finish(run)
+            else:
+                self.notify()
+            return
+
+        # Wrong. Take it back in software and say how to take it back on the
+        # board; putting the piece back then reads as no change at all.
+        self._loop.undo_last_move()
+        with self._lock:
+            run.wrong_note = (f"{before.san(played)} isn't it -- "
+                              f"{coach.takeback_instruction(before, played)}, then try again")
+            self._base_len = len(board.move_stack) - 1
+
+    def _finish(self, run):
+        if not run.recorded:
+            self._record(run, run.result())
+
+    def _record(self, run, result):
+        run.recorded = True
+        delta = self._progress.record(run.puzzle, result)
+        with self._lock:
+            self._rating_delta = delta
+
+    def _next_puzzle(self):
+        f = self._filters
+        rating_range = None
+        target = None
+        if f.get("rating_mode") == "range":
+            rating_range = (int(f.get("rating_min") or 0), int(f.get("rating_max") or 4000))
+        else:
+            target = self._progress.rating
+        kwargs = {} if self._rng is None else {"rng": self._rng}
+        puzzle = self._bank.pick(
+            rating_range=rating_range, target=target,
+            themes=f.get("themes") or (), max_pieces=f.get("max_pieces") or None,
+            exclude=self._progress.recent_ids(), **kwargs,
+        )
+        if puzzle is None:
+            with self._lock:
+                self._run = None
+                self._message = "no puzzle matches those filters -- widen them on the menu"
+            return
+        self._setup(puzzle)
+
+    def _setup(self, puzzle):
+        self._loop.set_expected_move(None)
+        self._loop.set_paused(True)
+        with self._lock:
+            self._run = puzzles.PuzzleRun(puzzle)
+            self._mismatches = None
+            self._message = None
+            self._instruction = self._extra = None
+            self._hint_square = None
+            self._solution = None
+            self._solution_uci = None
+            self._rating_delta = None
+            self._opponent_armed = False
+
+
+def _puzzle_filters(settings):
+    """The menu's puzzle settings, cleaned. Anything malformed is dropped
+    rather than refused -- a bad filter just means a wider choice."""
+    filters = {"rating_mode": "range" if settings.get("puzzle_rating_mode") == "range" else "adaptive"}
+    for key, name in (("puzzle_min", "rating_min"), ("puzzle_max", "rating_max"),
+                      ("puzzle_max_pieces", "max_pieces")):
+        try:
+            value = int(settings.get(key))
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            filters[name] = value
+    themes = settings.get("puzzle_themes") or []
+    if isinstance(themes, list):
+        filters["themes"] = [t for t in themes if t in puzzles.MENU_THEMES]
+    return filters
 
 
 def _validate_correction(body):
@@ -400,7 +889,12 @@ def start_server(host, port, buffer, session):
                         "flag_reason": flag_reason,
                         "turn": loop.turn,
                         "paused": loop.is_paused,
-                        "engine": engine_controller.state() if engine_controller else None,
+                        "engine": (engine_controller.state()
+                                   if engine_controller and engine_controller.kind == "engine"
+                                   else None),
+                        "puzzle": (engine_controller.state()
+                                   if engine_controller and engine_controller.kind == "puzzle"
+                                   else None),
                         "robot": robot_controller.state() if robot_controller else None,
                     }
                 )
@@ -457,7 +951,7 @@ def start_server(host, port, buffer, session):
         def do_POST(self):
             path, _, _query = self.path.partition("?")
             known = ("/board/correct", "/board/undo", "/board/pause", "/engine",
-                     "/robot", "/mode", "/mode/stop", "/reset")
+                     "/robot", "/mode", "/mode/stop", "/reset", "/coach", "/puzzle")
             if path not in known:
                 self.send_error(404)
                 return
@@ -503,7 +997,33 @@ def start_server(host, port, buffer, session):
                 self._send_json(409, {"error": "no mode is running -- pick one first"})
                 return
 
+            if path == "/coach":
+                decide = getattr(engine_controller, "coach_decision", None)
+                if decide is None:
+                    self._send_json(400, {"error": "the coach is not running in this mode"})
+                    return
+                ok, error = decide(body.get("decision"))
+                if not ok:
+                    self._send_json(400, {"error": error})
+                    return
+                self._send_json(200, {"ok": True, "engine": engine_controller.state()})
+                return
+
+            if path == "/puzzle":
+                if engine_controller is None or engine_controller.kind != "puzzle":
+                    self._send_json(400, {"error": "puzzle mode is not running"})
+                    return
+                ok, result = engine_controller.action(body.get("action"))
+                if not ok:
+                    self._send_json(400, {"error": result, "puzzle": engine_controller.state()})
+                    return
+                self._send_json(200, {"ok": True, **result, "puzzle": engine_controller.state()})
+                return
+
             if path == "/engine":
+                if engine_controller.kind != "engine":
+                    self._send_json(400, {"error": "there is no engine opponent in this mode"})
+                    return
                 engine_controller.configure(
                     enabled=body.get("enabled"), skill=body.get("skill")
                 )
@@ -696,6 +1216,13 @@ def parse_args():
     parser.add_argument("--harvest", type=Path, nargs="?", const=DEFAULT_HARVEST, default=None,
                         help="save labelled crops from every resolved move, to grow the training "
                              f"set as you play (default dir: {DEFAULT_HARVEST})")
+    parser.add_argument("--coach-think", type=float, default=1.0,
+                        help="Guided game: seconds the coach analyses each position "
+                             "(at full strength, whatever the opponent's skill)")
+    parser.add_argument("--puzzles", type=Path, default=puzzles.DEFAULT_BANK,
+                        help="puzzle file, made by tools/make_puzzles.py")
+    parser.add_argument("--puzzle-progress", type=Path, default=puzzles.DEFAULT_PROGRESS,
+                        help="where your puzzle rating and history are kept")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--host", default="0.0.0.0")
     return parser.parse_args()
@@ -748,15 +1275,16 @@ def _open_robot(args):
     return robot
 
 
-def _make_builders(args, engine, buffer, session_ref):
-    """The two per-mode stacks, as callables for Session.
+def _make_builders(args, engine, buffer, session_ref, progress=None):
+    """The per-mode stacks, as callables for Session.
 
     Both are closures rather than methods so session.py stays free of the
     camera stack entirely -- importing picamera2 or ncnn is what would stop
     --ai-vs-ai running off the Pi, and that import must not happen until
     normal mode is actually asked for.
 
-    Each returns (loop, capture_stream, engine_controller, tick).
+    Each returns (loop, capture_stream, engine_controller, tick). Returns
+    (build_normal, build_ai, build_guided, build_puzzle).
     """
 
     def on_update_factory(harvester=None):
@@ -797,7 +1325,8 @@ def _make_builders(args, engine, buffer, session_ref):
         )
         return loop, None, controller, None
 
-    def build_normal(settings):
+    def build_tracking():
+        """The camera half every camera mode shares: (loop, stream, tick)."""
         # Imported here, not at module scope: picamera2 and the ncnn loader
         # are the reason this mode can't run off the Pi, and AI vs AI must not
         # pay for them.
@@ -836,13 +1365,6 @@ def _make_builders(args, engine, buffer, session_ref):
             motion_thresh=args.motion_thresh,
         )
         buffer.set_board(loop.current_matrix, None, False, None)
-        controller = EngineController(
-            loop, engine,
-            think_s=setting(settings, "think", args.engine_think),
-            robot=None,
-            both_sides=False,
-            noob=bool(setting(settings, "noob", False)),
-        )
 
         def tick():
             live_frame, _timestamp = stream.get_latest()
@@ -852,9 +1374,39 @@ def _make_builders(args, engine, buffer, session_ref):
 
         # CaptureStream.stop() is the teardown hook; Session calls .close().
         stream.close = lambda: (stream.stop(), camera.close())
+        return loop, stream, tick
+
+    def build_normal(settings, coach_on=False):
+        loop, stream, tick = build_tracking()
+        think = setting(settings, "think", args.engine_think)
+        controller = EngineController(
+            loop, engine,
+            think_s=think,
+            robot=None,
+            both_sides=False,
+            noob=bool(setting(settings, "noob", False)),
+            # The coach thinks longer than the opponent: its answer is the one
+            # the human learns from, and it runs at full strength regardless.
+            coach_think_s=max(float(think), args.coach_think) if coach_on else None,
+        )
         return loop, stream, controller, tick
 
-    return build_normal, build_ai
+    def build_guided(settings):
+        return build_normal(settings, coach_on=True)
+
+    def build_puzzle(settings):
+        bank = puzzles.PuzzleBank.load(args.puzzles)
+        loop, stream, tick = build_tracking()
+        session = session_ref()
+        controller = PuzzleController(
+            loop, bank, progress or puzzles.PuzzleProgress.load(args.puzzle_progress),
+            filters=_puzzle_filters(settings),
+            robot=None,  # attached by Session once the RobotController exists
+            graveyard=session.robot if session is not None else None,
+        )
+        return loop, stream, controller, tick
+
+    return build_normal, build_ai, build_guided, build_puzzle
 
 
 def main():
@@ -879,12 +1431,16 @@ def main():
 
     buffer = BoardBuffer()
     holder = {}
-    build_normal, build_ai = _make_builders(args, engine, buffer, lambda: holder.get("session"))
+    progress = puzzles.PuzzleProgress.load(args.puzzle_progress)
+    build_normal, build_ai, build_guided, build_puzzle = _make_builders(
+        args, engine, buffer, lambda: holder.get("session"), progress=progress)
 
     session = Session(
         engine, robot=robot,
         calibration=args.calibration, classifier=args.classifier,
         build_normal=build_normal, build_ai=build_ai,
+        build_guided=build_guided, build_puzzle=build_puzzle,
+        puzzles=args.puzzles, puzzle_summary=progress.summary,
         poll_interval=args.poll_interval,
         defaults={
             "skill": args.engine_skill,

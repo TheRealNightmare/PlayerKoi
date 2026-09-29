@@ -22,7 +22,7 @@ import rig  # noqa: E402
 import session as session_mod  # noqa: E402
 from headless_loop import HeadlessLoop  # noqa: E402
 from robot import MockGantry, Robot, RobotController  # noqa: E402
-from session import AI_VS_AI, MENU, NORMAL, ModeError, Session  # noqa: E402
+from session import AI_VS_AI, GUIDED, MENU, NORMAL, PUZZLE, ModeError, Session  # noqa: E402
 import robot_moves_legacy  # noqa: E402
 
 
@@ -400,6 +400,65 @@ class TestClose(unittest.TestCase):
         self.assertIn("HOME", commands)
         self.assertIn("OFF", commands)
         self.assertLess(commands.index("HOME"), commands.index("OFF"))
+
+
+class TestGuidedAndPuzzleModes(unittest.TestCase):
+    """The two newer modes ride the same lifecycle, with their own builders
+    and one extra prerequisite for puzzles: the puzzle file."""
+
+    def make(self, puzzles_path=None, engine=None):
+        built = []
+
+        def builder(settings):
+            built.append((HeadlessLoop(), StubStream(), StubEngineController(), None))
+            return built[-1]
+
+        sess = Session(
+            engine or StubEngine(), robot=None, calibration=__file__, classifier=__file__,
+            build_normal=builder, build_ai=builder, build_guided=builder,
+            build_puzzle=builder, puzzles=puzzles_path, poll_interval=0.01,
+            puzzle_summary=lambda: {"rating": 1234},
+        )
+        sess._built = built
+        return sess
+
+    def test_both_are_on_the_menu(self):
+        modes = [m["mode"] for m in self.make().available_modes()]
+        self.assertEqual(modes, [AI_VS_AI, NORMAL, GUIDED, PUZZLE])
+
+    def test_guided_needs_what_normal_needs(self):
+        sess = self.make()
+        self.assertIsNone(sess.unavailable_reason(GUIDED))
+        engine = StubEngine()
+        engine.available = False
+        engine.error = "stockfish not found"
+        self.assertEqual(self.make(engine=engine).unavailable_reason(GUIDED), "stockfish not found")
+
+    def test_puzzles_need_the_puzzle_file_but_not_the_engine(self):
+        self.assertIn("make_puzzles.py", self.make().unavailable_reason(PUZZLE))
+        engine = StubEngine()
+        engine.available = False
+        sess = self.make(puzzles_path=__file__, engine=engine)
+        self.assertIsNone(sess.unavailable_reason(PUZZLE))
+
+    def test_each_starts_its_own_builder_and_stops_cleanly(self):
+        for mode in (GUIDED, PUZZLE):
+            sess = self.make(puzzles_path=__file__)
+            sess.start(mode, {"puzzle_themes": ["fork"]})
+            self.assertEqual(sess.mode, mode)
+            self.assertEqual(sess.state()["settings"], {"puzzle_themes": ["fork"]})
+            controller = sess.engine_controller
+            sess.stop()
+            self.assertTrue(controller.closed)
+            self.assertEqual(sess.mode, MENU)
+
+    def test_the_menu_state_carries_puzzle_progress(self):
+        self.assertEqual(self.make().state()["puzzle_progress"], {"rating": 1234})
+
+    def test_a_broken_progress_reader_does_not_break_the_menu(self):
+        sess = self.make()
+        sess._puzzle_summary = lambda: 1 / 0
+        self.assertNotIn("puzzle_progress", sess.state())
 
 
 if __name__ == "__main__":

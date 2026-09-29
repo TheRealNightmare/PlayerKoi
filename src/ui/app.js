@@ -56,11 +56,51 @@ let editMatrix = null;   // working copy while in edit mode, null when not editi
 
 let expectedUci = null;   // e.g. "d7d5" -- the engine move awaiting placement
 
+// Extra highlights and arrows, set each poll by the coach and puzzle renderers
+// and drawn by render(). Never shown over the board editor.
+let boardMarks = {};   // square name -> [class, ...]
+let boardArrows = [];  // [{ from: "e2", to: "e4", color: "bright-green" }]
+const MARK_CLASSES = ["hint-from", "hint-to", "hint-piece", "diff-add", "diff-remove",
+                      "diff-swap", "mismatch"];
+const arrowsEl = document.getElementById("arrows");
+const SVG_NS = "http://www.w3.org/2000/svg";
+
 function squareName(file, rank) {
   return "abcdefgh"[file] + (rank + 1);
 }
 
+function squareCenter(name) {
+  // viewBox is 0..8 in both axes, rank 8 at the top: White sits at the bottom.
+  const file = "abcdefgh".indexOf(name[0]);
+  const rank = Number(name[1]) - 1;
+  return [file + 0.5, 7 - rank + 0.5];
+}
+
+function drawArrows(list) {
+  arrowsEl.replaceChildren();
+  for (const a of list) {
+    const [x1, y1] = squareCenter(a.from);
+    const [x2, y2] = squareCenter(a.to);
+    const len = Math.hypot(x2 - x1, y2 - y1) || 1;
+    const ux = (x2 - x1) / len, uy = (y2 - y1) / len;
+    const head = 0.45, half = 0.26;
+    const bx = x2 - ux * head, by = y2 - uy * head;
+    // Drawn as a line plus a hand-built head rather than an SVG marker, so
+    // the colour can be a theme variable (markers don't inherit style).
+    const line = document.createElementNS(SVG_NS, "line");
+    line.setAttribute("x1", x1); line.setAttribute("y1", y1);
+    line.setAttribute("x2", bx); line.setAttribute("y2", by);
+    line.setAttribute("style", `stroke: var(--${a.color}); stroke-width: 0.17; stroke-linecap: round`);
+    const tip = document.createElementNS(SVG_NS, "polygon");
+    tip.setAttribute("points",
+      `${x2},${y2} ${bx - uy * half},${by + ux * half} ${bx + uy * half},${by - ux * half}`);
+    tip.setAttribute("style", `fill: var(--${a.color})`);
+    arrowsEl.append(line, tip);
+  }
+}
+
 function render(matrix) {
+  const editing = !!editMatrix;
   for (const { el, rank, file } of cells) {
     const label = matrix[rank][file];
     if (!label) { el.textContent = ""; el.className = el.className.replace(/ (white|black)-piece/, ""); }
@@ -73,7 +113,14 @@ function render(matrix) {
     const name = squareName(file, rank);
     el.classList.toggle("expect-from", !!expectedUci && expectedUci.slice(0, 2) === name);
     el.classList.toggle("expect-to", !!expectedUci && expectedUci.slice(2, 4) === name);
+    for (const c of MARK_CLASSES) el.classList.remove(c);
+    if (!editing) for (const c of boardMarks[name] || []) el.classList.add(c);
   }
+  drawArrows(editing ? [] : boardArrows);
+}
+
+function addMark(name, cls) {
+  (boardMarks[name] = boardMarks[name] || []).push(cls);
 }
 
 function closePicker() { pickerEl.style.display = "none"; }
@@ -139,7 +186,13 @@ const engineTitleEl = document.getElementById("engineTitle");
 const aiNoteEl = document.getElementById("aiNote");
 const engineToggleLabel = document.querySelector("#engineRow label");
 const modeBadgeEl = document.getElementById("modeBadge");
-const MODE_LABELS = { menu: "menu", ai_vs_ai: "AI vs AI", normal: "play the engine" };
+const MODE_LABELS = { menu: "menu", ai_vs_ai: "AI vs AI", normal: "play the engine",
+                      guided: "guided game", puzzle: "puzzles" };
+const MODE_COLORS = { ai_vs_ai: "magenta", normal: "cyan", guided: "green", puzzle: "yellow" };
+const engineBox = document.getElementById("engineBox");
+const coachBox = document.getElementById("coachBox");
+const puzzleBox = document.getElementById("puzzleBox");
+const evalBar = document.getElementById("evalBar");
 
 function applyMode(mode) {
   if (mode === currentMode) return;
@@ -149,10 +202,19 @@ function applyMode(mode) {
   gameEl.style.display = inGame ? "flex" : "none";
 
   const ai = mode === "ai_vs_ai";
+  const guided = mode === "guided";
+  const puzzle = mode === "puzzle";
   modeBadgeEl.textContent = MODE_LABELS[mode] || mode || "";
-  modeBadgeEl.dataset.color = inGame ? (ai ? "magenta" : "cyan") : "black";
+  modeBadgeEl.dataset.color = inGame ? (MODE_COLORS[mode] || "cyan") : "black";
   videoCol.style.display = ai || !inGame ? "none" : "flex";
   aiNoteEl.hidden = !ai;
+  coachBox.hidden = !guided;
+  evalBar.hidden = !guided;
+  puzzleBox.hidden = !puzzle;
+  // Puzzles have no engine opponent: Black's replies are the stored line.
+  engineBox.hidden = puzzle;
+  boardMarks = {};
+  boardArrows = [];
   engineTitleEl.textContent = ai ? "Engine (both sides)" : "Engine (Black)";
   engineToggleLabel.lastChild.textContent = ai ? " play" : " on";
 
@@ -388,6 +450,244 @@ saveBtn.onclick = async () => {
   }
 };
 
+// ---- the coach (guided game) ----------------------------------------
+
+const evalFill = document.getElementById("evalFill");
+const evalLabel = document.getElementById("evalLabel");
+const coachDecisionEl = document.getElementById("coachDecision");
+const coachDecisionTextEl = document.getElementById("coachDecisionText");
+const coachTakebackEl = document.getElementById("coachTakeback");
+const coachReviewEl = document.getElementById("coachReview");
+const coachReviewTextEl = document.getElementById("coachReviewText");
+const coachBetterEl = document.getElementById("coachBetter");
+const coachOpponentEl = document.getElementById("coachOpponent");
+const coachHintLabelEl = document.getElementById("coachHintLabel");
+const coachHintEl = document.getElementById("coachHint");
+const coachHintPlaceEl = document.getElementById("coachHintPlace");
+const coachHintTextEl = document.getElementById("coachHintText");
+const takebackBtn = document.getElementById("takebackBtn");
+const continueBtn = document.getElementById("continueBtn");
+
+const LABEL_COLORS = { Best: "green", Good: "blue", Inaccuracy: "yellow",
+                       Mistake: "magenta", Blunder: "red" };
+
+function winPercent(ev) {
+  // The same curve the server grades with (coach.win_percent).
+  if (ev.mate !== null && ev.mate !== undefined) return ev.mate > 0 ? 100 : 0;
+  const cp = ev.cp || 0;
+  return 50 + 50 * (2 / (1 + Math.exp(-0.00368 * cp)) - 1);
+}
+
+function renderEval(ev) {
+  if (!ev) { evalFill.style.height = "50%"; evalLabel.textContent = ""; return; }
+  evalFill.style.height = winPercent(ev) + "%";
+  if (ev.mate !== null && ev.mate !== undefined) {
+    evalLabel.textContent = (ev.mate > 0 ? "" : "-") + "M" + Math.abs(ev.mate);
+  } else {
+    const pawns = (ev.cp || 0) / 100;
+    evalLabel.textContent = (pawns >= 0 ? "+" : "") + pawns.toFixed(1);
+  }
+}
+
+function renderCoach(c) {
+  if (!c) return;
+  renderEval(c.eval);
+
+  const r = c.review;
+  coachReviewEl.hidden = !r;
+  if (r) {
+    coachReviewEl.textContent = r.san + " \u2014 " + r.label;
+    coachReviewEl.dataset.color = LABEL_COLORS[r.label] || "black";
+  }
+  coachReviewTextEl.textContent = r ? r.text : "";
+  coachBetterEl.textContent = r && r.better_san
+    ? "Better was " + r.better_san + (r.better_line ? "  (" + r.better_line.join(" ") + ")" : "")
+    : "";
+  coachOpponentEl.textContent = c.opponent_note || "";
+
+  const h = c.hint;
+  coachHintLabelEl.hidden = !h;
+  coachHintEl.textContent = h ? h.san : "";
+  coachHintPlaceEl.textContent = h ? h.headline + (h.extra ? " \u2014 " + h.extra : "") : "";
+  coachHintTextEl.textContent = h ? h.text : "";
+  // The suggestion goes on the board too, unless a Black move is waiting to
+  // be placed -- that move's own highlight is the one that matters then.
+  if (h && !expectedUci) {
+    const from = h.uci.slice(0, 2), to = h.uci.slice(2, 4);
+    addMark(from, "hint-from");
+    addMark(to, "hint-to");
+    boardArrows.push({ from, to, color: "bright-green" });
+  }
+
+  coachDecisionEl.hidden = !c.awaiting_decision;
+  if (c.awaiting_decision && r) {
+    coachDecisionTextEl.textContent = r.label + ": " + r.san + " \u2014 " + r.text +
+      ". The arm is waiting. Take it back?";
+  }
+  coachTakebackEl.hidden = !c.takeback;
+  coachTakebackEl.textContent = c.takeback ? "On the board: " + c.takeback : "";
+}
+
+async function postCoach(decision, btn) {
+  btn.disabled = true;
+  try {
+    const res = await fetch("/coach", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decision }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) await nrAlert("Coach", body.error || res.statusText);
+  } catch (e) {
+    await nrAlert("Coach", "Could not reach the coach: " + e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+takebackBtn.onclick = () => postCoach("takeback", takebackBtn);
+continueBtn.onclick = () => postCoach("continue", continueBtn);
+
+// ---- puzzles ----------------------------------------------------------
+
+const puzzlePhaseEl = document.getElementById("puzzlePhase");
+const puzzleInfoEl = document.getElementById("puzzleInfo");
+const puzzleMsgEl = document.getElementById("puzzleMsg");
+const puzzleWrongEl = document.getElementById("puzzleWrong");
+const puzzleGraveyardEl = document.getElementById("puzzleGraveyard");
+const puzzleStepsEl = document.getElementById("puzzleSteps");
+const puzzleMoveEl = document.getElementById("puzzleMove");
+const puzzleExtraEl = document.getElementById("puzzleExtra");
+const puzzleSolutionEl = document.getElementById("puzzleSolution");
+const puzzleRatingEl = document.getElementById("puzzleRating");
+const puzzleReadyBtn = document.getElementById("puzzleReadyBtn");
+const puzzleHintBtn = document.getElementById("puzzleHintBtn");
+const puzzleSolutionBtn = document.getElementById("puzzleSolutionBtn");
+const puzzleSkipBtn = document.getElementById("puzzleSkipBtn");
+const puzzleNextBtn = document.getElementById("puzzleNextBtn");
+
+const PHASES = {
+  setup: ["Set up the board", "yellow"],
+  opponent: ["Black is moving", "blue"],
+  solving: ["White to move \u2014 find the best move", "green"],
+  solved: ["Solved!", "green"],
+  revealed: ["Solution shown", "magenta"],
+};
+
+// The board a puzzle wants shown: the layout to build during setup, the live
+// board after that.
+function puzzleBoard(p) {
+  return p && p.phase === "setup" && p.target ? p.target : null;
+}
+
+function renderPuzzle(p) {
+  if (!p) return;
+  const [phaseText, phaseColor] = PHASES[p.phase] || ["No puzzle", "black"];
+  puzzlePhaseEl.textContent = phaseText;
+  puzzlePhaseEl.dataset.color = phaseColor;
+
+  const info = p.puzzle;
+  puzzleInfoEl.textContent = info
+    ? "Rated " + info.rating + " \u00b7 " + info.pieces + " pieces" +
+      (info.themes.length ? " \u00b7 " + info.themes.join(", ") : "")
+    : "";
+
+  puzzleMsgEl.hidden = !p.message;
+  puzzleMsgEl.textContent = p.message || "";
+  puzzleWrongEl.hidden = !p.wrong_note;
+  puzzleWrongEl.textContent = p.wrong_note ? "Not quite: " + p.wrong_note : "";
+
+  const setup = p.phase === "setup";
+  puzzleGraveyardEl.hidden = !(setup && p.graveyard_pieces > 0);
+  puzzleGraveyardEl.textContent = "First clear the " + p.graveyard_pieces +
+    " captured piece(s) off the ring around the board.";
+
+  // The to-do list. Rebuilt only when it changes, so it doesn't flicker.
+  const steps = setup && p.diff ? p.diff.steps : [];
+  const signature = JSON.stringify(steps);
+  if (puzzleStepsEl.dataset.signature !== signature) {
+    puzzleStepsEl.dataset.signature = signature;
+    puzzleStepsEl.replaceChildren(...steps.map((text) => {
+      const li = document.createElement("li");
+      li.textContent = text;
+      return li;
+    }));
+    if (setup && !steps.length) {
+      const li = document.createElement("li");
+      li.textContent = "Nothing to change \u2014 the board already matches.";
+      puzzleStepsEl.append(li);
+    }
+  }
+  puzzleStepsEl.hidden = !setup;
+  if (setup && p.diff) {
+    for (const sq of p.diff.add) addMark(sq, "diff-add");
+    for (const sq of p.diff.remove) addMark(sq, "diff-remove");
+    for (const sq of p.diff.swap) addMark(sq, "diff-swap");
+  }
+  if (setup && p.mismatches) for (const m of p.mismatches) addMark(m.square, "mismatch");
+
+  puzzleMoveEl.textContent = p.phase === "opponent" ? (p.instruction || "") : "";
+  puzzleExtraEl.textContent = p.phase === "opponent" ? (p.extra || "") : "";
+
+  if (p.hint_square) addMark(p.hint_square, "hint-piece");
+  puzzleSolutionEl.textContent = p.solution ? "Solution: " + p.solution.join(" ") : "";
+  if (p.solution_uci && p.phase === "revealed") {
+    p.solution_uci.forEach((uci, i) => boardArrows.push({
+      from: uci.slice(0, 2), to: uci.slice(2, 4),
+      color: i === 0 ? "bright-green" : "bright-blue",
+    }));
+  }
+
+  const prog = p.progress || {};
+  let rating = "Your rating " + prog.rating;
+  if (p.rating_delta !== null && p.rating_delta !== undefined && p.result) {
+    rating += " (" + (p.rating_delta >= 0 ? "+" : "") + p.rating_delta + ")";
+  }
+  rating += " \u00b7 streak " + prog.streak;
+  puzzleRatingEl.textContent = rating;
+
+  const live = p.phase === "opponent" || p.phase === "solving";
+  puzzleReadyBtn.hidden = !setup;
+  puzzleHintBtn.hidden = p.phase !== "solving";
+  puzzleSolutionBtn.hidden = !live;
+  puzzleSkipBtn.hidden = !(setup || live);
+  puzzleNextBtn.hidden = !(p.phase === "solved" || p.phase === "revealed" || !p.phase);
+}
+
+async function postPuzzle(action, btn, title) {
+  btn.disabled = true;
+  try {
+    const res = await fetch("/puzzle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) await nrAlert(title, body.error || res.statusText);
+  } catch (e) {
+    await nrAlert(title, "Could not reach the puzzle: " + e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+puzzleReadyBtn.onclick = async () => {
+  puzzleReadyBtn.textContent = "Checking the board...";
+  try {
+    await postPuzzle("ready", puzzleReadyBtn, "Board doesn't match yet");
+  } finally {
+    puzzleReadyBtn.textContent = "OK \u2014 board is set up";
+  }
+};
+puzzleHintBtn.onclick = () => postPuzzle("hint", puzzleHintBtn, "Hint");
+puzzleSolutionBtn.onclick = async () => {
+  const ok = await nrConfirm("Show the solution?",
+    "The puzzle will count as failed.", { okLabel: "Show it", okColor: "magenta" });
+  if (ok) postPuzzle("solution", puzzleSolutionBtn, "Solution");
+};
+puzzleSkipBtn.onclick = () => postPuzzle("skip", puzzleSkipBtn, "Skip");
+puzzleNextBtn.onclick = () => postPuzzle("next", puzzleNextBtn, "Next puzzle");
+
 // ---- the menu -------------------------------------------------------
 
 const menuCardsEl = document.getElementById("menuCards");
@@ -398,8 +698,49 @@ const setThink = document.getElementById("setThink");
 const setDelay = document.getElementById("setDelay");
 const setNoob = document.getElementById("setNoob");
 let settingsSeeded = false;
+const puzzleThemesEl = document.getElementById("puzzleThemes");
+const puzzleProgressEl = document.getElementById("puzzleProgress");
+const puzzleMin = document.getElementById("puzzleMin");
+const puzzleMax = document.getElementById("puzzleMax");
+const puzzleMaxPieces = document.getElementById("puzzleMaxPieces");
 
 setSkill.oninput = () => { setSkillVal.textContent = setSkill.value; };
+
+// Lichess theme keys, as puzzles.MENU_THEMES names them, with a readable label.
+const PUZZLE_THEMES = [
+  ["mateIn1", "mate in 1"], ["mateIn2", "mate in 2"], ["mateIn3", "mate in 3"],
+  ["fork", "fork"], ["pin", "pin"], ["skewer", "skewer"],
+  ["hangingPiece", "hanging piece"], ["discoveredAttack", "discovered attack"],
+  ["sacrifice", "sacrifice"], ["endgame", "endgame"], ["short", "short (2 moves)"],
+];
+for (const [key, label] of PUZZLE_THEMES) {
+  const wrap = document.createElement("label");
+  wrap.className = "nr-label";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.className = "nr-check";
+  box.dataset.color = "cyan";
+  box.value = key;
+  wrap.append(box, " " + label);
+  puzzleThemesEl.append(wrap);
+}
+
+function puzzleSettings() {
+  return {
+    puzzle_rating_mode: document.querySelector('input[name="puzzleRatingMode"]:checked').value,
+    puzzle_min: Number(puzzleMin.value),
+    puzzle_max: Number(puzzleMax.value),
+    puzzle_max_pieces: Number(puzzleMaxPieces.value),
+    puzzle_themes: [...puzzleThemesEl.querySelectorAll("input:checked")].map((b) => b.value),
+  };
+}
+
+function renderPuzzleProgress(prog) {
+  puzzleProgressEl.textContent = prog
+    ? "Your puzzle rating " + prog.rating + " \u00b7 streak " + prog.streak +
+      " (best " + prog.best_streak + ") \u00b7 solved " + prog.solved + " of " + prog.attempted
+    : "";
+}
 
 function seedSettings(defaults) {
   // Once only, from whatever the process was launched with -- after that the
@@ -475,6 +816,7 @@ async function startMode(mode, btn) {
           think: Number(setThink.value),
           move_delay: Number(setDelay.value),
           noob: setNoob.checked,
+          ...puzzleSettings(),
         },
       }),
     });
@@ -485,11 +827,14 @@ async function startMode(mode, btn) {
       return;
     }
     // Skill is an engine option, not a mode setting, so it goes the usual way.
-    await fetch("/engine", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ skill: Number(setSkill.value) }),
-    });
+    // Puzzles have no engine opponent to set it on.
+    if (mode !== "puzzle") {
+      await fetch("/engine", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ skill: Number(setSkill.value) }),
+      });
+    }
     applyMode(body.mode);
   } catch (e) {
     menuErrorEl.textContent = String(e);
@@ -556,6 +901,7 @@ async function poll() {
     if (data.mode === "menu") {
       // One poll drives both screens; on the menu there is no board to draw.
       renderMenu(data.modes);
+      renderPuzzleProgress(data.puzzle_progress);
       menuResetBtn.style.display = data.has_robot ? "inline-block" : "none";
       statusEl.textContent = "";
       lastOk = Date.now();
@@ -568,7 +914,12 @@ async function poll() {
     renderRobot(data.robot);
 
     const eng = data.engine || {};
-    expectedUci = eng.expected_uci || null;
+    const pz = data.puzzle;
+    expectedUci = (pz ? pz.expected_uci : eng.expected_uci) || null;
+    boardMarks = {};
+    boardArrows = [];
+    renderCoach(eng.coach);
+    renderPuzzle(pz);
     engineMoveEl.textContent = eng.thinking ? "thinking..." : (eng.instruction || "");
     engineExtraEl.textContent = eng.thinking ? "" : (eng.extra || "");
     engineMsgEl.textContent = eng.message || (eng.available ? "" : "engine unavailable");
@@ -581,7 +932,7 @@ async function poll() {
     engineToggle.disabled = !eng.available;
     engineSkill.disabled = !eng.available;
 
-    if (!editMatrix) render(liveMatrix);
+    if (!editMatrix) render(puzzleBoard(pz) || liveMatrix);
 
     if (data.move_seq > lastMoveSeq) {
       if (data.last_move) {

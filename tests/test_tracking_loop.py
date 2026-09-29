@@ -258,5 +258,59 @@ class TestUndoAndPause(unittest.TestCase):
             read.assert_called_once()
 
 
+class TestPuzzleHooks(unittest.TestCase):
+    """set_position and read_board: what puzzle mode adds to the tracker."""
+
+    def setUp(self):
+        self.capture_stream = _FakeCaptureStream()
+        self.updates = []
+        self.loop = tracking_loop.TrackingLoop(
+            capture_stream=self.capture_stream,
+            calibration_matrix=np.eye(3),
+            image_size=(10, 10),
+            classifier_model=None,
+            on_update=lambda *args: self.updates.append(args),
+        )
+
+    def test_set_position_keeps_en_passant_and_castling_exactly(self):
+        # resync() would re-infer castling from the placement and drop the
+        # en passant square; a FEN-sourced puzzle must keep both.
+        board = chess.Board("r3k2r/ppp2ppp/8/3pP3/8/8/PPP2PPP/R3K2R w Kq d6 0 12")
+        self.loop.set_position(board)
+        adopted = self.loop.board_copy
+        self.assertEqual(adopted.fen(), board.fen())
+        self.assertIn(chess.Move.from_uci("e5d6"), adopted.legal_moves)
+        self.assertEqual(self.loop.current_matrix, _matrix_from_board(board))
+        self.assertEqual(len(self.updates), 1)
+
+    def test_set_position_drops_a_pending_expected_move(self):
+        self.loop.set_expected_move(chess.Move.from_uci("e2e4"))
+        self.loop.set_position(chess.Board())
+        self.assertIsNone(self.loop.expected_move)
+
+    def test_the_next_settle_is_judged_from_the_adopted_position(self):
+        board = chess.Board("7k/8/8/8/8/8/4P3/K7 w - - 0 1")
+        self.loop.set_position(board)
+        after = board.copy()
+        after.push_uci("e2e4")
+        with mock.patch.object(tracking_loop, "read_settled_state",
+                               return_value=_consensus_for(_matrix_from_board(after))):
+            self.loop._handle_settle(self.capture_stream.frame)
+        self.assertEqual(self.updates[-1][1], "e4")
+
+    def test_read_board_returns_the_consensus_and_changes_nothing(self):
+        consensus = _consensus_for(standard_starting_matrix())
+        consensus[(4, 3)] = sc.UNRESOLVED
+        before = self.loop.current_matrix
+        with mock.patch.object(tracking_loop, "read_settled_state", return_value=consensus):
+            self.assertIs(self.loop.read_board(), consensus)
+        self.assertEqual(self.loop.current_matrix, before)
+        self.assertEqual(self.updates, [])
+
+    def test_read_board_without_a_frame_is_none(self):
+        self.capture_stream.frame = None
+        self.assertIsNone(self.loop.read_board())
+
+
 if __name__ == "__main__":
     unittest.main()

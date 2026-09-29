@@ -20,3 +20,7 @@ training/datasets
 # name is ever the one actually validated/exported/deployed.
 runs/detect/*-[0-9]
 runs/
+
+# Puzzle rating and history -- personal, rewritten after every puzzle
+config/puzzles.json
+config/*.json.tmp

@@ -182,6 +182,47 @@ class TrackingLoop:
             self._expected_move = None  # position changed; the engine must re-think
             self._on_update(self.current_matrix, None, frame, False, None)
 
+    def set_position(self, board, frame=None):
+        """Adopts `board` as the tracked position, exactly as given.
+
+        Puzzle mode's entry point: the position comes from a FEN, and the
+        camera has already confirmed the physical board matches it (see
+        read_board), so unlike apply_manual_correction nothing needs to be
+        inferred -- castling rights and en passant survive intact.
+        """
+        with self._lock:
+            self._resolver.set_board(board)
+            self._stable_matrix = matrix_from_board(self._resolver.board)
+            if frame is not None:
+                self._stable_frame = frame
+            self._flag_reason = None
+            self._expected_move = None
+            self._on_update(self.current_matrix, None, frame, False, None)
+
+    def read_board(self):
+        """A full 64-square read right now, with no motion gate and no move
+        matching: {(file_idx, rank_idx): "empty"|"white"|"black"|UNRESOLVED}.
+
+        For checking a position someone has just set up by hand -- the same
+        multi-frame consensus a settle uses, so a square that won't read
+        cleanly comes back UNRESOLVED rather than guessed. Returns None when
+        the camera has no frame yet. Changes no state.
+        """
+        with self._lock:
+            frame, _timestamp = self._capture_stream.get_latest()
+            if frame is None:
+                return None
+            return read_settled_state(
+                self._classifier_model,
+                self._capture_stream,
+                self._square_bboxes,
+                initial_frame=frame,
+                num_samples=self._consensus_samples,
+                window_s=self._consensus_window_s,
+                imgsz=self._classifier_imgsz,
+                min_conf=self._classifier_min_conf,
+            )
+
     def undo_last_move(self, frame=None):
         """Reverts the last accepted move, restoring both the tracked
         matrix and the resolver's board exactly (unlike a manual

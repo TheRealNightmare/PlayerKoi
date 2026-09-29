@@ -198,3 +198,115 @@ body {
 
 #videoCol { display: none; }
 #stream { max-width: min(90vw, 600px); border-radius: var(--radius); }
+
+/* --- board overlays: eval bar, arrows, highlights ------------------------ */
+
+#boardRow { display: flex; align-items: stretch; gap: 10px; }
+
+/* White's share fills from the bottom, because White sits at the bottom. */
+#evalBar {
+  position: relative;
+  width: 22px;
+  border-radius: var(--radius);
+  background: var(--foreground);
+  overflow: hidden;
+}
+#evalFill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 50%;
+  background: var(--black);
+  transition: height 0.4s ease;
+}
+#evalLabel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  translate: 0 -50%;
+  writing-mode: vertical-rl;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  color: var(--bright-blue);
+  mix-blend-mode: normal;
+}
+
+#arrows {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 5;
+  opacity: 0.85;
+}
+
+.hint-from  { box-shadow: inset 0 0 0 4px var(--bright-green); }
+.hint-to    { box-shadow: inset 0 0 0 4px var(--green); }
+.hint-piece { box-shadow: inset 0 0 0 5px var(--bright-cyan); }
+.diff-add    { box-shadow: inset 0 0 0 4px var(--green); }
+.diff-remove { box-shadow: inset 0 0 0 4px var(--red); }
+.diff-remove::after {
+  content: "\2716";
+  position: absolute;
+  font-size: 22px;
+  color: var(--red);
+}
+.diff-swap  { box-shadow: inset 0 0 0 4px var(--yellow); }
+.mismatch   { box-shadow: inset 0 0 0 6px var(--bright-red); background-image:
+              repeating-linear-gradient(45deg, transparent 0 6px,
+              color-mix(in srgb, var(--red) 30%, transparent) 6px 12px); }
+
+/* --- coach and puzzle cards --------------------------------------------- */
+
+#coachBox, #puzzleBox { min-width: 330px; max-width: 380px; text-align: center; }
+#coachBox > *, #puzzleBox > * { align-self: center; }
+#coachTitle, #puzzleTitle {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  opacity: 0.7;
+  font-weight: 700;
+}
+.button-row { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+#coachDecision, #coachTakeback, #puzzleMsg, #puzzleWrong, #puzzleGraveyard {
+  max-width: 340px;
+  font-size: 13px;
+  text-align: left;
+  flex-direction: column;
+  gap: 8px;
+}
+/* SAN is case-sensitive; see #lastMove. */
+#coachReview, #puzzlePhase { text-transform: none; letter-spacing: 0.04em; font-size: 14px; }
+#coachReviewText, #coachBetter, #coachOpponent, #coachHintText, #coachHintPlace,
+#puzzleInfo, #puzzleExtra, #puzzleSolution, #puzzleRating { font-size: 13px; max-width: 340px; }
+#coachBetter { color: var(--bright-magenta); }
+#coachOpponent { opacity: 0.8; font-style: italic; }
+#coachHintLabel { font-size: 11px; text-transform: uppercase; letter-spacing: 2px; opacity: 0.6; }
+#coachHint, #puzzleMove {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: var(--bright-green);
+}
+#puzzleMove { color: var(--bright-blue); }
+#puzzleExtra { color: var(--bright-yellow); }
+#puzzleSolution { font-weight: 700; }
+#puzzleSteps {
+  text-align: left;
+  font-size: 13px;
+  margin: 0;
+  padding-left: 22px;
+  max-height: 220px;
+  overflow-y: auto;
+  align-self: stretch;
+}
+#puzzleSteps li { padding: 2px 0; }
+
+#puzzleSettings { max-width: 720px; }
+#puzzleProgress { font-size: 13px; font-weight: 700; }
+#puzzleThemes { font-size: 12px; gap: 10px 14px; }
+.menu-hint { font-size: 11px; opacity: 0.65; }

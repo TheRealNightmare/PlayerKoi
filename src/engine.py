@@ -139,6 +139,33 @@ class ChessEngine:
             infos = [infos]
         return [info["pv"][0] for info in infos if info.get("pv")]
 
+    def analyse(self, board, think_s=DEFAULT_THINK_S):
+        """Full-strength evaluation of `board`, for the coach.
+
+        Returns {"score_cp", "mate", "pv"} from White's point of view --
+        exactly one of score_cp/mate is set -- or None if the engine is
+        missing, the position is over, or the search failed. Like
+        top_moves() this is analyse(), so Skill Level does not weaken it:
+        the opponent can play at 3 while the advice stays honest.
+        """
+        if self._engine is None or board.is_game_over():
+            return None
+        import chess.engine
+
+        try:
+            info = self._engine.analyse(board, chess.engine.Limit(time=think_s))
+        except Exception:
+            return None
+        score = info.get("score")
+        if score is None:
+            return None
+        white = score.white()
+        return {
+            "score_cp": None if white.is_mate() else white.score(),
+            "mate": white.mate() if white.is_mate() else None,
+            "pv": list(info.get("pv") or []),
+        }
+
     def close(self):
         if self._engine is not None:
             try:

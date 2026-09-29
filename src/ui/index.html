@@ -40,6 +40,32 @@
       </div>
     </section>
 
+    <section id="puzzleSettings" class="nr-card nr-clr nr-border nr-shadow" data-color="black">
+      <h2 class="nr-card-title">Puzzles</h2>
+      <div id="puzzleProgress"></div>
+      <div class="settings-grid">
+        <span class="nr-label">difficulty</span>
+        <label class="nr-label"><input type="radio" class="nr-check" name="puzzleRatingMode"
+               value="adaptive" data-color="cyan" checked> adaptive</label>
+        <label class="nr-label"><input type="radio" class="nr-check" name="puzzleRatingMode"
+               value="range" data-color="cyan"> rating range</label>
+        <label class="nr-label" for="puzzleMin">from
+          <input type="number" class="nr-input nr-clr nr-border" id="puzzleMin"
+                 min="400" max="2800" step="50" value="800">
+        </label>
+        <label class="nr-label" for="puzzleMax">to
+          <input type="number" class="nr-input nr-clr nr-border" id="puzzleMax"
+                 min="400" max="2800" step="50" value="1400">
+        </label>
+        <label class="nr-label" for="puzzleMaxPieces">max pieces
+          <input type="number" class="nr-input nr-clr nr-border" id="puzzleMaxPieces"
+                 min="0" max="32" step="1" value="0">
+        </label>
+      </div>
+      <div id="puzzleThemes" class="settings-grid"></div>
+      <div class="menu-hint">max pieces 0 = any. No theme ticked = any theme.</div>
+    </section>
+
     <div id="menuError" class="nr-alert nr-clr nr-border" data-color="red" hidden></div>
     <button id="menuResetBtn" class="nr-btn nr-clr nr-border nr-shadow nr-focus"
             data-color="yellow" data-pressable>Reset &amp; park the arm</button>
@@ -47,7 +73,13 @@
 
   <div id="screens">
   <div class="col" id="game">
-    <div id="board" class="nr-border nr-shadow"><div id="picker" class="nr-border nr-shadow nr-clr" data-color="black"></div></div>
+    <div id="boardRow">
+      <div id="evalBar" class="nr-border" hidden>
+        <div id="evalFill"></div>
+        <span id="evalLabel"></span>
+      </div>
+      <div id="board" class="nr-border nr-shadow"><div id="picker" class="nr-border nr-shadow nr-clr" data-color="black"></div><svg id="arrows" viewBox="0 0 8 8" preserveAspectRatio="none" aria-hidden="true"></svg></div>
+    </div>
 
     <div id="flagBox" class="nr-alert nr-clr nr-border nr-shadow" data-color="yellow">
       <div class="nr-alert-title">Board not resolved</div>
@@ -98,6 +130,54 @@
     <div id="lastMove" class="nr-badge nr-clr nr-border" data-color="blue"></div>
     <div id="moveLog" class="nr-clr nr-border" data-color="black"></div>
     <div id="status">connecting...</div>
+
+    <section id="coachBox" class="nr-card nr-clr nr-border nr-shadow" data-color="black" hidden>
+      <h2 id="coachTitle" class="nr-card-title">Coach</h2>
+      <div id="coachDecision" class="nr-alert nr-clr nr-border" data-color="red" hidden>
+        <div id="coachDecisionText"></div>
+        <div class="button-row">
+          <button id="takebackBtn" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+                  data-color="yellow" data-pressable>Take it back</button>
+          <button id="continueBtn" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+                  data-color="black" data-pressable>Continue</button>
+        </div>
+      </div>
+      <div id="coachTakeback" class="nr-alert nr-clr nr-border" data-color="yellow" hidden></div>
+      <div id="coachReview" class="nr-badge nr-clr nr-border" data-color="green" hidden></div>
+      <div id="coachReviewText"></div>
+      <div id="coachBetter"></div>
+      <div id="coachOpponent"></div>
+      <div id="coachHintLabel">Suggested move</div>
+      <div id="coachHint"></div>
+      <div id="coachHintPlace"></div>
+      <div id="coachHintText"></div>
+    </section>
+
+    <section id="puzzleBox" class="nr-card nr-clr nr-border nr-shadow" data-color="black" hidden>
+      <h2 id="puzzleTitle" class="nr-card-title">Puzzle</h2>
+      <div id="puzzlePhase" class="nr-badge nr-clr nr-border" data-color="blue"></div>
+      <div id="puzzleInfo"></div>
+      <div id="puzzleMsg" class="nr-alert nr-clr nr-border" data-color="red" hidden></div>
+      <div id="puzzleWrong" class="nr-alert nr-clr nr-border" data-color="yellow" hidden></div>
+      <div id="puzzleGraveyard" class="nr-alert nr-clr nr-border" data-color="yellow" hidden></div>
+      <ol id="puzzleSteps"></ol>
+      <div id="puzzleMove"></div>
+      <div id="puzzleExtra"></div>
+      <div id="puzzleSolution"></div>
+      <div id="puzzleRating"></div>
+      <div id="puzzleRow" class="button-row">
+        <button id="puzzleReadyBtn" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+                data-color="green" data-pressable>OK &mdash; board is set up</button>
+        <button id="puzzleHintBtn" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+                data-color="cyan" data-pressable>Hint</button>
+        <button id="puzzleSolutionBtn" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+                data-color="magenta" data-pressable>Show solution</button>
+        <button id="puzzleSkipBtn" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+                data-color="black" data-pressable>Skip</button>
+        <button id="puzzleNextBtn" class="nr-btn nr-btn-sm nr-clr nr-border nr-shadow nr-focus"
+                data-color="green" data-pressable>Next puzzle</button>
+      </div>
+    </section>
 
     <section id="engineBox" class="nr-card nr-clr nr-border nr-shadow" data-color="black">
       <h2 id="engineTitle" class="nr-card-title">Engine (Black)</h2>

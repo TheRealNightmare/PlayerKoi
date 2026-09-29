@@ -142,6 +142,15 @@ class HeadlessLoop:
         self._on_update(matrix, None, None, False, None)
         return san
 
+    def set_position(self, board, frame=None):
+        """Adopts `board` exactly, as TrackingLoop.set_position does."""
+        with self._lock:
+            self._resolver.set_board(board)
+            self._matrix = matrix_from_board(self._resolver.board)
+            self._expected_move = None
+            published = [row[:] for row in self._matrix]
+        self._on_update(published, None, None, False, None)
+
     def apply_manual_correction(self, matrix, turn, frame=None):
         """Adopts a position typed into the web UI's board editor.
         MoveResolver.resync() does the work, including re-inferring castling

@@ -151,6 +151,56 @@ accept -- place something else and it says so rather than quietly applying
 it. Undo and Edit board still override everything if you want to deviate
 deliberately.
 
+## Guided game (the coach)
+
+**Guided game** on the menu is "Play the engine" with a coach watching. It needs
+the same things (calibration, classifier, Stockfish):
+
+- On your turn the coach's best move for White is drawn on the board as a
+  green arrow, with where to put the piece and a short reason ("develops the
+  knight; attacks the pawn on e5").
+- After you move, the move gets a grade -- **Best / Good / Inaccuracy / Mistake
+  / Blunder** -- from how much winning chance it gave away (the Lichess
+  method), an eval bar beside the board, and "Better was ..." with the line.
+- On a **Mistake or Blunder the arm does not reply.** Choose **Take it back**
+  (the page says how to undo it on the board, including putting back anything
+  you captured) or **Continue**.
+- Each of Black's moves is explained too.
+
+The coach always analyses at full strength (`--coach-think`, default 1s); the
+skill slider only weakens the opponent. The explanations are rule-based and
+offline -- checks, captures, forks, hanging pieces, mate threats -- so they are
+always true but not always deep.
+
+## Puzzles
+
+**Puzzles** on the menu plays tactics puzzles from a bundled slice of the
+[Lichess puzzle database](https://database.lichess.org/#puzzles) (CC0), about
+6,000 of them, all with White to solve so you stay in your usual seat.
+
+1. The page shows the puzzle's layout and a list of **only what to change**
+   from the board as it stands ("remove the white pawn from e2", "put a black
+   knight on f6"), highlighted on the diagram. Clear the captured pieces off
+   the graveyard ring too.
+2. Press **OK -- board is set up**. The camera reads every square and refuses
+   to start until each one is the right colour, marking the wrong ones in red.
+   It can't tell piece *types* apart, so a knight where a bishop belongs is on
+   you.
+3. The arm plays Black's move from the puzzle (or tells you to, without an
+   arm), and you find White's reply. A wrong move is taken back in software
+   and the page says how to put it back on the board; you can try again, but
+   the puzzle then counts as failed.
+4. **Hint** highlights the piece to move (counts half), **Show solution**
+   draws the answer (counts as failed), **Skip** moves on unrated.
+
+The menu picks puzzles by **adaptive rating** (near your own) or a fixed
+range, by theme (mate in 1/2/3, fork, pin, ...) and by a maximum number of
+pieces -- fewer pieces is quicker to set up and fewer moves for the arm. Your
+rating, streak and history are kept in `config/puzzles.json`.
+
+`data/puzzles.csv` is generated: `pip install zstandard` and run
+`python3 tools/make_puzzles.py` (off-Pi; it streams the ~300 MB database).
+
 ## The robot arm
 
 With the gantry built (see **[docs/HARDWARE.md](docs/HARDWARE.md)** for the
@@ -323,14 +373,17 @@ always knows piece *type*, never needing to re-derive it from vision.
   not over 250mm. Accepted for cost; if the carriage binds or the grip varies
   between the middle of the board and the edges, the fix is Ø10/Ø12mm rod or
   supported rail -- which changes the bearing blocks, so it is a re-cut.
-- Not yet built: puzzle mode, AI coach, past-match analysis, remote play.
+- Not yet built: past-match analysis, remote play.
 
 ## Repo layout
 
 ```
 config/       generated calibration data, plus rig.json -- the settings
               that must survive a restart (magnet polarity, release fade,
-              and which graveyard slots hold a captured piece)
+              and which graveyard slots hold a captured piece), plus
+              puzzles.json -- your puzzle rating and history
+data/         puzzles.csv -- the bundled Lichess puzzle slice (CC0), made
+              by tools/make_puzzles.py
 design/       generated board artwork: the printed sticker, and the panel
               as DXF / AI / SVG / STEP. Rebuild with tools/, don't hand-edit
 docs/         DESIGN.md -- the full system document (architecture, geometry,
@@ -363,7 +416,9 @@ tests/        unit tests for move resolution, the classifier's consensus
               fakes throughout)
 tools/        generators for everything in design/, plus read_board_ai.py,
               which reads the hole pattern out of the original Illustrator
-              file. No dependencies beyond the standard library
+              file. No dependencies beyond the standard library -- except
+              make_puzzles.py, which builds data/puzzles.csv and needs
+              zstandard
 training/     dataset collection + training + export instructions (see
               training/NOTES.md) -- most steps run off-Pi
 ```
