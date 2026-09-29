@@ -51,8 +51,9 @@ Three things that are easy to get wrong:
   1. coil **off**, then drive to the source square (nothing is dragged there)
   2. coil **on** (attract, or repel if `POL 1`), wait the grip pause, then carry the piece
      (knights, castling rooks and `BURY` run the gridlines between squares
-     at 80% power, `MAG_DIAG = 204`)
-  3. coil **off**, then wait the settle pause (1000 ms by default) before
+     at the gridline power — 100% by default, set with `GRID <pct>` or the
+     web UI's Gridline power slider)
+  3. coil **off**, then wait the settle pause (1200 ms by default) before
      the carriage moves on
   The settle pause is what stops a piece being towed: it gives the core's
   leftover magnetism time to die away. If a piece still follows the carriage,
@@ -74,11 +75,11 @@ stop there rather than continuing — later steps assume the earlier ones.
 | # | Do | Expect |
 |---|---|---|
 | 1 | Flash `chessbot_v1.ino` | compiles and uploads |
-| 2 | Open the serial monitor at 115200 | `READY ChessBot-V1 r7` — **if the revision is lower, the sketch is stale; re-upload it** |
+| 2 | Open the serial monitor at 115200 | `READY ChessBot-V1 r8` — **if the revision is lower, the sketch is stale; re-upload it** |
 | 3 | **Park the carriage in the origin corner by hand** — the corner of travel beyond h1 (White's right-hand corner) | — |
 | 4 | `PING` | `OK PONG` |
 | 5 | `POS` | `OK POS 0.0 0.0` |
-| 5b | `DWELL` | `OK DWELL 150 1000` — grip/settle pauses; the web UI's Robot arm sliders change them |
+| 5b | `DWELL`, then `GRID` | `OK DWELL 150 1200`, `OK GRID 100` — grip/settle pauses and gridline power; the web UI's Robot arm sliders change them |
 | 6 | `MAG 1` then `MAG 0` | `OK MAG 1` / `OK MAG 0`, coil audibly grabs and releases |
 | 7 | `GOTO a1`, then `POS` | `OK POS -415.0 60.0` — **this is the pitch check** |
 | 8 | `HOME` | `OK HOME`, carriage returns to the origin corner |
@@ -163,8 +164,10 @@ move has finished"; the Pi never has to guess.
 | `PULSE` | `OK PULSE` | raw full-power reverse kick, for the bench only. No move uses it |
 | `POL` | `OK POL 0` | what holds EVERY piece: 0 = attract (default), 1 = repel |
 | `POL 0\|1` | `OK POL <n>` | set it. RAM only — re-sent by the host on every connect |
-| `DWELL` | `OK DWELL 150 1000` | grip pause before a carry / settle pause after a set-down, ms |
+| `DWELL` | `OK DWELL 150 1200` | grip pause before a carry / settle pause after a set-down, ms |
 | `DWELL <g> <s>` | `OK DWELL <g> <s>` | set both, 0–2000 ms each. RAM only — re-sent by the host on every connect |
+| `GRID` | `OK GRID 100` | magnet power on every gridline leg (knights, castling rook, `BURY`), % of full |
+| `GRID <pct>` | `OK GRID <pct>` | set it, 0–100. RAM only — re-sent by the host on every connect |
 | `HOME` | `OK HOME` | returns to the origin corner (beyond h1) and drops the coil |
 | `POS` | `OK POS x y` | current position in mm |
 | `MM -105 100` | `OK MM x y` | move to raw machine coordinates |
@@ -226,7 +229,7 @@ your piece bases, or the move was an edge weave — those fold onto a real squar
 centre line rather than a gap, so they pass closer than an interior move does.
 Knight moves off the back rank in the opening are the tightest case, because
 the pawn wall leaves no gap to bias toward. The fixes are mechanical: narrower
-piece bases, or a lower `MAG_DIAG`.
+piece bases, or a lower gridline power (`GRID`).
 
 **`ERR out of range`.** The carriage's dead-reckoned position has drifted from
 reality — a missed step, a belt slip, or the board was powered on with the

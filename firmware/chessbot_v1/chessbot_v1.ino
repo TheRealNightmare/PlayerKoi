@@ -44,7 +44,10 @@
      POL               -> OK POL 0          which way the coil holds EVERY
                                             piece: 0 = attract, 1 = repel
      POL 0|1           -> OK POL <n>        set it (RAM only; host re-sends)
-     DWELL             -> OK DWELL 150 1000 pause after gripping, before the
+     GRID              -> OK GRID 100       magnet power on every gridline
+                                            leg (knight, castling rook, BURY)
+     GRID <pct>        -> OK GRID <pct>     0-100 % of full (RAM only)
+     DWELL             -> OK DWELL 150 1200 pause after gripping, before the
                                             drag / pause after setting down,
                                             coil fully off, before moving on
      DWELL <g> <s>     -> OK DWELL <g> <s>  each 0-2000 ms
@@ -165,7 +168,9 @@ unsigned int stepDelayUS;
 // RELEASE and KICK are gone, as is the w|b suffix on MOVE/KNIGHT/BURY; a
 // set-down is a plain coil-off plus the settle pause.
 // An r6 board would still hold white by repel and shove it off its square.
-#define FIRMWARE_REV 7
+// r8 adds GRID, the gridline magnet power, which the host sends on connect --
+// an r7 board would answer ERR unknown GRID.
+#define FIRMWARE_REV 8
 
 // Which way the coil drives to HOLD a piece -- the same for every piece.
 // Attract is what the set was magnetised for; POL 1 flips it to repel, in case
@@ -173,21 +178,26 @@ unsigned int stepDelayUS;
 const bool HOLD_BY_REPEL = false;
 bool holdByRepel = HOLD_BY_REPEL;
 
-// FULL drags a piece square-to-square. DIAG is every gridline leg -- knights,
-// the castling rook and BURY -- where the piece rides offset from the pole.
-// 80% of full: 155 (~60%) sometimes lost the piece partway along the L.
+// FULL drags a piece square-to-square, and is fixed.
 const int MAG_FULL  = 255;
-const int MAG_DIAG  = 204;
+
+// Power on every gridline leg -- knights, the castling rook and BURY -- as a
+// percentage of FULL. Runtime, set by GRID. Full by default: 60% and then 80%
+// both sometimes lost the piece partway along the L.
+const int GRID_PCT = 100;
+int gridPct = GRID_PCT;
+
+int gridDuty() { return (int)((long)MAG_FULL * gridPct / 100); }
 
 // Pauses around a carried piece. GRIP: coil on, carriage still, so the piece
 // is pulled flat onto the pole before it is asked to slide. SETTLE: after the
 // set-down has switched the coil fully OFF, stay put so the core's residual
 // magnetism fades and the piece is at rest before the carriage drives away --
 // leaving at once is what tows it. Both runtime, set by DWELL.
-// SETTLE is a full second: 300 ms sometimes left the core magnetised enough to
-// tow the piece a few millimetres.
+// SETTLE is 1.2 s: 300 ms, and later 1000 ms, sometimes left the core
+// magnetised enough to tow the piece a few millimetres.
 const int GRIP_MS   = 150;
-const int SETTLE_MS = 1000;
+const int SETTLE_MS = 1200;
 int gripMS   = GRIP_MS;
 int settleMS = SETTLE_MS;
 
@@ -298,6 +308,16 @@ void handleCommand(String line) {
       else { Serial.println("ERR pol 0|1"); return; }
     }
     Serial.println("OK POL " + String(holdByRepel ? 1 : 0));
+  }
+
+  // Gridline power, in percent of full: GRID <0-100>.
+  else if (cmd == "GRID") {
+    if (arg.length() > 0) {
+      long pct = arg.toInt();
+      if (pct < 0 || pct > 100 || (pct == 0 && arg != "0")) { Serial.println("ERR grid 0-100"); return; }
+      gridPct = (int)pct;
+    }
+    Serial.println("OK GRID " + String(gridPct));
   }
 
   // Pauses around a carried piece: DWELL <grip_ms> <settle_ms>.
@@ -446,13 +466,13 @@ bool doBury(int f0, int r0, float tx, float ty) {
     float edge = rs < 0 ? -0.5 : 7.5;
     float hx = fs > f0 ? 0.5 : (fs < f0 ? -0.5 : (f0 < 7 ? 0.5 : -0.5));
     ok = gotoSquareF(f0 + hx, r0);
-    if (ok) { magHold(MAG_DIAG); ok = gotoSquareF(f0 + hx, edge); }
+    if (ok) { magHold(gridDuty()); ok = gotoSquareF(f0 + hx, edge); }
     if (ok) ok = gotoSquareF(fs, edge);
   } else {
     float edge = fs < 0 ? -0.5 : 7.5;
     float hy = rs > r0 ? 0.5 : (rs < r0 ? -0.5 : (r0 < 7 ? 0.5 : -0.5));
     ok = gotoSquareF(f0, r0 + hy);
-    if (ok) { magHold(MAG_DIAG); ok = gotoSquareF(edge, r0 + hy); }
+    if (ok) { magHold(gridDuty()); ok = gotoSquareF(edge, r0 + hy); }
     if (ok) ok = gotoSquareF(edge, rs);
   }
   if (ok) { magHold(MAG_FULL); ok = moveTo(tx, ty); }
@@ -484,7 +504,7 @@ bool doKnight(int f0, int r0, int f1, int r1) {
   if (!gotoSquareF(clampWeave(f0 + hx), clampWeave(r0 + hy))) {
     magOff(); return false;
   }
-  magHold(MAG_DIAG);
+  magHold(gridDuty());
 
   if (!gotoSquareF(clampWeave(f1 - hx), clampWeave(r1 - hy))) {
     magOff(); return false;

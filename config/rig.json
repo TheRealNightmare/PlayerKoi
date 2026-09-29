@@ -2,5 +2,6 @@
   "polarity": "attract",
   "graveyard": [],
   "grip_ms": 150,
-  "settle_ms": 1000
+  "settle_ms": 1200,
+  "grid_pct": 100
 }

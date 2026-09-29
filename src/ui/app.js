@@ -253,6 +253,9 @@ const TUNING = [
     val: document.getElementById("tuneGripVal"), unit: " ms" },
   { key: "settle_ms", el: document.getElementById("tuneSettle"),
     val: document.getElementById("tuneSettleVal"), unit: " ms" },
+  // Knights, the castling rook and graveyard trips; straight moves are always full.
+  { key: "grid_pct", el: document.getElementById("tuneGridPct"),
+    val: document.getElementById("tuneGridPctVal"), unit: "%" },
 ];
 for (const t of TUNING) {
   t.el.oninput = () => { t.val.textContent = t.el.value + t.unit; };

@@ -287,13 +287,15 @@ class TestMotionTuning(unittest.TestCase):
         self.assertEqual(applied["settle_ms"], 600)
         self.assertEqual(applied["grip_ms"], rig.MOTION_TUNING["grip_ms"][0])
         self.assertEqual(robot._link.commands,
-                         [f"DWELL {applied['grip_ms']} 600"])
+                         [f"DWELL {applied['grip_ms']} 600", "GRID 100"])
 
     def test_out_of_range_is_refused_before_sending(self):
         robot = _make_robot()
         robot._link.commands.clear()
         with self.assertRaises(ValueError):
             robot.set_tuning(settle_ms=9999)
+        with self.assertRaises(ValueError):
+            robot.set_tuning(grid_pct=150)
         for gone in ("bogus", "kick_duty", "kick_ms"):
             with self.assertRaises(ValueError, msg=gone):
                 robot.set_tuning(**{gone: 1})

@@ -83,28 +83,28 @@ STEPS_PER_MM = (MOTOR_STEPS_PER_REV * MICROSTEPS) / MM_PER_REV   # 10.0
 # re-sends SPEED on every connect. The firmware accepts SPEED 1-100 mm/s.
 FEED_MMS = 40.0
 
-# Magnet duty cycles, as PWM counts. FULL drags a piece square-to-square;
-# DIAG is used on every gridline leg (knights, the castling rook, BURY), where
-# the piece rides offset from the pole face. It is 80% of full: the earlier
-# 155 (~60%) sometimes lost the piece partway along the L. These mirror the
-# firmware -- chess_gantry's 170 cap is for different hardware and does not
-# apply.
+# Magnet duty, as a PWM count. FULL drags a piece square-to-square and is
+# fixed; the gridline legs use grid_pct below. Mirrors the firmware --
+# chess_gantry's 170 cap is for different hardware and does not apply.
 MAG_FULL = 255
-MAG_DIAG = 204
 
-# Hand-tuned motion settings, each (default, min, max). Both are runtime
-# values on the board (DWELL), re-sent on every connect and adjustable from
-# the web UI, because they are only judged by watching the arm:
+# Hand-tuned motion settings, each (default, min, max). All are runtime
+# values on the board (DWELL, GRID), re-sent on every connect and adjustable
+# from the web UI, because they are only judged by watching the arm:
 #
 #   grip_ms    coil on, carriage still, before a piece is dragged -- so it is
 #              pulled flat onto the pole first
 #   settle_ms  after the set-down, coil fully OFF, before the carriage drives
 #              on -- so the core's residual magnetism dies away. A piece still
 #              towed when the carriage leaves means this is too short; 300
-#              was, by a few millimetres, hence a full second.
+#              and 1000 both were, by a few millimetres, hence 1.2 s.
+#   grid_pct   magnet power on every gridline leg (knights, the castling
+#              rook, BURY), in percent of MAG_FULL. 60% and then 80% both
+#              sometimes lost the piece partway along the L, hence full.
 MOTION_TUNING = {
     "grip_ms": (150, 0, 2000),
-    "settle_ms": (1000, 0, 2000),
+    "settle_ms": (1200, 0, 2000),
+    "grid_pct": (100, 0, 100),
 }
 
 # Every piece on this set has its magnet the same way up, so ONE polarity
@@ -154,7 +154,9 @@ READY_BANNER = "READY ChessBot-V1"
 #       them. POL, POLTEST, RELEASE and KICK are gone, as is the w|b suffix on
 #       MOVE/KNIGHT/BURY; a set-down is a plain coil-off plus the settle
 #       pause. An r6 board would still hold white by repel and shove it off.
-FIRMWARE_REV = 7
+#   r8  GRID, the gridline magnet power, sent on connect -- an r7 board
+#       answers ERR unknown GRID.
+FIRMWARE_REV = 8
 
 
 def banner_rev(banner):

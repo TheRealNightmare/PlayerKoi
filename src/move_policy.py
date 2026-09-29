@@ -9,8 +9,8 @@ Two things are being asked for at once, and they pull in the same direction:
     spare the gantry         knight moves and castling are the only moves
                              that send a KNIGHT weave, which is the riskiest
                              motion the rig makes -- the piece rides offset
-                             from the pole face at reduced magnet duty
-                             (rig.MAG_DIAG), so it is the one most likely to
+                             from the pole face at the gridline power
+                             (rig.MOTION_TUNING grid_pct), so it is the one most likely to
                              be dropped or dragged crooked
 
 So knights and castling are excluded outright unless nothing else is legal,

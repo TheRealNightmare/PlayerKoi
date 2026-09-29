@@ -92,6 +92,12 @@ class TestStaleBoardRefuses(unittest.TestCase):
         self.assertEqual(robot.firmware_rev, 1)
         self.assertTrue(robot.stale_firmware)
 
+    def test_an_r7_board_is_stale(self):
+        """r7 has no GRID verb, which the host sends on connect."""
+        robot = Robot(MockGantry(banner="READY ChessBot-V1 r7"),
+                      planner=robot_moves_legacy)
+        self.assertTrue(robot.stale_firmware)
+
     def test_an_r6_board_is_stale(self):
         """The last sketch that held white by repel."""
         robot = Robot(MockGantry(banner="READY ChessBot-V1 r6"),
@@ -175,7 +181,7 @@ class TestSettingsReachTheBoard(unittest.TestCase):
 
         robot = open_gantry("mock")
         commands = robot._link.commands
-        self.assertEqual([c.split()[0] for c in commands], ["POL", "DWELL", "SPEED"])
+        self.assertEqual([c.split()[0] for c in commands], ["POL", "DWELL", "GRID", "SPEED"])
         self.assertEqual(commands[-1], "SPEED 40")
         self.assertEqual(set(robot.tuning), set(rig.MOTION_TUNING))
 
@@ -290,15 +296,21 @@ class TestTheSketchMatchesTheMotionSettings(unittest.TestCase):
         self.assertEqual(self._const("GRIP_MS"), rig.MOTION_TUNING["grip_ms"][0])
         self.assertEqual(self._const("SETTLE_MS"), rig.MOTION_TUNING["settle_ms"][0])
 
-    def test_the_gridline_duty_matches_rig_and_is_80_percent(self):
-        """155 (~60%) sometimes lost a knight partway along the L."""
-        self.assertEqual(self._const("MAG_DIAG"), rig.MAG_DIAG)
+    def test_the_gridline_power_defaults_to_full_and_matches_rig(self):
+        """60% and then 80% both sometimes lost a knight partway along the L."""
+        self.assertEqual(self._const("GRID_PCT"), rig.MOTION_TUNING["grid_pct"][0])
+        self.assertEqual(rig.MOTION_TUNING["grid_pct"], (100, 0, 100))
         self.assertEqual(self._const("MAG_FULL"), rig.MAG_FULL)
-        self.assertEqual(rig.MAG_DIAG, round(0.8 * rig.MAG_FULL))
+        self.assertIn('cmd == "GRID"', self.sketch)
 
-    def test_the_settle_wait_is_a_full_second(self):
-        """300 ms sometimes left the core magnetised enough to tow a piece."""
-        self.assertEqual(rig.MOTION_TUNING["settle_ms"][0], 1000)
+    def test_every_gridline_leg_uses_the_tunable_power(self):
+        self.assertNotIn("MAG_DIAG", self.sketch)
+        self.assertEqual(self.sketch.count("magHold(gridDuty())"), 3)
+
+    def test_the_settle_wait_is_1200_ms(self):
+        """300 and then 1000 ms sometimes left the core magnetised enough to
+        tow a piece."""
+        self.assertEqual(rig.MOTION_TUNING["settle_ms"][0], 1200)
 
     def test_the_feed_rate_matches_rig(self):
         match = re.search(r"float\s+feedRateMMS\s*=\s*([\d.]+)", self.sketch)

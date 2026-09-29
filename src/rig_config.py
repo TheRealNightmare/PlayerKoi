@@ -165,6 +165,11 @@ def dwell_command(grip_ms, settle_ms):
     return f"DWELL {int(grip_ms)} {int(settle_ms)}"
 
 
+def grid_command(grid_pct):
+    """The firmware command that sets the gridline magnet power, percent."""
+    return f"GRID {int(grid_pct)}"
+
+
 def speed_command(feed_mms=None):
     """The firmware command that sets the feed rate."""
     return f"SPEED {float(rig.FEED_MMS if feed_mms is None else feed_mms):g}"

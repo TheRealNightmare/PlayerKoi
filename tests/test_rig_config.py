@@ -180,4 +180,13 @@ class TestMotionTuning(ConfigCase):
 
     def test_the_commands(self):
         self.assertEqual(rig_config.dwell_command(150, 300), "DWELL 150 300")
+        self.assertEqual(rig_config.grid_command(80), "GRID 80")
+
+    def test_the_gridline_power_round_trips_and_is_clamped(self):
+        rig_config.save(grid_pct=80, path=self.path)
+        self.assertEqual(self.load()["grid_pct"], 80)
+        with self.assertRaises(ValueError):
+            rig_config.save(grid_pct=101, path=self.path)
+        self.write({"grid_pct": 250})
+        self.assertEqual(self.load()["grid_pct"], 100)
         self.assertEqual(rig_config.speed_command(), "SPEED 40")
