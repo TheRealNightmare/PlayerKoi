@@ -39,6 +39,8 @@ const messageEl = document.getElementById("adminMessage");
 const gameNoteEl = document.getElementById("adminGameNote");
 const enginePausedEl = document.getElementById("adminEnginePaused");
 const backEl = document.getElementById("adminBack");
+const originEl = document.getElementById("adminOrigin");
+const rotatedEl = document.getElementById("adminRotated");
 const logEl = document.getElementById("adminLog");
 const moveOptionsEl = document.getElementById("moveOptions");
 
@@ -138,6 +140,16 @@ function render() {
   backEl.textContent = state.running ? "← Back to game" : "← Back to menu";
   gameNoteEl.hidden = !state.running;
   enginePausedEl.hidden = !state.engine_paused;
+
+  originEl.textContent =
+    `origin ${state.origin} \u00b7 ${state.rotated ? "ROTATED" : "no rotation"} \u00b7 ${state.version}`;
+  originEl.dataset.color = state.rotated ? "red" : "green";
+  rotatedEl.hidden = !state.rotated;
+  rotatedEl.textContent = state.rotated
+    ? `Squares are rotated: a1 is sent as ${state.sample.a1}, h1 as ${state.sample.h1}. ` +
+      `The server was started with --board-origin ${state.origin}; restart it without that ` +
+      "flag unless the board really is seated that way."
+    : "";
 
   const r = state.robot;
   let message = null;

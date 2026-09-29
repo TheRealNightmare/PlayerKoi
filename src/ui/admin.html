@@ -19,7 +19,10 @@
        data-color="black" data-pressable>&larr; Back</a>
     <span id="adminRobot" class="nr-badge nr-clr nr-border" data-color="black">no robot</span>
     <span id="adminPos" class="nr-badge nr-clr nr-border" data-color="blue">X ? · Y ?</span>
+    <span id="adminOrigin" class="nr-badge nr-clr nr-border" data-color="black">origin ?</span>
   </div>
+
+  <div id="adminRotated" class="nr-alert nr-clr nr-border" data-color="red" hidden></div>
 
   <div id="adminMessage" class="nr-alert nr-clr nr-border" data-color="red" hidden></div>
   <div id="adminGameNote" class="nr-alert nr-clr nr-border" data-color="yellow" hidden>
@@ -90,6 +93,8 @@
 
       <section class="nr-card nr-clr nr-border nr-shadow" data-color="black">
         <div class="nr-card-header"><h2 class="nr-card-title">Log</h2></div>
+        <p class="menu-hint">The exact command sent to the Arduino &mdash; type the same
+          line into the Serial Monitor to compare.</p>
         <ol id="adminLog"></ol>
       </section>
     </div>

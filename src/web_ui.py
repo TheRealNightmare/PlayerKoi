@@ -87,6 +87,38 @@ _VALID_LABELS = {
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
 
+
+def _code_version():
+    """Short git hash of the running checkout, or "unknown".
+
+    Printed at startup and shown on /admin, because the rig runs on a Pi with
+    its own copy of the repo: "did the Pi actually pick up the fix?" has to be
+    answerable from the screen, not by trusting that a pull happened.
+    """
+    import subprocess
+
+    try:
+        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=REPO_ROOT,
+                             capture_output=True, text=True, timeout=2)
+        return out.stdout.strip() or "unknown"
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+
+
+CODE_VERSION = _code_version()
+
+
+def origin_report():
+    """How squares are being rotated on their way to the firmware -- the one
+    thing a mis-seated or mis-launched rig gets wrong, so it is shown rather
+    than assumed."""
+    return {
+        "origin": rig.ORIGIN_SQUARE,
+        "rotated": rig.ORIGIN_SQUARE != rig.PARK_SQUARE,
+        "sample": {sq: rig.orient_square(sq) for sq in ("a1", "h1", "h8", "a8")},
+        "version": CODE_VERSION,
+    }
+
 # Served content types, which is also the allowlist: a request for anything
 # not ending in one of these extensions is refused outright.
 _UI_TYPES = {
@@ -896,6 +928,7 @@ class AdminConsole:
             "turn": loop.turn if loop is not None else None,
             "engine_paused": engine_paused and session.running,
             "log": log[::-1],  # newest first
+            **origin_report(),
         }
 
     def _record(self, action, command, ok, detail):
@@ -1632,6 +1665,18 @@ def _make_builders(args, engine, buffer, session_ref, progress=None):
 
 def main():
     args = parse_args()
+    # Before anything else, and whatever the mode: a rotated origin sends
+    # every square to its diagonal opposite, and that must be visible here
+    # rather than discovered by watching the arm.
+    rig.ORIGIN_SQUARE = args.board_origin
+    report = origin_report()
+    print(f"Board origin: {report['origin']} "
+          f"({'ROTATED' if report['rotated'] else 'no rotation'}) "
+          f"· code {report['version']} · {Path(__file__).resolve().parent}")
+    if report["rotated"]:
+        print(f"!! squares are ROTATED: a1 is sent as {report['sample']['a1']}, "
+              f"h1 as {report['sample']['h1']}. Drop --board-origin unless the "
+              "board really is seated that way.")
 
     engine = ChessEngine(command=args.engine_command, skill=args.engine_skill)
     print("Engine: Stockfish ready." if engine.available else f"Engine: {engine.error}")

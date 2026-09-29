@@ -225,3 +225,29 @@ class TestDefaultOrigin(unittest.TestCase):
         self.assertEqual(admin_moves.goto_command("a1"), "GOTO a1")
         self.assertEqual(admin_moves.goto_command("h8"), "GOTO h8")
         self.assertEqual(admin_moves.move_command("e2", "e4", "white", False), "MOVE e2e4 w")
+
+
+class TestOriginIsReported(unittest.TestCase):
+    """A rotated origin sends every square to its diagonal opposite. That
+    has to be visible on /admin, not discovered by watching the arm."""
+
+    def setUp(self):
+        self._saved = rig.ORIGIN_SQUARE
+
+    def tearDown(self):
+        rig.ORIGIN_SQUARE = self._saved
+
+    def test_the_default_says_no_rotation(self):
+        rig.ORIGIN_SQUARE = "h1"
+        state = web_ui.AdminConsole(_FakeSession(None)).state()
+        self.assertEqual(state["origin"], "h1")
+        self.assertFalse(state["rotated"])
+        self.assertEqual(state["sample"], {"a1": "a1", "h1": "h1", "h8": "h8", "a8": "a8"})
+        self.assertTrue(state["version"])
+
+    def test_a_rotated_launch_is_flagged(self):
+        rig.ORIGIN_SQUARE = "a8"
+        state = web_ui.AdminConsole(_FakeSession(None)).state()
+        self.assertTrue(state["rotated"])
+        self.assertEqual(state["sample"]["a1"], "h8")
+        self.assertEqual(state["sample"]["h1"], "a8")
