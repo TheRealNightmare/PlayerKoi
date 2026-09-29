@@ -37,12 +37,12 @@ class TestCommands(_OriginMixin, unittest.TestCase):
         self.assertEqual(admin_moves.goto_command("e4"), "GOTO e4")
 
     def test_straight_and_weave(self):
-        self.assertEqual(admin_moves.move_command("e2", "e4", "white", False), "MOVE e2e4 w")
-        self.assertEqual(admin_moves.move_command("g8", "f6", "black", True), "KNIGHT g8f6 b")
+        self.assertEqual(admin_moves.move_command("e2", "e4", False), "MOVE e2e4")
+        self.assertEqual(admin_moves.move_command("g8", "f6", True), "KNIGHT g8f6")
 
     def test_bad_input_is_refused(self):
-        for args in (("e2", "e2", "white", False), ("e9", "e4", "white", False),
-                     ("e2", "e4", "red", False), (None, "e4", "white", False)):
+        for args in (("e2", "e2", False), ("e9", "e4", False),
+                     (None, "e4", False)):
             with self.assertRaises(ValueError, msg=args):
                 admin_moves.move_command(*args)
         with self.assertRaises(ValueError):
@@ -65,8 +65,8 @@ class TestCommandsRotated(_OriginMixin, unittest.TestCase):
 
     def test_squares_are_oriented_like_the_game_path(self):
         self.assertEqual(admin_moves.goto_command("e4"), f"GOTO {rig.orient_square('e4')}")
-        self.assertEqual(admin_moves.move_command("e2", "e4", "white", False),
-                         f"MOVE {rig.orient_uci('e2e4')} w")
+        self.assertEqual(admin_moves.move_command("e2", "e4", False),
+                         f"MOVE {rig.orient_uci('e2e4')}")
         self.assertNotEqual(admin_moves.goto_command("e4"), "GOTO e4")
 
 
@@ -160,11 +160,11 @@ class TestConsole(_OriginMixin, unittest.TestCase):
         engine = _FakeEngine()
         console = web_ui.AdminConsole(_FakeSession(self.robot, loop, engine))
         status, payload = console.action(
-            {"action": "move", "from": "e2", "to": "e3", "colour": "white"})
+            {"action": "move", "from": "e2", "to": "e3"})
         self.assertEqual(status, 200, payload)
         self.assertFalse(engine.enabled)
         self.assertTrue(payload["engine_paused"])
-        self.assertIn("MOVE e2e3 w", self.gantry.commands)
+        self.assertIn("MOVE e2e3", self.gantry.commands)
         self.assertEqual(loop.current_matrix[2][4], "white-pawn")
         self.assertIsNone(loop.current_matrix[1][4])
         self.assertFalse(loop.is_paused)
@@ -173,7 +173,7 @@ class TestConsole(_OriginMixin, unittest.TestCase):
         loop = HeadlessLoop()
         console = web_ui.AdminConsole(_FakeSession(self.robot, loop, _FakeEngine()))
         status, payload = console.action(
-            {"action": "move", "from": "d1", "to": "d2", "colour": "white"})
+            {"action": "move", "from": "d1", "to": "d2"})
         self.assertEqual(status, 400)
         self.assertIn("occupied", payload["error"])
         self.assertEqual(self.gantry.commands, [])
@@ -191,8 +191,7 @@ class TestConsole(_OriginMixin, unittest.TestCase):
                                 config_path=os.path.join(self.tmp.name, "rig.json"))
         robot.home()
         console = web_ui.AdminConsole(_FakeSession(robot))
-        status, _ = console.action({"action": "move", "from": "a1", "to": "a3",
-                                    "colour": "white"})
+        status, _ = console.action({"action": "move", "from": "a1", "to": "a3"})
         self.assertEqual(status, 400)
         self.assertTrue(robot.halted)
         self.assertEqual(gantry.commands[-1], "OFF")
@@ -224,7 +223,7 @@ class TestDefaultOrigin(unittest.TestCase):
         self.assertEqual(rig.ORIGIN_SQUARE, "h1")
         self.assertEqual(admin_moves.goto_command("a1"), "GOTO a1")
         self.assertEqual(admin_moves.goto_command("h8"), "GOTO h8")
-        self.assertEqual(admin_moves.move_command("e2", "e4", "white", False), "MOVE e2e4 w")
+        self.assertEqual(admin_moves.move_command("e2", "e4", False), "MOVE e2e4")
 
 
 class TestOriginIsReported(unittest.TestCase):

@@ -9,8 +9,6 @@ its own, with the magnet duties and edge folding already measured into it.
 So what is left here is chess rules, and only chess rules:
 
     which squares move        MOVE vs KNIGHT, and castling's second command
-    which colour is carried   the w|b suffix -- white magnets are reversed on
-                              this set, so the coil polarity follows it
     what has to come off      captures, including en passant's offset victim
     which slot it goes to     the pile is host-side state; the firmware only
                               drives to the coordinate it is handed
@@ -68,29 +66,28 @@ def _bury(square, piece, slot, origin_square=None):
     """
     name, word, colour = _describe(square, piece)
     x_mm, y_mm = rig.orient_mm(*rig.graveyard_slot_to_mm(slot), origin=origin_square)
-    token = rig.colour_token(piece is not None and piece.color == chess.WHITE)
     return (
         Step(
             kind="command",
             command=f"BURY {rig.orient_square(name, origin_square)} "
-                    f"{x_mm:.2f} {y_mm:.2f} {token}",
+                    f"{x_mm:.2f} {y_mm:.2f}",
             note=f"park the captured {colour} {word} from {name} on slot {slot}",
         ),
         slot,
     )
 
 
-def drag_command(from_name, to_name, is_white, weave, origin_square=None):
+def drag_command(from_name, to_name, weave, origin_square=None):
     """The one place a MOVE/KNIGHT line is spelled -- game moves, the
     castling rook and /admin all come through here, so they cannot drift.
 
     `weave` picks KNIGHT, whose L-shaped path the firmware plans itself;
-    this only names the squares (rotated for how the board is seated) and
-    the colour being carried.
+    this only names the squares (rotated for how the board is seated). No
+    colour: every piece is held the same way, by attract.
     """
     verb = "KNIGHT" if weave else "MOVE"
     squares = rig.orient_uci(from_name + to_name, origin_square)
-    return f"{verb} {squares} {rig.colour_token(is_white)}"
+    return f"{verb} {squares}"
 
 
 def _full_graveyard_prompt(square, piece):
@@ -186,18 +183,13 @@ def plan_with_slots(board, move, origin_square=None, occupied=()):
     # clipping whatever it's jumping, so it weaves along the gridlines
     # instead. The firmware owns that path; we just pick the verb.
     knight = mover is not None and mover.piece_type == chess.KNIGHT
-    # Which colour the coil is about to pick up. The white pieces' magnets are
-    # reversed on this set, so the firmware flips polarity on the w|b token
-    # drag_command() adds -- holding a white piece with the black polarity
-    # shoves it off the square.
-    is_white = mover is not None and mover.color == chess.WHITE
     steps.append(
         Step(
             # The command is rotated into machine orientation; the note is
             # not. Step keeps the two apart precisely so the firmware and the
             # human can be told different things about the same move, and the
             # human is looking at a real board in real notation.
-            drag_command(origin, target, is_white, knight, origin_square),
+            drag_command(origin, target, knight, origin_square),
             f"{word} {origin} to {target}",
         )
     )
@@ -212,8 +204,7 @@ def plan_with_slots(board, move, origin_square=None, occupied=()):
         rook_to = chess.square_name(chess.square(5 if kingside else 3, rank))
         steps.append(
             Step(
-                # Same colour as the king, so the same polarity.
-                drag_command(rook_from, rook_to, is_white, True, origin_square),
+                drag_command(rook_from, rook_to, True, origin_square),
                 f"rook {rook_from} to {rook_to}, weaving past the king",
             )
         )

@@ -492,12 +492,12 @@ frame and is what captures depend on:
 MM -415 10         # the slot past a1        → OK MM, not ERR out of range
 MM -465 60         # the slot past the a-file
 MM -15 410         # the slot past the h-file
-BURY e2 -365 10 w  # carry a real pawn off — watch the set-down, not the drive
+BURY e2 -365 10    # carry a real pawn off — watch the set-down, not the drive
 ```
 
 An `ERR out of range` here means the board is flashed with V1's travel limits.
-A piece that *jumps* on landing rather than settling means `RELEASE` is too
-short; it is the same fade an ordinary move uses, so fix it here.
+A piece that is *towed* as the carriage leaves means the settle pause is too
+short (`DWELL`); an ordinary move sets down the same way, so fix it here.
 
 **On a frame that has never moved before**, do the walker instead of the four
 commands above — it covers the same ground exhaustively and with the magnet
@@ -542,24 +542,25 @@ already thinks it's a queen.
 Fix the physical board with **Edit board** or **Undo last move**, then press
 **Home / re-enable**. It will not move again until you do.
 
-**If the arm shoves white pieces off the board**, the coil polarity is wrong
-for them — their magnets are fitted the other way up from the black ones. Park
-a white piece and run `POLTEST e2` from the bench console: one phase holds it,
-the other pushes it. Set that in the **Robot arm** panel (*White pieces held
-by: attract / repel*); it is saved to `config/rig.json` and reapplied on every
-start.
+**Every piece is held by attract**, white and black alike — their magnets are
+all fitted the same way up. Each carry is: coil off, drive to the piece, coil
+on + grip pause, carry, coil off + settle pause.
 
-**If a piece jumps or rattles as it is set down**, the release is too abrupt.
-Raise **Set-down ease** in the Robot arm panel — it fades the grip away before
-the de-clinging kick instead of punching the piece off the coil. It saves
-itself; 0 is the old instant behaviour if you want to compare.
+**If the arm pushes pieces away instead of picking them up**, the magnets are
+the other way up. Switch **Pieces held by** to *repel* in the Robot arm panel
+(or `POL 1` in the bench console). It applies to every piece, is saved to
+`config/rig.json`, and is reapplied on every start.
+
+**If a piece is towed along after it is set down**, the core is still
+magnetised when the carriage leaves. Raise **Settle pause** in the Robot arm
+panel; it saves itself to `config/rig.json`. **If a piece is left behind at
+the start of a drag**, raise **Grip pause** instead.
 
 **If the UI says the firmware is out of date**, re-upload
 `firmware/chessbot_v1/chessbot_v1.ino`. The arm refuses to move until you do,
-and that is deliberate: an old board accepts the polarity suffix and silently
-ignores it, so every white move would shove a piece. Check with the startup
-line — it should say `firmware r4` or higher. (r4 added `BURY`; without it
-the arm has no way to park a captured piece.)
+and that is deliberate: a board older than r7 still holds white pieces by
+repel, so every white move would shove a piece off its square. Check with the
+startup line — it should say `firmware r7`.
 
 **Bench console** for poking the gantry directly, without any chess:
 
@@ -567,9 +568,8 @@ the arm has no way to park a captured piece.)
 python3 src/robot.py --port /dev/ttyACM0 --console
 gantry> HOME
 gantry> GOTO 3.5 4
-gantry> POLTEST e2      # which polarity holds the piece on e2?
-gantry> POL 1           # 1 = white held by repel, 0 = by attract
-gantry> RELEASE 200     # ms the grip fades over when a piece lands (0 = old kick)
+gantry> POL 1           # hold every piece by repel (0 = attract, the default)
+gantry> DWELL 150 300   # grip pause / settle pause, ms
 gantry> MAG 170
 gantry> OFF
 ```
@@ -676,8 +676,8 @@ longer.
 | Board diagram wrong | **Undo last move** for one bad move; **Edit board** for a full resync |
 | Arm drops pieces mid-drag | Raise `MAG_HOLD`/`MAG_EDGE` in `src/robot_moves.py` (the firmware clamps at `MAG_MAX_PWM`) |
 | **Neighbouring pieces dragged along as the arm passes** | Lower `MAG_EDGE`. This was the V1 board's defining problem; on 50 mm squares the magnet's edge stops 12.5 mm short of a flanking piece's centre, so if it still happens suspect the coil or the piece bases rather than the routing — see Clearances in [docs/HARDWARE.md](docs/HARDWARE.md) |
-| **A captured piece is dropped rather than set down, and rattles** | Raise `RELEASE` — `BURY` uses the same faded release a move does, so tuning it fixes both |
-| **`ERR out of range` on a capture** | The board is flashed with travel limits that stop at the board edge. Re-upload `chessbot_v1.ino`; V2 needs x `-480..0`, y `0..470` (banner `r6`) |
+| **A piece is towed after it is set down** | Raise the settle pause (`DWELL`, or the Settle slider) — `BURY` sets down the same way a move does, so tuning it fixes both |
+| **`ERR out of range` on a capture** | The board is flashed with travel limits that stop at the board edge. Re-upload `chessbot_v1.ino`; V2 needs x `-480..0`, y `0..470` (banner `r7`) |
 | **The arm skips slots that are visibly empty** | The saved pile in `config/rig.json` is stale. Reset the game from the menu, which clears it |
 | **Knight catches pieces leaving the back rank** | The opening pawn wall is the one case routing can't improve on — but on 50 mm squares that is still 25 mm each side, so this should no longer happen. If it does, the coil is too strong or reaching too far: lower `MAG_EDGE` |
 | Magnet coil getting hot | Lower `MAG_MAX_PWM` in the sketch, or feed the DRV8872 from a 5 V buck |

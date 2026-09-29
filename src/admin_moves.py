@@ -34,21 +34,18 @@ def goto_command(square):
     return f"GOTO {rig.orient_square(check_square(square))}"
 
 
-def move_command(from_square, to_square, colour, weave):
+def move_command(from_square, to_square, weave):
     """Drag the piece on `from_square` to `to_square`.
 
-    `colour` is "white" or "black" -- the coil polarity follows it, and the
-    wrong one shoves the piece off the square instead of holding it.
+    No colour: every piece is held the same way, by attract.
     `weave` picks KNIGHT (along the gridlines, clear of neighbours) over MOVE
     (straight between centres).
     """
     frm, to = check_square(from_square), check_square(to_square)
     if frm == to:
         raise ValueError("from and to are the same square")
-    if colour not in ("white", "black"):
-        raise ValueError(f"colour must be white or black, not {colour!r}")
     # Same builder as every game move, so /admin cannot spell it differently.
-    return robot_moves_legacy.drag_command(frm, to, colour == "white", bool(weave))
+    return robot_moves_legacy.drag_command(frm, to, bool(weave))
 
 
 def mag_command(mode):

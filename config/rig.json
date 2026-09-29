@@ -1,4 +1,6 @@
 {
-  "white_polarity": "repel",
-  "release_ms": 200
+  "polarity": "attract",
+  "graveyard": [],
+  "grip_ms": 150,
+  "settle_ms": 300
 }

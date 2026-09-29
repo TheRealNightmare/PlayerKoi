@@ -42,12 +42,12 @@ def plan_uci(board, uci, origin_square="h1"):
 
 class TestQuietMoves(unittest.TestCase):
     def test_a_pawn_is_one_straight_drag(self):
-        self.assertEqual(commands(plan_uci(chess.Board(), "e2e4")), ["MOVE e2e4 w"])
+        self.assertEqual(commands(plan_uci(chess.Board(), "e2e4")), ["MOVE e2e4"])
 
     def test_a_knight_weaves_instead(self):
         # The whole reason the verb differs: a knight's diagonal between
         # centres cuts the corner of an occupied square.
-        self.assertEqual(commands(plan_uci(chess.Board(), "b1c3")), ["KNIGHT b1c3 w"])
+        self.assertEqual(commands(plan_uci(chess.Board(), "b1c3")), ["KNIGHT b1c3"])
 
     def test_a_quiet_move_asks_the_human_for_nothing(self):
         self.assertEqual(prompts(plan_uci(chess.Board(), "e2e4")), [])
@@ -83,23 +83,21 @@ class TestCaptures(unittest.TestCase):
         issued = commands(plan_uci(self.board, "e4d5"))
         self.assertEqual(len(issued), 2)
         self.assertTrue(issued[0].startswith("BURY d5 "), issued[0])
-        self.assertEqual(issued[1], "MOVE e4d5 w")
+        self.assertEqual(issued[1], "MOVE e4d5")
 
     def test_a_capture_no_longer_stops_for_a_human(self):
         """The whole point of the bigger frame: no blocking prompt in an
         ordinary capture, because the arm can put the piece somewhere."""
         self.assertEqual(prompts(plan_uci(self.board, "e4d5")), [])
 
-    def test_the_bury_is_tagged_with_the_VICTIM_colour(self):
-        """Not the capturer's. The coil is carrying the black pawn here, and
-        white magnets are reversed on this set -- the wrong token shoves the
-        piece off the carriage instead of holding it."""
+    def test_the_bury_carries_no_colour(self):
+        """Every piece is held the same way, so BURY is just square + slot."""
         bury = commands(plan_uci(self.board, "e4d5"))[0]
-        self.assertTrue(bury.endswith(" b"), bury)
+        self.assertEqual(len(bury.split()), 4, bury)
 
     def test_the_bury_drives_to_a_real_slot(self):
         bury = commands(plan_uci(self.board, "e4d5"))[0]
-        _, square, x, y, _ = bury.split()
+        _, square, x, y = bury.split()
         self.assertEqual(square, "d5")
         self.assertIn((float(x), float(y)),
                       [legacy.rig.graveyard_slot_to_mm(s)
@@ -152,7 +150,7 @@ class TestEnPassant(unittest.TestCase):
         self.assertNotIn("d6", note)
 
     def test_the_drag_still_goes_to_the_destination(self):
-        self.assertEqual(commands(plan_uci(self.board, "e5d6"))[1], "MOVE e5d6 w")
+        self.assertEqual(commands(plan_uci(self.board, "e5d6"))[1], "MOVE e5d6")
 
 
 class TestCastling(unittest.TestCase):
@@ -174,13 +172,13 @@ class TestCastling(unittest.TestCase):
     def test_kingside_moves_the_king_then_weaves_the_rook(self):
         self.assertEqual(
             commands(plan_uci(self.kingside(), "e1g1")),
-            ["MOVE e1g1 w", "KNIGHT h1f1 w"],
+            ["MOVE e1g1", "KNIGHT h1f1"],
         )
 
     def test_queenside_moves_the_king_then_weaves_the_rook(self):
         self.assertEqual(
             commands(plan_uci(self.queenside(), "e1c1")),
-            ["MOVE e1c1 w", "KNIGHT a1d1 w"],
+            ["MOVE e1c1", "KNIGHT a1d1"],
         )
 
     def test_black_castles_on_its_own_rank(self):
@@ -189,7 +187,7 @@ class TestCastling(unittest.TestCase):
             board.push_san(san)
         self.assertEqual(
             commands(plan_uci(board, "e8g8")),
-            ["MOVE e8g8 b", "KNIGHT h8f8 b"],
+            ["MOVE e8g8", "KNIGHT h8f8"],
         )
 
     def test_the_rook_never_drags_straight_through_the_king(self):
@@ -222,7 +220,7 @@ class TestPromotion(unittest.TestCase):
     def test_a_capturing_promotion_buries_first_then_advises(self):
         steps = plan_uci(self.board, "b7a8q")
         self.assertTrue(steps[0].command.startswith("BURY a8 "))  # clear the rook
-        self.assertEqual(steps[1].command, "MOVE b7a8 w")
+        self.assertEqual(steps[1].command, "MOVE b7a8")
         self.assertFalse(steps[-1].blocking)        # then swap the queen in
 
     def test_the_promotion_suffix_is_not_sent_to_the_firmware(self):
@@ -247,13 +245,12 @@ class TestEveryLegalMovePlans(unittest.TestCase):
                 for command in commands(legacy.plan(board, move)):
                     parts = command.split()
                     if parts[0] == "BURY":
-                        # BURY <square> <x> <y> <w|b>
-                        self.assertEqual(len(parts), 5, command)
+                        # BURY <square> <x> <y>
+                        self.assertEqual(len(parts), 4, command)
                         self.assertIsNotNone(chess.parse_square(parts[1]))
                         float(parts[2]), float(parts[3])   # or ERR usage
-                        self.assertIn(parts[4], ("w", "b"), command)
                         continue
-                    verb, squares, polarity = parts
+                    verb, squares = parts
                     self.assertIn(verb, ("MOVE", "KNIGHT"))
                     self.assertEqual(len(squares), 4, command)
                     # Both halves must be real squares, or the firmware
@@ -308,13 +305,13 @@ class TestOrientation(unittest.TestCase):
     def test_the_command_is_rotated(self):
         self.assertEqual(
             commands(plan_uci(chess.Board(), "e2e4", origin_square="a8")),
-            ["MOVE d7d5 w"],
+            ["MOVE d7d5"],
         )
 
     def test_a_knight_command_is_rotated_too(self):
         self.assertEqual(
             commands(plan_uci(chess.Board(), "b1c3", origin_square="a8")),
-            ["KNIGHT g8f6 w"],
+            ["KNIGHT g8f6"],
         )
 
     def test_the_note_stays_in_real_notation(self):
@@ -336,7 +333,7 @@ class TestOrientation(unittest.TestCase):
         import rig
 
         board = chess.Board("rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2")
-        _, square, x, y, _ = commands(
+        _, square, x, y = commands(
             plan_uci(board, "e4d5", origin_square="a8"))[0].split()
         self.assertEqual(square, rig.orient_square("d5", "a8"))
         upright = commands(plan_uci(board, "e4d5", origin_square="h1"))[0].split()
@@ -348,7 +345,7 @@ class TestOrientation(unittest.TestCase):
         board = chess.Board("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1")
         self.assertEqual(
             commands(plan_uci(board, "e1g1", origin_square="a8")),
-            ["MOVE d8b8 w", "KNIGHT a8c8 w"],
+            ["MOVE d8b8", "KNIGHT a8c8"],
         )
 
     def test_the_default_origin_is_the_rig_constant(self):
@@ -359,7 +356,7 @@ class TestOrientation(unittest.TestCase):
 
         self.assertEqual(
             legacy.plan(chess.Board(), chess.Move.from_uci("e2e4"))[0].command,
-            f"MOVE {rig.orient_uci('e2e4')} w",
+            f"MOVE {rig.orient_uci('e2e4')}",
         )
 
     def test_every_legal_move_still_names_real_squares(self):
@@ -381,66 +378,27 @@ class TestOrientation(unittest.TestCase):
             board.push(move)
 
 
-class TestMagnetPolarity(unittest.TestCase):
-    """The white pieces on this set have their magnets the other way up, so
-    the coil polarity has to follow the colour being carried. Holding a white
-    piece with the black polarity pushes it off the square instead of
-    gripping it, and the release pulse grabs it instead of letting go -- so
-    the carriage drags it onward into the next move.
+class TestOnePolarity(unittest.TestCase):
+    """Every piece on this set has its magnet the same way up, so the coil
+    attracts all of them and no command says which colour it carries."""
 
-    The firmware decides what the coil does; this side only has to say which
-    colour it is. That is the w|b suffix on MOVE and KNIGHT.
-    """
-
-    @staticmethod
-    def _tokens(steps):
-        return [c.split()[-1] for c in commands(steps)]
-
-    def test_a_white_move_is_tagged_white(self):
-        self.assertEqual(self._tokens(plan_uci(chess.Board(), "e2e4")), ["w"])
-
-    def test_a_black_move_is_tagged_black(self):
+    def test_white_and_black_moves_are_spelled_alike(self):
         board = chess.Board()
+        self.assertEqual(commands(plan_uci(board, "e2e4")), ["MOVE e2e4"])
         board.push_san("e4")
-        self.assertEqual(self._tokens(plan_uci(board, "e7e5")), ["b"])
+        self.assertEqual(commands(plan_uci(board, "e7e5")), ["MOVE e7e5"])
 
-    def test_a_knight_carries_it_too(self):
-        self.assertEqual(self._tokens(plan_uci(chess.Board(), "b1c3")), ["w"])
-
-    def test_castling_tags_the_rook_like_the_king(self):
-        """Both commands move the same player's pieces, so a mismatch would
-        drop the rook halfway across the back rank."""
-        board = chess.Board("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1")
-        self.assertEqual(self._tokens(plan_uci(board, "e1g1")), ["w", "w"])
-        board = chess.Board("r3k2r/8/8/8/8/8/8/R3K2R b KQkq - 0 1")
-        self.assertEqual(self._tokens(plan_uci(board, "e8c8")), ["b", "b"])
-
-    def test_a_capture_tags_each_command_with_what_it_carries(self):
-        """Since the arm buries the victim, the coil now carries BOTH colours
-        in one move -- the black pawn out to its slot, then the white pawn in.
-        One token per command, each naming what that command lifts."""
-        board = chess.Board()
-        for san in ("e4", "d5"):
-            board.push_san(san)
-        self.assertEqual(self._tokens(plan_uci(board, "e4d5")), ["b", "w"])
-
-    def test_every_command_of_a_whole_game_is_tagged(self):
+    def test_no_command_of_a_whole_game_carries_a_colour(self):
         board = chess.Board()
         random.seed(17)
         for _ in range(200):
             if board.is_game_over():
                 board = chess.Board()
             move = random.choice(list(board.legal_moves))
-            mover = "w" if board.turn == chess.WHITE else "b"
-            # A BURY carries the captured piece, so it is tagged the opposite
-            # colour: the victim is always the side not to move, en passant
-            # included.
-            victim = "b" if mover == "w" else "w"
             for command in commands(legacy.plan(board, move)):
                 parts = command.split()
-                self.assertIn(len(parts), (3, 5), command)
-                self.assertEqual(parts[-1], victim if parts[0] == "BURY" else mover,
-                                 command)
+                self.assertEqual(len(parts), 4 if parts[0] == "BURY" else 2, command)
+                self.assertNotIn(parts[-1], ("w", "b"), command)
             board.push(move)
 
 
@@ -516,9 +474,9 @@ class TestEverythingStaysInTravel(unittest.TestCase):
     def test_the_default_origin_sends_real_squares(self):
         self.assertEqual(rig.ORIGIN_SQUARE, "h1")
         steps = legacy.plan(chess.Board(), chess.Move.from_uci("e2e4"))
-        self.assertEqual(commands(steps), ["MOVE e2e4 w"])
+        self.assertEqual(commands(steps), ["MOVE e2e4"])
         steps = legacy.plan(chess.Board(), chess.Move.from_uci("g1f3"))
-        self.assertEqual(commands(steps), ["KNIGHT g1f3 w"])
+        self.assertEqual(commands(steps), ["KNIGHT g1f3"])
 
     def test_every_square(self):
         for f in "abcdefgh":
@@ -535,7 +493,7 @@ class TestEverythingStaysInTravel(unittest.TestCase):
                         continue
                     frm = "abcdefgh"[f0] + str(r0 + 1)
                     to = "abcdefgh"[f1] + str(r1 + 1)
-                    self.assertInTravel(admin_moves.move_command(frm, to, "white", True))
+                    self.assertInTravel(admin_moves.move_command(frm, to, True))
 
     def test_all_four_castlings(self):
         for fen, uci in (
@@ -570,7 +528,7 @@ class TestEverythingStaysInTravel(unittest.TestCase):
 class TestAdminAndGamesShareOneMovementSystem(unittest.TestCase):
     """Every game move is sent exactly as /admin would send the same drag --
     same verb (KNIGHT for the L the firmware plans, MOVE otherwise), same
-    squares, same colour token. /admin is the thing verified on the rig, so
+    squares. /admin is the thing verified on the rig, so
     the games inherit that check."""
 
     def test_every_quiet_move_in_random_games(self):
@@ -585,7 +543,6 @@ class TestAdminAndGamesShareOneMovementSystem(unittest.TestCase):
                     expected = admin_moves.move_command(
                         chess.square_name(move.from_square),
                         chess.square_name(move.to_square),
-                        "white" if piece.color == chess.WHITE else "black",
                         piece.piece_type == chess.KNIGHT)
                     self.assertEqual(commands(legacy.plan(board, move))[0], expected)
                     checked += 1
@@ -600,16 +557,15 @@ class TestAdminAndGamesShareOneMovementSystem(unittest.TestCase):
             ("b", "e8g8", ("e8", "g8"), ("h8", "f8")),
             ("b", "e8c8", ("e8", "c8"), ("a8", "d8")),
         ):
-            colour = "white" if side == "w" else "black"
             got = commands(legacy.plan(chess.Board(fen.format(side)), chess.Move.from_uci(uci)))
-            self.assertEqual(got, [admin_moves.move_command(*king, colour, False),
-                                   admin_moves.move_command(*rook, colour, True)])
+            self.assertEqual(got, [admin_moves.move_command(*king, False),
+                                   admin_moves.move_command(*rook, True)])
 
     def test_the_knight_command_is_unchanged(self):
         # The L itself is the firmware's; this side only names it.
         self.assertEqual(commands(legacy.plan(chess.Board(), chess.Move.from_uci("g1f3"))),
-                         ["KNIGHT g1f3 w"])
-        self.assertEqual(admin_moves.move_command("g1", "f3", "white", True), "KNIGHT g1f3 w")
+                         ["KNIGHT g1f3"])
+        self.assertEqual(admin_moves.move_command("g1", "f3", True), "KNIGHT g1f3")
 
 
 class TestGraveyardFollowsTheGridlines(unittest.TestCase):

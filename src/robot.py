@@ -138,7 +138,7 @@ class MockGantry:
         if command == "STATUS":
             return "0.00 0.00 1"
         if command.startswith("POL"):
-            return command[3:].strip() or "1"
+            return command[3:].strip() or "0"
         return ""
 
     def abort(self):
@@ -200,14 +200,12 @@ class Robot:
         # A board older than this code expects. Kept apart from `halted`
         # because home() clears a halt on purpose -- re-homing is the recovery
         # path -- and re-homing plainly does not reflash an Arduino. An r1
-        # board accepts every command we send and silently attracts for all of
-        # them, so it would shove a white piece off the board on move one.
-        # Set by open_gantry once it has read the saved config; None means
-        # nobody has told the board yet.
-        self.white_polarity = None
-        self.release_ms = None
-        # grip/settle pauses and the de-cling kick, as last sent (see
-        # set_tuning). Empty until open_gantry tells the board.
+        # board would still hold white by repel and shove it off its square.
+        # What holds every piece, as last sent (see set_polarity). None until
+        # open_gantry tells the board.
+        self.polarity = None
+        # grip/settle pauses, as last sent (see set_tuning). Empty until
+        # open_gantry tells the board.
         self.tuning = {}
         self.firmware_rev = rig.banner_rev(getattr(link, "banner", None))
         self.stale_firmware = self.firmware_rev < rig.FIRMWARE_REV
@@ -215,7 +213,7 @@ class Robot:
             self.message = (
                 f"firmware is r{self.firmware_rev}, this needs r{rig.FIRMWARE_REV} -- "
                 "reflash firmware/chessbot_v1/chessbot_v1.ino "
-                "(an r1 board ignores the w|b polarity and shoves white pieces)"
+                "(an r6 or older board holds white by repel and shoves it off its square)"
             )
 
     @property
@@ -266,36 +264,17 @@ class Robot:
                 self.busy = False
             self._on_status(None, None)
 
-    def set_white_polarity(self, polarity):
-        """Tell the board what holds a white piece, and remember it.
+    def set_polarity(self, polarity):
+        """Tell the board what holds every piece -- attract or repel.
 
         Re-sent on every connect by open_gantry, because opening the port
-        reboots the Uno and it forgets. Saving is the caller's job -- this
-        layer doesn't know about config files.
+        reboots the Uno and it forgets. Saving is the caller's job.
         """
-        if polarity not in rig_config.POLARITIES:
-            raise ValueError(f"unknown polarity {polarity!r}")
-        self._link.send(rig_config.pol_command(polarity))
+        command = rig_config.pol_command(polarity)   # refuses nonsense unsent
+        self._link.send(command)
         with self._lock:
-            self.white_polarity = polarity
+            self.polarity = polarity
         return polarity
-
-    def set_release_ms(self, release_ms):
-        """How long the grip takes to fade when a piece is set down.
-
-        Re-sent on every connect for the same reason as the polarity: opening
-        the port reboots the Uno and it forgets. 0 restores the old instant
-        kick, which is what made the pieces jump.
-        """
-        release_ms = int(release_ms)
-        if not rig.MIN_RELEASE_MS <= release_ms <= rig.MAX_RELEASE_MS:
-            raise ValueError(
-                f"release_ms must be {rig.MIN_RELEASE_MS}-{rig.MAX_RELEASE_MS}, "
-                f"not {release_ms}")
-        self._link.send(rig_config.release_command(release_ms))
-        with self._lock:
-            self.release_ms = release_ms
-        return release_ms
 
     def raw(self, command):
         """Sends a firmware command directly. For the bench console during
@@ -303,12 +282,11 @@ class Robot:
         return self._link.send(command)
 
     def set_tuning(self, **values):
-        """Grip/settle pauses and the de-cling kick (rig.MOTION_TUNING).
+        """Grip/settle pauses (rig.MOTION_TUNING).
 
         Any subset may be given; the rest keep their last value, falling back
-        to the defaults. Sent as the two firmware verbs that carry them, DWELL
-        and KICK, and re-sent on every connect by open_gantry for the same
-        reason as the polarity: opening the port reboots the Uno.
+        to the defaults. Sent as DWELL, and re-sent on every connect by
+        open_gantry, because opening the port reboots the Uno and it forgets.
         """
         merged = {name: spec[0] for name, spec in rig.MOTION_TUNING.items()}
         merged.update(self.tuning)
@@ -323,7 +301,6 @@ class Robot:
                 raise ValueError(f"{name} must be {low}-{high}, not {value}")
             merged[name] = value
         self._link.send(rig_config.dwell_command(merged["grip_ms"], merged["settle_ms"]))
-        self._link.send(rig_config.kick_command(merged["kick_duty"], merged["kick_ms"]))
         with self._lock:
             self.tuning = merged
         return dict(merged)
@@ -600,8 +577,7 @@ class RobotController:
                 "message": self._robot.message,
                 "firmware_rev": self._robot.firmware_rev,
                 "stale_firmware": self._robot.stale_firmware,
-                "white_polarity": self._robot.white_polarity,
-                "release_ms": self._robot.release_ms,
+                "polarity": self._robot.polarity,
                 "tuning": dict(self._robot.tuning),
             }
 
@@ -618,21 +594,15 @@ class RobotController:
         except GantryError as exc:
             return False, str(exc)
 
-    def set_white_polarity(self, polarity):
-        """Applies the setting to the board and saves it, so the next launch
+    def set_polarity(self, polarity):
+        """Applies the polarity to the board and saves it, so the next launch
         starts with whatever was found to work."""
-        applied = self._robot.set_white_polarity(polarity)
-        rig_config.save(white_polarity=applied)
-        return applied
-
-    def set_release_ms(self, release_ms):
-        """Applies the fade time and saves it, so a value that works is kept."""
-        applied = self._robot.set_release_ms(release_ms)
-        rig_config.save(release_ms=applied)
+        applied = self._robot.set_polarity(polarity)
+        rig_config.save(polarity=applied)
         return applied
 
     def set_tuning(self, **values):
-        """Applies grip/settle/kick to the board and saves them."""
+        """Applies grip/settle to the board and saves them."""
         applied = self._robot.set_tuning(**values)
         rig_config.save(**applied)
         return applied
@@ -731,7 +701,7 @@ class RobotController:
 
 
 def open_gantry(target, topple_delay_s=robot_moves.DEFAULT_TOPPLE_DELAY_S, on_status=None,
-                log=print, protocol="legacy", white_polarity=None, release_ms=None):
+                log=print, protocol="legacy", polarity=None):
     """Builds a Robot from a CLI argument: a serial port path, "auto" to
     detect the Uno, or "mock". Does not home -- the caller decides when the
     board is clear enough for the carriage to move.
@@ -756,17 +726,14 @@ def open_gantry(target, topple_delay_s=robot_moves.DEFAULT_TOPPLE_DELAY_S, on_st
     link = MockGantry(log=log) if target == "mock" else link_factory(target)
     robot = Robot(link, topple_delay_s=topple_delay_s, on_status=on_status, planner=planner)
 
-    # The board forgot its polarity when the port was opened -- that reset it.
-    # Push the saved value now, before anything can ask it to move. Skipped on
-    # a stale board, which has no POL verb and would answer ERR.
+    # The board forgot its polarity, pauses and speed when the port was
+    # opened -- that reset it. Push the saved values now, before anything can
+    # ask it to move. Skipped on a stale board, which would not be driven anyway.
     if not robot.stale_firmware:
         settings = rig_config.load()
-        robot.set_white_polarity(white_polarity or settings["white_polarity"])
-        robot.set_release_ms(
-            settings["release_ms"] if release_ms is None else release_ms)
         if protocol == "legacy":
-            # Same reason: the reset forgot the pauses, kick and speed. The
-            # native firmware has no DWELL/KICK verbs.
+            # The native firmware has no POL or DWELL verb.
+            robot.set_polarity(polarity or settings["polarity"])
             robot.set_tuning(**{name: settings[name] for name in rig.MOTION_TUNING})
             robot.raw(rig_config.speed_command())
     return robot
@@ -780,10 +747,9 @@ def _console(robot):
     chess logic is involved -- which is the whole point during assembly.
     """
     print(f"Connected to {robot.port}. Firmware commands go through verbatim.")
-    print("chessbot_v1: PING / POS / MAG 0|1|2 / GOTO e4 / MOVE e2e4 w|b / HOME")
-    print("  POLTEST e2  park there, attract 2s then repel 2s -- which one holds it?")
-    print("  POL 0|1     1 = white pieces are held by REPEL (this set), 0 = by attract")
-    print("  RELEASE ms  how slowly the grip fades when a piece lands (0 = old kick)")
+    print("chessbot_v1: PING / POS / MAG 0|1|2 / GOTO e4 / MOVE e2e4 / HOME")
+    print("  POL 0|1     what holds every piece: 0 = attract (default), 1 = repel")
+    print("  DWELL g s   grip pause before a drag / settle pause after a set-down, ms")
     print("  (check the pitch: GOTO a1 then POS should read -210 0)")
     print("chess_gantry: PING / HOME / GOTO 3.5 4 / MAG 170 / PULSE / TOPPLE / OFF / STATUS")
     print("Ctrl-C or 'quit' to leave (drops the magnet on the way out).\n")

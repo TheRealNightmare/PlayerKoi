@@ -91,53 +91,31 @@ FEED_MMS = 40.0
 MAG_FULL = 255
 MAG_DIAG = 155
 
-# Letting go of a piece. The pieces hold permanent magnets, so a full-strength
-# reverse does not release one so much as punch it -- it jumps and rattles as
-# it lands. So the release fades the grip to nothing first, lets the piece
-# settle, and only then gives a WEAK reverse to clear residual magnetism from
-# the core. The kick can be weak because the piece is already seated by then;
-# dropping it entirely is not an option, since a magnetised core tows the
-# piece along when the carriage leaves.
-MAG_KICK = 110
-
-# Hand-tuned motion settings, each (default, min, max). All four are runtime
-# values on the board (DWELL, KICK), re-sent on every connect and adjustable
-# from the web UI, because they are only judged by watching the arm:
+# Hand-tuned motion settings, each (default, min, max). Both are runtime
+# values on the board (DWELL), re-sent on every connect and adjustable from
+# the web UI, because they are only judged by watching the arm:
 #
 #   grip_ms    coil on, carriage still, before a piece is dragged -- so it is
 #              pulled flat onto the pole first
 #   settle_ms  after the set-down, coil fully OFF, before the carriage drives
-#              on -- leaving at once is what tows the piece
-#   kick_duty  strength of the weak reverse that clears the core after a
-#   kick_ms    set-down, and how long. A piece still towed after the settle
-#              means the core stayed magnetised: raise these.
+#              on -- so the core's residual magnetism dies away. A piece still
+#              towed when the carriage leaves means this is too short.
 MOTION_TUNING = {
     "grip_ms": (150, 0, 2000),
     "settle_ms": (300, 0, 2000),
-    "kick_duty": (MAG_KICK, 0, 255),
-    "kick_ms": (20, 0, 200),
 }
 
-# How long that fade takes. Tunable live (RELEASE, and the slider in the web
-# UI) because the right value depends on the piece and the coil; 0 restores
-# the old instant kick.
-DEFAULT_RELEASE_MS = 200
-MIN_RELEASE_MS, MAX_RELEASE_MS = 0, 2000
-
-# The white pieces on this set were built with their magnets the other way up,
-# so they need the opposite coil polarity: attract holds a black piece, repel
-# holds a white one. Measured at the bench with MAG 1 / MAG 2.
+# Every piece on this set has its magnet the same way up, so ONE polarity
+# holds all of them, white and black alike. A carry is always: coil off,
+# drive to the source, coil on + grip_ms, carry, coil off + settle_ms. The
+# firmware owns that sequence (doMove/doKnight/doBury in chessbot_v1.ino);
+# moves carry no colour.
 #
-# The firmware owns the actual coil switching (WHITE_IS_REVERSED in
-# chessbot_v1.ino); this side only has to say which colour is being carried,
-# which it does with a w|b suffix on MOVE and KNIGHT. Mirrored here because
-# every other measured fact about the machine is in this file.
-WHITE_IS_REVERSED = True
-
-
-def colour_token(is_white):
-    """The w|b suffix for MOVE/KNIGHT. The firmware maps it to a polarity."""
-    return "w" if is_white else "b"
+# Which polarity that is: attract, as the set was magnetised. It is a runtime
+# setting (POL, saved in config/rig.json, toggled in the web UI) in case the
+# magnets turn out to be fitted the other way up. Mirrors HOLD_BY_REPEL in
+# the sketch.
+HOLD_BY_REPEL = False
 
 
 # The square whose outer corner is the origin: where the carriage rests, and
@@ -170,7 +148,11 @@ READY_BANNER = "READY ChessBot-V1"
 #   r6  DWELL (grip/settle pauses) and KICK (tunable de-cling), both sent on
 #       connect, which an r5 board answers with ERR; BURY travels the
 #       gridlines instead of a straight diagonal.
-FIRMWARE_REV = 6
+#   r7  every piece re-magnetised the same way up: the coil attracts all of
+#       them. POL, POLTEST, RELEASE and KICK are gone, as is the w|b suffix on
+#       MOVE/KNIGHT/BURY; a set-down is a plain coil-off plus the settle
+#       pause. An r6 board would still hold white by repel and shove it off.
+FIRMWARE_REV = 7
 
 
 def banner_rev(banner):

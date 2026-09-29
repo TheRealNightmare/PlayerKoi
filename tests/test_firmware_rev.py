@@ -1,14 +1,13 @@
 """Tests for the firmware-revision handshake and the saved rig settings.
 
-Both exist because of one silent failure: r1 of the sketch accepts
-"MOVE e2e4 w" -- parsePly reads four characters and ignores the rest -- and
-then attracts for every move, which shoves every white piece off its square.
-The host believed it had sent a polarity; the board had never heard of one;
-nothing anywhere said so.
+The handshake exists because of one silent failure: a board flashed with an
+older sketch accepts the same commands and does something different with
+them. Up to r6 the sketch held white pieces by REPEL; since every piece was
+re-magnetised the same way up (r7) that shoves a white piece off its square.
 
 So the point of these is not that the numbers parse. It is that a stale board
-refuses to move, that homing cannot talk it out of that, and that the setting
-survives a restart.
+refuses to move, that homing cannot talk it out of that, and that the saved
+settings survive a restart and reach the board on connect.
 """
 
 import json
@@ -53,11 +52,10 @@ class TestBannerParsing(unittest.TestCase):
         self.assertEqual(rig.banner_rev("READY ChessBot-V1 r2"), 2)
         self.assertEqual(rig.banner_rev("READY ChessBot-V1 r17"), 17)
 
-    def test_this_code_expects_at_least_the_bury_revision(self):
-        """r2 added the polarity suffix, r3 the faded release, r4 BURY. The
-        host sends the first two on connect and needs the third for any
-        capture, so it needs r4."""
-        self.assertGreaterEqual(rig.FIRMWARE_REV, 4)
+    def test_this_code_expects_the_one_polarity_revision(self):
+        """r7 is where every piece is held by attract. An r6 board would still
+        repel white, so anything older has to be refused."""
+        self.assertGreaterEqual(rig.FIRMWARE_REV, 7)
 
     def test_the_sketch_and_rig_py_agree_on_the_revision(self):
         """The one that actually matters, and the one nothing checked before.
@@ -92,6 +90,12 @@ class TestStaleBoardRefuses(unittest.TestCase):
     def test_an_r1_board_is_stale(self):
         robot = stale_robot()
         self.assertEqual(robot.firmware_rev, 1)
+        self.assertTrue(robot.stale_firmware)
+
+    def test_an_r6_board_is_stale(self):
+        """The last sketch that held white by repel."""
+        robot = Robot(MockGantry(banner="READY ChessBot-V1 r6"),
+                      planner=robot_moves_legacy)
         self.assertTrue(robot.stale_firmware)
 
     def test_the_message_says_what_to_do(self):
@@ -132,147 +136,121 @@ class TestStaleBoardRefuses(unittest.TestCase):
         self.assertEqual(robot._link.commands, [])
 
 
-class TestSavedPolarity(unittest.TestCase):
-    def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp()) / "rig.json"
-
-    def test_it_defaults_to_the_measured_value(self):
-        """rig.WHITE_IS_REVERSED is the measurement; the file is only an
-        override for it."""
-        expected = rig_config.REPEL if rig.WHITE_IS_REVERSED else rig_config.ATTRACT
-        self.assertEqual(rig_config.load(self.tmp)["white_polarity"], expected)
-
-    def test_it_round_trips(self):
-        rig_config.save(rig_config.ATTRACT, path=self.tmp)
-        self.assertEqual(rig_config.load(self.tmp)["white_polarity"], rig_config.ATTRACT)
-        rig_config.save(rig_config.REPEL, path=self.tmp)
-        self.assertEqual(rig_config.load(self.tmp)["white_polarity"], rig_config.REPEL)
-
-    def test_a_corrupt_file_falls_back_instead_of_raising(self):
-        """A rig that won't start because its config has a stray comma is
-        worse than one that starts with the compiled-in value."""
-        self.tmp.write_text("{ not json")
-        self.assertIn("white_polarity", rig_config.load(self.tmp))
-
-    def test_an_unknown_value_in_the_file_is_ignored(self):
-        self.tmp.write_text(json.dumps({"white_polarity": "sideways"}))
-        self.assertIn(rig_config.load(self.tmp)["white_polarity"], rig_config.POLARITIES)
-
-    def test_saving_nonsense_is_refused(self):
-        with self.assertRaises(ValueError):
-            rig_config.save("sideways", path=self.tmp)
-
-    def test_the_pol_command_matches_the_polarity(self):
-        """POL 1 means white is reversed, i.e. held by repel."""
-        self.assertEqual(rig_config.pol_command(rig_config.REPEL), "POL 1")
-        self.assertEqual(rig_config.pol_command(rig_config.ATTRACT), "POL 0")
-
-
-class TestSavedReleaseTime(unittest.TestCase):
-    """How slowly the grip lets go. A hard release punches the piece and it
-    jumps; this is the knob that stops it."""
+class TestOldSettingsAreIgnored(unittest.TestCase):
+    """config/rig.json files written before r7 still carry white_polarity and
+    release_ms. They must load cleanly, and the next save must drop them."""
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp()) / "rig.json"
+        self.tmp.write_text(json.dumps(
+            {"white_polarity": "repel", "release_ms": 200, "kick_duty": 110,
+             "kick_ms": 20, "settle_ms": 400}))
 
-    def test_it_defaults_to_the_measured_value(self):
-        self.assertEqual(rig_config.load(self.tmp)["release_ms"], rig.DEFAULT_RELEASE_MS)
-
-    def test_it_round_trips(self):
-        rig_config.save(release_ms=350, path=self.tmp)
-        self.assertEqual(rig_config.load(self.tmp)["release_ms"], 350)
-
-    def test_zero_is_allowed_and_means_the_old_instant_kick(self):
-        rig_config.save(release_ms=0, path=self.tmp)
-        self.assertEqual(rig_config.load(self.tmp)["release_ms"], 0)
-
-    def test_saving_one_setting_keeps_the_other(self):
-        """Changing a control in the UI must not silently reset its
-        neighbour -- they share one file."""
-        rig_config.save(white_polarity=rig_config.ATTRACT, release_ms=400, path=self.tmp)
-        rig_config.save(release_ms=120, path=self.tmp)
+    def test_an_old_file_still_loads(self):
         settings = rig_config.load(self.tmp)
-        self.assertEqual(settings["release_ms"], 120)
-        self.assertEqual(settings["white_polarity"], rig_config.ATTRACT)
+        self.assertEqual(settings["settle_ms"], 400)
+        for gone in ("white_polarity", "release_ms", "kick_duty", "kick_ms"):
+            self.assertNotIn(gone, settings)
 
-        rig_config.save(white_polarity=rig_config.REPEL, path=self.tmp)
-        self.assertEqual(rig_config.load(self.tmp)["release_ms"], 120)
+    def test_the_next_save_drops_the_old_keys(self):
+        rig_config.save(grip_ms=200, path=self.tmp)
+        stored = json.loads(self.tmp.read_text())
+        self.assertEqual(stored["grip_ms"], 200)
+        self.assertEqual(stored["settle_ms"], 400)
+        for gone in ("white_polarity", "release_ms", "kick_duty", "kick_ms"):
+            self.assertNotIn(gone, stored)
 
-    def test_an_out_of_range_value_in_the_file_is_ignored(self):
-        self.tmp.write_text(json.dumps({"release_ms": 99999}))
-        self.assertEqual(rig_config.load(self.tmp)["release_ms"], rig.DEFAULT_RELEASE_MS)
-
-    def test_a_non_numeric_value_in_the_file_is_ignored(self):
-        self.tmp.write_text(json.dumps({"release_ms": "slowly"}))
-        self.assertEqual(rig_config.load(self.tmp)["release_ms"], rig.DEFAULT_RELEASE_MS)
-
-    def test_saving_out_of_range_is_refused(self):
-        for bad in (-1, rig.MAX_RELEASE_MS + 1, "slowly"):
-            with self.assertRaises(ValueError, msg=bad):
-                rig_config.save(release_ms=bad, path=self.tmp)
-
-    def test_the_release_command_is_formed_correctly(self):
-        self.assertEqual(rig_config.release_command(200), "RELEASE 200")
-        self.assertEqual(rig_config.release_command(0), "RELEASE 0")
+    def test_the_removed_settings_cannot_be_saved(self):
+        for gone in ("white_polarity", "release_ms", "kick_duty", "kick_ms"):
+            with self.assertRaises((TypeError, ValueError), msg=gone):
+                rig_config.save(path=self.tmp, **{gone: 1})
 
 
-class TestPolarityReachesTheBoard(unittest.TestCase):
-    def test_setting_it_sends_pol(self):
-        robot = current_robot()
-        robot.set_white_polarity(rig_config.ATTRACT)
-        self.assertIn("POL 0", robot._link.commands)
-        self.assertEqual(robot.white_polarity, rig_config.ATTRACT)
-
-    def test_an_unknown_polarity_is_refused_before_anything_is_sent(self):
-        robot = current_robot()
-        with self.assertRaises(ValueError):
-            robot.set_white_polarity("sideways")
-        self.assertEqual(robot._link.commands, [])
-
+class TestSettingsReachTheBoard(unittest.TestCase):
     def test_open_gantry_pushes_every_setting_on_connect(self):
         """Opening the port reboots the Uno, so whatever it was told last
         time is gone. If this stops happening, the board silently reverts to
         its compiled defaults."""
         from robot import open_gantry
 
-        robot = open_gantry("mock", white_polarity=rig_config.ATTRACT, release_ms=120)
+        robot = open_gantry("mock")
         commands = robot._link.commands
-        self.assertEqual(commands[:2], ["POL 0", "RELEASE 120"])
-        self.assertEqual([c.split()[0] for c in commands[2:]], ["DWELL", "KICK", "SPEED"])
+        self.assertEqual([c.split()[0] for c in commands], ["POL", "DWELL", "SPEED"])
         self.assertEqual(commands[-1], "SPEED 40")
         self.assertEqual(set(robot.tuning), set(rig.MOTION_TUNING))
-        self.assertEqual(robot.white_polarity, rig_config.ATTRACT)
-        self.assertEqual(robot.release_ms, 120)
 
-    def test_the_settings_go_out_before_anything_can_move(self):
-        """A move sent before RELEASE would use the compiled default, which
-        is the one case the whole config path exists to prevent."""
+    def test_no_release_or_kick_verbs_are_sent(self):
+        """r7 has no RELEASE or KICK -- sending one would come back ERR."""
         from robot import open_gantry
 
-        robot = open_gantry("mock")
-        verbs = [c.split()[0] for c in robot._link.commands]
-        self.assertEqual(verbs, ["POL", "RELEASE", "DWELL", "KICK", "SPEED"])
-        self.assertFalse({"MOVE", "KNIGHT", "BURY", "GOTO", "HOME"} & set(verbs))
+        verbs = {c.split()[0] for c in open_gantry("mock")._link.commands}
+        self.assertFalse({"RELEASE", "KICK"} & verbs)
+        self.assertFalse({"MOVE", "KNIGHT", "BURY", "GOTO", "HOME"} & verbs)
 
-    def test_setting_the_release_sends_it(self):
-        robot = current_robot()
-        robot.set_release_ms(350)
-        self.assertIn("RELEASE 350", robot._link.commands)
-        self.assertEqual(robot.release_ms, 350)
-
-    def test_an_out_of_range_release_is_refused_before_sending(self):
-        robot = current_robot()
-        with self.assertRaises(ValueError):
-            robot.set_release_ms(rig.MAX_RELEASE_MS + 1)
-        self.assertEqual(robot._link.commands, [])
-
-    def test_a_stale_board_is_sent_neither_setting(self):
-        """r1 has neither verb and would answer ERR, which would look like a
-        dead link rather than old firmware."""
+    def test_a_stale_board_is_sent_nothing(self):
         robot = stale_robot()
         self.assertEqual(robot._link.commands, [])
-        self.assertIsNone(robot.white_polarity)
-        self.assertIsNone(robot.release_ms)
+        self.assertIsNone(robot.polarity)
+
+    def test_the_polarity_goes_out_first(self):
+        """Before anything can move, so no drag uses the compiled default."""
+        from robot import open_gantry
+
+        robot = open_gantry("mock", polarity=rig_config.REPEL)
+        self.assertEqual(robot._link.commands[0], "POL 1")
+        self.assertEqual(robot.polarity, rig_config.REPEL)
+
+
+class TestOnePolarityToggle(unittest.TestCase):
+    """One polarity for every piece, switchable in case the magnets are
+    fitted the other way up."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp()) / "rig.json"
+
+    def test_it_defaults_to_attract(self):
+        self.assertFalse(rig.HOLD_BY_REPEL)
+        self.assertEqual(rig_config.load(self.tmp)["polarity"], rig_config.ATTRACT)
+
+    def test_it_round_trips(self):
+        rig_config.save(polarity=rig_config.REPEL, path=self.tmp)
+        self.assertEqual(rig_config.load(self.tmp)["polarity"], rig_config.REPEL)
+        rig_config.save(polarity=rig_config.ATTRACT, path=self.tmp)
+        self.assertEqual(rig_config.load(self.tmp)["polarity"], rig_config.ATTRACT)
+
+    def test_saving_it_keeps_the_pauses(self):
+        rig_config.save(settle_ms=700, path=self.tmp)
+        rig_config.save(polarity=rig_config.REPEL, path=self.tmp)
+        self.assertEqual(rig_config.load(self.tmp)["settle_ms"], 700)
+
+    def test_nonsense_is_ignored_on_load_and_refused_on_save(self):
+        self.tmp.write_text(json.dumps({"polarity": "sideways"}))
+        self.assertEqual(rig_config.load(self.tmp)["polarity"], rig_config.ATTRACT)
+        with self.assertRaises(ValueError):
+            rig_config.save(polarity="sideways", path=self.tmp)
+
+    def test_the_old_white_only_setting_is_not_carried_over(self):
+        """white_polarity=repel meant 'white is the opposite of black'.
+        Reading it as 'repel every piece' would drop every black piece."""
+        self.tmp.write_text(json.dumps({"white_polarity": "repel"}))
+        self.assertEqual(rig_config.load(self.tmp)["polarity"], rig_config.ATTRACT)
+
+    def test_the_pol_command(self):
+        self.assertEqual(rig_config.pol_command(rig_config.ATTRACT), "POL 0")
+        self.assertEqual(rig_config.pol_command(rig_config.REPEL), "POL 1")
+
+    def test_setting_it_sends_pol(self):
+        robot = current_robot()
+        robot.set_polarity(rig_config.REPEL)
+        self.assertEqual(robot._link.commands, ["POL 1"])
+        self.assertEqual(robot.polarity, rig_config.REPEL)
+
+    def test_an_unknown_polarity_is_refused_before_anything_is_sent(self):
+        robot = current_robot()
+        with self.assertRaises(ValueError):
+            robot.set_polarity("sideways")
+        self.assertEqual(robot._link.commands, [])
+        self.assertIsNone(robot.polarity)
 
 
 if __name__ == "__main__":
@@ -280,8 +258,8 @@ if __name__ == "__main__":
 
 
 class TestTheSketchMatchesTheMotionSettings(unittest.TestCase):
-    """r6: DWELL and KICK exist, the sketch's defaults are rig.py's, and it
-    starts at the same 40mm/s the host sends."""
+    """DWELL exists, the sketch's defaults are rig.py's, and it starts at the
+    same 40mm/s the host sends."""
 
     @classmethod
     def setUpClass(cls):
@@ -295,15 +273,72 @@ class TestTheSketchMatchesTheMotionSettings(unittest.TestCase):
 
     def test_the_verbs_exist(self):
         self.assertIn('cmd == "DWELL"', self.sketch)
-        self.assertIn('cmd == "KICK"', self.sketch)
+
+    def test_the_pol_verb_exists(self):
+        self.assertIn('cmd == "POL"', self.sketch)
+
+    def test_the_sketch_default_matches_rig(self):
+        match = re.search(r"const\s+bool\s+HOLD_BY_REPEL\s*=\s*(true|false)", self.sketch)
+        self.assertIsNotNone(match)
+        self.assertEqual(match.group(1) == "true", rig.HOLD_BY_REPEL)
+
+    def test_the_removed_verbs_are_gone(self):
+        for verb in ("POLTEST", "RELEASE", "KICK"):
+            self.assertNotIn(f'cmd == "{verb}"', self.sketch, verb)
 
     def test_the_defaults_match_rig(self):
         self.assertEqual(self._const("GRIP_MS"), rig.MOTION_TUNING["grip_ms"][0])
         self.assertEqual(self._const("SETTLE_MS"), rig.MOTION_TUNING["settle_ms"][0])
-        self.assertEqual(self._const("MAG_KICK"), rig.MOTION_TUNING["kick_duty"][0])
-        self.assertEqual(self._const("RELEASE_KICK_MS"), rig.MOTION_TUNING["kick_ms"][0])
 
     def test_the_feed_rate_matches_rig(self):
         match = re.search(r"float\s+feedRateMMS\s*=\s*([\d.]+)", self.sketch)
         self.assertEqual(float(match.group(1)), rig.FEED_MMS)
         self.assertEqual(rig.FEED_MMS, 40.0)
+
+
+class TestTheSketchCarriesEveryPieceTheSameWay(unittest.TestCase):
+    """r7: coil off -> drive to the source -> hold + grip -> carry ->
+    coil off + settle. Checked in the source, since there is no Uno here."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.sketch = (Path(__file__).resolve().parent.parent
+                      / "firmware" / "chessbot_v1" / "chessbot_v1.ino").read_text()
+
+    def _body(self, signature):
+        # The definition, not a forward declaration: a "(...) {" line.
+        start = re.search(re.escape(signature) + r"[^;{]*\{", self.sketch).start()
+        end = self.sketch.index("\n}\n", start)
+        return self.sketch[start:end]
+
+    def test_every_carry_forces_the_coil_off_before_driving_to_the_piece(self):
+        for fn in ("bool doMove(", "bool doKnight(", "bool doBury("):
+            body = self._body(fn)
+            self.assertIn("magOff();", body, fn)
+            self.assertLess(body.index("magOff();"),
+                            body.index("if (!gotoSquare(f0, r0))"), fn)
+
+    def test_every_carry_holds_through_magHold(self):
+        """So the one POL setting decides the polarity of every carry --
+        none of them may drive the coil a fixed way on its own."""
+        for fn in ("bool doMove(", "bool doKnight(", "bool doBury(",
+                   "void magRelease("):
+            body = self._body(fn)
+            self.assertNotIn("magRepel", body, fn)
+            self.assertNotIn("magAttract", body, fn)
+
+    def test_the_hold_follows_the_one_setting(self):
+        body = self._body("void magHold(")
+        self.assertIn("if (holdByRepel) magRepel(duty);", body)
+        self.assertIn("magAttract(duty);", body)
+
+    def test_the_release_is_a_plain_off_then_the_settle_pause(self):
+        body = self._body("void magRelease(")
+        self.assertIn("magOff();", body)
+        self.assertIn("delay(settleMS);", body)
+        self.assertLess(body.index("magOff();"), body.index("delay(settleMS);"))
+        self.assertNotIn("magHold", body)
+
+    def test_there_is_no_colour_left_in_the_protocol(self):
+        for gone in ("whiteReversed", "WHITE_IS_REVERSED", "parseColour", "reversed"):
+            self.assertNotIn(gone, self.sketch, gone)

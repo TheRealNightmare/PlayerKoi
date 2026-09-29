@@ -211,18 +211,11 @@
       <div id="robotMsg" class="nr-alert nr-clr nr-border" data-color="red" hidden></div>
       <div id="staleFirmware" class="nr-alert nr-clr nr-border" data-color="red" hidden></div>
       <div id="polarityRow">
-        <span class="nr-label">White pieces held by</span>
-        <label class="nr-label"><input type="radio" class="nr-check" name="whitePolarity"
+        <span class="nr-label">Pieces held by</span>
+        <label class="nr-label"><input type="radio" class="nr-check" name="polarity"
                value="attract" data-color="cyan"> attract</label>
-        <label class="nr-label"><input type="radio" class="nr-check" name="whitePolarity"
+        <label class="nr-label"><input type="radio" class="nr-check" name="polarity"
                value="repel" data-color="cyan"> repel</label>
-      </div>
-      <div id="releaseRow">
-        <label class="nr-label" for="releaseMs">Set-down ease
-          <input type="range" class="nr-slider" id="releaseMs"
-                 min="0" max="600" step="25" data-color="cyan">
-          <span id="releaseMsVal" class="nr-badge nr-clr nr-border" data-color="cyan"></span>
-        </label>
       </div>
       <div id="tuningRow">
         <label class="nr-label" for="tuneGrip">Grip pause
@@ -234,16 +227,6 @@
           <input type="range" class="nr-slider" id="tuneSettle"
                  min="0" max="1500" step="50" data-color="cyan">
           <span id="tuneSettleVal" class="nr-badge nr-clr nr-border" data-color="cyan"></span>
-        </label>
-        <label class="nr-label" for="tuneKickDuty">Kick strength
-          <input type="range" class="nr-slider" id="tuneKickDuty"
-                 min="0" max="255" step="5" data-color="cyan">
-          <span id="tuneKickDutyVal" class="nr-badge nr-clr nr-border" data-color="cyan"></span>
-        </label>
-        <label class="nr-label" for="tuneKickMs">Kick time
-          <input type="range" class="nr-slider" id="tuneKickMs"
-                 min="0" max="200" step="5" data-color="cyan">
-          <span id="tuneKickMsVal" class="nr-badge nr-clr nr-border" data-color="cyan"></span>
         </label>
       </div>
       <div id="robotRow">

@@ -4,10 +4,16 @@ Everything in rig.py is a measurement -- it changes when the machine changes,
 and it belongs in source. This is the other kind: a setting you find by trying
 it, and which must survive a restart once you have.
 
-Right now that is two values -- the white-magnet polarity and how slowly the
-grip fades when a piece is set down. Both earn a file for the same reason:
-they are only judged by watching the arm, and finding the right answer used to
+Right now that is the polarity that holds every piece and the grip and
+settle pauses around a carried piece (plus the graveyard pile the rig records
+for itself). They earn a file because they
+are only judged by watching the arm, and finding the right answer used to
 cost a reflash per guess.
+
+Older files may still carry white_polarity / release_ms from before every
+piece was magnetised the same way up; load() ignores them and the next save()
+drops them. white_polarity is deliberately NOT carried over into `polarity`:
+it meant "white is the opposite of black", which no longer exists.
 
 The value also has to be re-sent to the Arduino on every connect: opening the
 serial port toggles DTR and reboots the Uno, so anything it was told last time
@@ -21,28 +27,16 @@ import rig
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "rig.json"
 
-# What the coil must do to HOLD a white piece. Named for what you can watch at
-# the bench rather than a bare boolean, because "repel" is checkable with a
-# piece in your hand and "true" is not.
+# What the coil must do to HOLD a piece -- any piece, since they are all
+# magnetised the same way up. Named for what you can watch at the bench
+# rather than a bare boolean.
 ATTRACT = "attract"
 REPEL = "repel"
 POLARITIES = (ATTRACT, REPEL)
 
 
-def _default():
-    return REPEL if rig.WHITE_IS_REVERSED else ATTRACT
-
-
-def _clamp_release(ms):
-    """None when it isn't a usable number, so load() can fall back."""
-    try:
-        ms = int(ms)
-    except (TypeError, ValueError):
-        return None
-    if not rig.MIN_RELEASE_MS <= ms <= rig.MAX_RELEASE_MS:
-        return None
-    return ms
-
+def _default_polarity():
+    return REPEL if rig.HOLD_BY_REPEL else ATTRACT
 
 def _clamp_tuning(name, value):
     """A motion-tuning value inside its range, or None if unusable."""
@@ -59,7 +53,7 @@ def _clamp_tuning(name, value):
 def _clean_graveyard(slots):
     """Occupied slot indices in burial order, or None if unusable.
 
-    Unlike the other two settings this one is not a human's tuning choice --
+    Unlike the motion settings this one is not a human's tuning choice --
     it is bookkeeping the rig writes for itself, so the failure mode is a
     half-written or hand-edited file rather than a bad guess. Same answer
     either way: drop it and start from an empty pile. Losing the pile means
@@ -94,8 +88,7 @@ def load(path=None):
     than one that starts with the compiled-in values and says so.
     """
     path = Path(path or CONFIG_PATH)
-    settings = {"white_polarity": _default(), "release_ms": rig.DEFAULT_RELEASE_MS,
-                "graveyard": []}
+    settings = {"polarity": _default_polarity(), "graveyard": []}
     settings.update({name: spec[0] for name, spec in rig.MOTION_TUNING.items()})
     try:
         stored = json.loads(path.read_text())
@@ -103,11 +96,8 @@ def load(path=None):
         return settings
     if not isinstance(stored, dict):
         return settings
-    if stored.get("white_polarity") in POLARITIES:
-        settings["white_polarity"] = stored["white_polarity"]
-    release_ms = _clamp_release(stored.get("release_ms"))
-    if release_ms is not None:
-        settings["release_ms"] = release_ms
+    if stored.get("polarity") in POLARITIES:
+        settings["polarity"] = stored["polarity"]
     graveyard = _clean_graveyard(stored.get("graveyard", []))
     if graveyard is not None:
         settings["graveyard"] = graveyard
@@ -118,19 +108,19 @@ def load(path=None):
     return settings
 
 
-def save(white_polarity=None, release_ms=None, graveyard=None, path=None, **tuning):
+def save(polarity=None, graveyard=None, path=None, **tuning):
     """Writes the settings, creating config/ if it isn't there.
 
     Any value may be omitted, in which case whatever is currently stored is
     kept -- so changing one control from the UI can't silently reset the other,
-    and burying a piece can't reset the polarity found at the bench.
+    and burying a piece can't reset the pauses found at the bench.
 
     `graveyard` is the full pile, not a slot to add: the caller owns it (see
     src/graveyard.py) and this only records it. Order is preserved because it
     is burial order, so pass a list and not a set. [] clears it.
 
-    `tuning` takes any of rig.MOTION_TUNING's names (grip_ms, settle_ms,
-    kick_duty, kick_ms); None leaves a value alone, like the others.
+    `tuning` takes any of rig.MOTION_TUNING's names (grip_ms, settle_ms);
+    None leaves a value alone, like the others.
 
     Returns the settings actually stored.
     """
@@ -139,18 +129,10 @@ def save(white_polarity=None, release_ms=None, graveyard=None, path=None, **tuni
         raise ValueError(f"unknown setting(s): {sorted(unknown)}")
     path = Path(path or CONFIG_PATH)
     settings = load(path)
-    if white_polarity is not None:
-        if white_polarity not in POLARITIES:
-            raise ValueError(
-                f"white_polarity must be one of {POLARITIES}, not {white_polarity!r}")
-        settings["white_polarity"] = white_polarity
-    if release_ms is not None:
-        clamped = _clamp_release(release_ms)
-        if clamped is None:
-            raise ValueError(
-                f"release_ms must be {rig.MIN_RELEASE_MS}-{rig.MAX_RELEASE_MS}, "
-                f"not {release_ms!r}")
-        settings["release_ms"] = clamped
+    if polarity is not None:
+        if polarity not in POLARITIES:
+            raise ValueError(f"polarity must be one of {POLARITIES}, not {polarity!r}")
+        settings["polarity"] = polarity
     if graveyard is not None:
         cleaned = _clean_graveyard(list(graveyard))
         if cleaned is None:
@@ -171,30 +153,16 @@ def save(white_polarity=None, release_ms=None, graveyard=None, path=None, **tuni
     return settings
 
 
-def white_reversed(white_polarity):
-    """Polarity -> the firmware's POL flag. Reversed means white is held by
-    repel, the opposite of black."""
-    return white_polarity == REPEL
-
-
-def pol_command(white_polarity):
-    """The firmware command that applies this setting."""
-    return f"POL {1 if white_reversed(white_polarity) else 0}"
-
-
-def release_command(release_ms):
-    """The firmware command that sets the release fade."""
-    return f"RELEASE {int(release_ms)}"
+def pol_command(polarity):
+    """The firmware command that sets what holds every piece."""
+    if polarity not in POLARITIES:
+        raise ValueError(f"polarity must be one of {POLARITIES}, not {polarity!r}")
+    return f"POL {1 if polarity == REPEL else 0}"
 
 
 def dwell_command(grip_ms, settle_ms):
     """The firmware command that sets the grip and settle pauses."""
     return f"DWELL {int(grip_ms)} {int(settle_ms)}"
-
-
-def kick_command(kick_duty, kick_ms):
-    """The firmware command that sets the de-cling kick."""
-    return f"KICK {int(kick_duty)} {int(kick_ms)}"
 
 
 def speed_command(feed_mms=None):

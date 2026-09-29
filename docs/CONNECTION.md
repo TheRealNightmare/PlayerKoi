@@ -41,27 +41,21 @@ Three things that are easy to get wrong:
 - **Set the microstepping jumpers to 1/2.** A CNC Shield commonly ships at 1/8.
   The firmware assumes 1/2 (10 steps/mm), so 1/8 makes every distance 4× too
   large.
-- **The white pieces' magnets are reversed.** They were built the other way
-  up, so the coil polarity that grips a black piece pushes a white one away.
-  `MOVE` and `KNIGHT` therefore take a trailing `w` or `b` saying which colour
-  is being carried, and the firmware flips both the hold and the release kick
-  to match (`WHITE_IS_REVERSED` in the sketch). Omitting it means "not
-  reversed", so the bench commands in this document still work as written.
-  Check it with `POLTEST <square>`: park a white piece there and watch which
-  of the two phases holds it. Do that rather than judging from a game move —
-  the carriage has to be centred under the piece for the answer to mean
-  anything, and reading it off a move got the direction backwards once.
-
-  The polarity is a runtime setting (`POL`), stored host-side in
-  `config/rig.json` and pushed on every connect, so you can change it from the
-  web UI without reflashing.
-- **A piece is set down gently, not dropped.** A full-strength reverse pulse
-  does not release a magnet so much as punch it, and the piece jumps. So the
-  release fades the grip to nothing, lets the piece settle, and only then gives
-  a weak reverse to clear residual magnetism from the core — that last part is
-  not optional, since a magnetised core tows the piece along when the carriage
-  leaves. `RELEASE <ms>` tunes the fade; `RELEASE 0` restores the old kick if
-  you want to see the difference.
+- **Every piece is held the same way: by attract.** White and black pieces
+  have their magnets the same way up (since r7), so no command says which
+  colour is being carried. If the magnets turn out to be the other way up,
+  switch every piece to repel with `POL 1` (or *Pieces held by* in the web
+  UI's Robot arm panel); it is saved in `config/rig.json` and re-sent on
+  every connect. Every carry — `MOVE`, `KNIGHT` and `BURY` — is the
+  same cycle:
+  1. coil **off**, then drive to the source square (nothing is dragged there)
+  2. coil **on** (attract, or repel if `POL 1`), wait the grip pause, then carry the piece
+     (knights, castling rooks and `BURY` drop to the weaker duty on the
+     gridlines between squares)
+  3. coil **off**, then wait the settle pause before the carriage moves on
+  The settle pause is what stops a piece being towed: it gives the core's
+  leftover magnetism time to die away. If a piece still follows the carriage,
+  raise it (`DWELL <grip> <settle>`, or the web UI's Settle slider).
 - **There are no limit switches on this build.** Position is dead reckoning
   from an assumed park in the origin corner — the corner of travel beyond h1,
   not h1's centre. Nothing can detect that it is wrong.
@@ -79,18 +73,18 @@ stop there rather than continuing — later steps assume the earlier ones.
 | # | Do | Expect |
 |---|---|---|
 | 1 | Flash `chessbot_v1.ino` | compiles and uploads |
-| 2 | Open the serial monitor at 115200 | `READY ChessBot-V1 r6` — **if the revision is lower, the sketch is stale; re-upload it** |
+| 2 | Open the serial monitor at 115200 | `READY ChessBot-V1 r7` — **if the revision is lower, the sketch is stale; re-upload it** |
 | 3 | **Park the carriage in the origin corner by hand** — the corner of travel beyond h1 (White's right-hand corner) | — |
 | 4 | `PING` | `OK PONG` |
 | 5 | `POS` | `OK POS 0.0 0.0` |
-| 5b | `DWELL`, then `KICK` | `OK DWELL 150 300`, `OK KICK 110 20` — grip/settle pauses and the de-cling kick (r6); the web UI's Robot arm sliders change them |
+| 5b | `DWELL` | `OK DWELL 150 300` — grip/settle pauses; the web UI's Robot arm sliders change them |
 | 6 | `MAG 1` then `MAG 0` | `OK MAG 1` / `OK MAG 0`, coil audibly grabs and releases |
 | 7 | `GOTO a1`, then `POS` | `OK POS -415.0 60.0` — **this is the pitch check** |
 | 8 | `HOME` | `OK HOME`, carriage returns to the origin corner |
-| 9 | `MOVE e2e4 w\|b` | `OK MOVE e2e4`, a pawn is dragged cleanly |
-| 10 | `KNIGHT b1c3 w\|b` | `OK KNIGHT b1c3`, weaves without disturbing the pawns |
+| 9 | `MOVE e2e4` | `OK MOVE e2e4`, a pawn is dragged cleanly |
+| 10 | `KNIGHT b1c3` | `OK KNIGHT b1c3`, weaves without disturbing the pawns |
 | 11 | `MM -415 10`, `MM -465 60`, `MM -15 410` | `OK MM …` each time — **the graveyard reach check** |
-| 12 | `BURY e2 -365 10 w` | `OK BURY e2`, the pawn is carried off the board and *set down*, not dropped |
+| 12 | `BURY e2 -365 10` | `OK BURY e2`, the pawn is carried off the board and *set down*, not dropped |
 
 Step 7 is the one that matters. If `POS` doesn't read `-415 60`, the 50mm pitch
 is wrong and everything downstream — the planner's clearance arithmetic, the
@@ -100,9 +94,9 @@ Steps 11–12 are new with the V2 frame. Step 11 proves the carriage can reach
 past the board edge at all: on the V1 travel limits every one of those three
 coordinates was an `ERR out of range`, so it fails loudly if the sketch is
 stale in a way the banner alone would not catch. Step 12 then proves a piece
-survives the trip — watch the set-down, not the drive. If the piece jumps or
-rattles on landing, `RELEASE` is too short; that is the same fade a normal
-move uses, so it is worth fixing here rather than discovering it mid-game.
+survives the trip — watch the set-down, not the drive. If the piece is towed
+as the carriage leaves, the settle pause is too short (`DWELL`); a normal move
+sets down the same way, so it is worth fixing here rather than mid-game.
 
 ### Before all of that, on a newly built frame: the walker
 
@@ -160,17 +154,16 @@ move has finished"; the Pi never has to guess.
 | Command | Reply | Does |
 |---|---|---|
 | `PING` | `OK PONG` | liveness check |
-| `MOVE e7e5 w\|b` | `OK MOVE e7e5` | straight drag between square centres |
-| `KNIGHT b8c6 w\|b` | `OK KNIGHT b8c6` | weaves along the gridlines, for knights and castling rooks |
+| `MOVE e7e5` | `OK MOVE e7e5` | straight drag between square centres |
+| `KNIGHT b8c6` | `OK KNIGHT b8c6` | weaves along the gridlines, for knights and castling rooks |
 | `GOTO e4` | `OK GOTO e4` | repositions the carriage, magnet untouched |
-| `BURY e4 -215 10 w\|b` | `OK BURY e4` | lifts the piece on `e4` and parks it on a graveyard slot. The destination is a **raw machine coordinate**, not a square — the slots sit outside the 8×8 and have no name. Set down with the same faded release a move uses. `w\|b` is required here, unlike on `MOVE`. The host picks the slot (`src/graveyard.py`); the firmware only drives to it |
+| `BURY e4 -215 10` | `OK BURY e4` | lifts the piece on `e4` and parks it on a graveyard slot. The destination is a **raw machine coordinate**, not a square — the slots sit outside the 8×8 and have no name. Set down the same way a move is. The host picks the slot (`src/graveyard.py`); the firmware only drives to it |
 | `MAG 0\|1\|2` | `OK MAG n` | coil off / attract / repel |
-| `PULSE` | `OK PULSE` | raw full-power reverse kick, for the bench. A game move uses the gentler faded release |
-| `POL` | `OK POL 1` | what holds a WHITE piece: 1 = repel, 0 = attract |
-| `POL 0\|1` | `OK POL <n>` | set it, live. RAM only — re-sent by the host on every connect |
-| `POLTEST e2` | `OK POLTEST e2` | park there, attract 2 s, then repel 2 s. Watch which one holds the piece |
-| `RELEASE` | `OK RELEASE 200` | ms the grip takes to fade when a piece is set down |
-| `RELEASE <ms>` | `OK RELEASE <ms>` | 0–2000. **0 = no fade**, the old instant kick |
+| `PULSE` | `OK PULSE` | raw full-power reverse kick, for the bench only. No move uses it |
+| `POL` | `OK POL 0` | what holds EVERY piece: 0 = attract (default), 1 = repel |
+| `POL 0\|1` | `OK POL <n>` | set it. RAM only — re-sent by the host on every connect |
+| `DWELL` | `OK DWELL 150 300` | grip pause before a carry / settle pause after a set-down, ms |
+| `DWELL <g> <s>` | `OK DWELL <g> <s>` | set both, 0–2000 ms each. RAM only — re-sent by the host on every connect |
 | `HOME` | `OK HOME` | returns to the origin corner (beyond h1) and drops the coil |
 | `POS` | `OK POS x y` | current position in mm |
 | `MM -105 100` | `OK MM x y` | move to raw machine coordinates |

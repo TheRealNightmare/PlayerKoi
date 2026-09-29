@@ -2,8 +2,8 @@
 
 Two kinds of thing live in this file, and they fail differently:
 
-  white_polarity / release_ms   found by a human at the bench. Losing one
-                                means the arm shoves pieces until somebody
+  grip_ms / settle_ms           found by a human at the bench. Losing one
+                                means the arm tows pieces until somebody
                                 notices and re-tunes it.
   graveyard                     bookkeeping the rig writes for itself.
                                 Losing it means the arm may drive a captured
@@ -109,7 +109,7 @@ class TestGraveyardIsDefensive(ConfigCase):
         self.write("{ not json")
         settings = self.load()
         self.assertEqual(settings["graveyard"], [])
-        self.assertEqual(settings["release_ms"], rig.DEFAULT_RELEASE_MS)
+        self.assertEqual(settings["settle_ms"], rig.MOTION_TUNING["settle_ms"][0])
 
     def test_saving_a_bad_pile_is_refused_loudly(self):
         """Reading is forgiving; writing is not. A bad value reaching save()
@@ -122,18 +122,17 @@ class TestGraveyardIsDefensive(ConfigCase):
 class TestSettingsDoNotClobberEachOther(ConfigCase):
     def test_burying_a_piece_keeps_the_bench_settings(self):
         """The pile is written during an ordinary move. If that reset the
-        polarity, the next capture would shove the piece off the carriage."""
-        rig_config.save(white_polarity=rig_config.REPEL, release_ms=120,
-                        path=self.path)
+        settle pause, the next set-down would tow the piece."""
+        rig_config.save(grip_ms=200, settle_ms=600, path=self.path)
         rig_config.save(graveyard=[4], path=self.path)
         settings = self.load()
-        self.assertEqual(settings["white_polarity"], rig_config.REPEL)
-        self.assertEqual(settings["release_ms"], 120)
+        self.assertEqual(settings["grip_ms"], 200)
+        self.assertEqual(settings["settle_ms"], 600)
         self.assertEqual(settings["graveyard"], [4])
 
     def test_retuning_the_bench_keeps_the_pile(self):
         rig_config.save(graveyard=[4, 9], path=self.path)
-        rig_config.save(release_ms=300, path=self.path)
+        rig_config.save(settle_ms=500, path=self.path)
         self.assertEqual(self.load()["graveyard"], [4, 9])
 
     def test_save_returns_what_was_stored(self):
@@ -152,7 +151,7 @@ if __name__ == "__main__":
 
 
 class TestMotionTuning(ConfigCase):
-    """Grip/settle pauses and the kick: found at the board, kept on disk."""
+    """Grip/settle pauses: found at the board, kept on disk."""
 
     def test_defaults_come_from_rig(self):
         settings = self.load()
@@ -160,22 +159,20 @@ class TestMotionTuning(ConfigCase):
             self.assertEqual(settings[name], default, name)
 
     def test_they_survive_a_save_and_load(self):
-        rig_config.save(grip_ms=200, settle_ms=800, kick_duty=150, kick_ms=40, path=self.path)
+        rig_config.save(grip_ms=200, settle_ms=800, path=self.path)
         settings = self.load()
-        self.assertEqual((settings["grip_ms"], settings["settle_ms"],
-                          settings["kick_duty"], settings["kick_ms"]), (200, 800, 150, 40))
+        self.assertEqual((settings["grip_ms"], settings["settle_ms"]), (200, 800))
 
     def test_saving_one_keeps_the_others(self):
-        rig_config.save(settle_ms=900, release_ms=300, path=self.path)
-        rig_config.save(kick_ms=50, path=self.path)
+        rig_config.save(settle_ms=900, path=self.path)
+        rig_config.save(grip_ms=50, path=self.path)
         settings = self.load()
         self.assertEqual(settings["settle_ms"], 900)
-        self.assertEqual(settings["release_ms"], 300)
-        self.assertEqual(settings["kick_ms"], 50)
+        self.assertEqual(settings["grip_ms"], 50)
 
     def test_out_of_range_is_refused_on_save_and_ignored_on_load(self):
         with self.assertRaises(ValueError):
-            rig_config.save(kick_duty=999, path=self.path)
+            rig_config.save(settle_ms=9999, path=self.path)
         self.write({"settle_ms": -5, "grip_ms": "lots"})
         settings = self.load()
         self.assertEqual(settings["settle_ms"], rig.MOTION_TUNING["settle_ms"][0])
@@ -183,5 +180,4 @@ class TestMotionTuning(ConfigCase):
 
     def test_the_commands(self):
         self.assertEqual(rig_config.dwell_command(150, 300), "DWELL 150 300")
-        self.assertEqual(rig_config.kick_command(110, 20), "KICK 110 20")
         self.assertEqual(rig_config.speed_command(), "SPEED 40")

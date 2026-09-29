@@ -112,7 +112,7 @@ class TestRobotExecution(unittest.TestCase):
         robot = robot_mod.Robot(robot_mod.MockGantry(), planner=robot_moves_legacy)
         robot.home()
         robot.play(chess.Board(), chess.Move.from_uci("e2e4"))
-        self.assertEqual(robot._link.commands, ["HOME", "MOVE e2e4 w"])
+        self.assertEqual(robot._link.commands, ["HOME", "MOVE e2e4"])
 
     def test_refuses_to_move_before_homing(self):
         robot = robot_mod.Robot(robot_mod.MockGantry())
@@ -277,26 +277,26 @@ class TestClosedLoop(unittest.TestCase):
 
 
 class TestMotionTuning(unittest.TestCase):
-    """Grip/settle pauses and the de-cling kick reach the board as DWELL and
-    KICK, and a value out of range is refused before anything is sent."""
+    """Grip/settle pauses reach the board as DWELL, and a value out of range
+    is refused before anything is sent."""
 
-    def test_setting_sends_both_verbs_with_the_merged_values(self):
+    def test_setting_sends_dwell_with_the_merged_values(self):
         robot = _make_robot()
         robot._link.commands.clear()
         applied = robot.set_tuning(settle_ms=600)
         self.assertEqual(applied["settle_ms"], 600)
         self.assertEqual(applied["grip_ms"], rig.MOTION_TUNING["grip_ms"][0])
         self.assertEqual(robot._link.commands,
-                         [f"DWELL {applied['grip_ms']} 600",
-                          f"KICK {applied['kick_duty']} {applied['kick_ms']}"])
+                         [f"DWELL {applied['grip_ms']} 600"])
 
     def test_out_of_range_is_refused_before_sending(self):
         robot = _make_robot()
         robot._link.commands.clear()
         with self.assertRaises(ValueError):
-            robot.set_tuning(kick_duty=300)
-        with self.assertRaises(ValueError):
-            robot.set_tuning(bogus=1)
+            robot.set_tuning(settle_ms=9999)
+        for gone in ("bogus", "kick_duty", "kick_ms"):
+            with self.assertRaises(ValueError, msg=gone):
+                robot.set_tuning(**{gone: 1})
         self.assertEqual(robot._link.commands, [])
 
 
@@ -386,7 +386,7 @@ class TestBlockingPrompts(unittest.TestCase):
         robot.home()
         board, move = self._captured_position()
         robot.play(board, move)
-        self.assertEqual(robot._link.commands, ["HOME", "MOVE e4d5 w"])
+        self.assertEqual(robot._link.commands, ["HOME", "MOVE e4d5"])
 
     def test_the_prompt_arrives_before_the_drag(self):
         seen = []
@@ -421,7 +421,7 @@ class TestBlockingPrompts(unittest.TestCase):
         self.assertTrue(controller.confirm())
         thread.join(timeout=2.0)
         self.assertFalse(thread.is_alive(), "confirming must release the move")
-        self.assertEqual(robot._link.commands, ["HOME", "MOVE e4d5 w"])
+        self.assertEqual(robot._link.commands, ["HOME", "MOVE e4d5"])
         self.assertIsNone(controller.state()["awaiting_confirm"])
 
     def test_confirming_when_nothing_waits_is_reported_not_swallowed(self):

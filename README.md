@@ -379,8 +379,8 @@ always knows piece *type*, never needing to re-derive it from vision.
 
 ```
 config/       generated calibration data, plus rig.json -- the settings
-              that must survive a restart (magnet polarity, release fade,
-              and which graveyard slots hold a captured piece), plus
+              that must survive a restart (magnet polarity, grip/settle
+              pauses, and which graveyard slots hold a captured piece), plus
               puzzles.json -- your puzzle rating and history
 data/         puzzles.csv -- the bundled Lichess puzzle slice (CC0), made
               by tools/make_puzzles.py

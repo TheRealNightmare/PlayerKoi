@@ -64,7 +64,6 @@ from headless_loop import HeadlessLoop, NullStream
 import move_policy
 import puzzles
 import rig
-import rig_config
 from robot import GantryError, RobotController, open_gantry
 from robot_moves import DEFAULT_TOPPLE_DELAY_S
 from session import AI_VS_AI, MENU, NORMAL, ModeError, Session
@@ -923,7 +922,7 @@ class AdminConsole:
                 "halted": robot.halted,
                 "busy": robot.busy,
                 "message": robot.message,
-                "white_polarity": robot.white_polarity,
+                "polarity": robot.polarity,
                 "supported": robot.speaks_squares,
             },
             "pos": None if pos is None else {"x_mm": pos[0], "y_mm": pos[1]},
@@ -1021,8 +1020,7 @@ class AdminConsole:
 
     def _move(self, robot, body):
         frm, to = body.get("from"), body.get("to")
-        command = admin_moves.move_command(frm, to, body.get("colour"),
-                                           bool(body.get("weave")))
+        command = admin_moves.move_command(frm, to, bool(body.get("weave")))
         loop = self._session.loop
         moved = None
         if loop is not None:
@@ -1308,14 +1306,9 @@ def start_server(host, port, buffer, session):
                         return
                     self._send_json(200, {"ok": True, "robot": robot_controller.state()})
                     return
-                if body.get("white_polarity"):
-                    polarity = body["white_polarity"]
-                    if polarity not in rig_config.POLARITIES:
-                        self._send_json(400, {"error": f"polarity must be one of "
-                                                       f"{list(rig_config.POLARITIES)}"})
-                        return
+                if body.get("polarity"):
                     try:
-                        robot_controller.set_white_polarity(polarity)
+                        robot_controller.set_polarity(body["polarity"])
                     except (GantryError, ValueError) as exc:
                         self._send_json(400, {"error": str(exc),
                                               "robot": robot_controller.state()})
@@ -1328,15 +1321,6 @@ def start_server(host, port, buffer, session):
                     try:
                         robot_controller.set_tuning(**tuning)
                     except (GantryError, ValueError, TypeError) as exc:
-                        self._send_json(400, {"error": str(exc),
-                                              "robot": robot_controller.state()})
-                        return
-                    self._send_json(200, {"ok": True, "robot": robot_controller.state()})
-                    return
-                if body.get("release_ms") is not None:
-                    try:
-                        robot_controller.set_release_ms(body["release_ms"])
-                    except (GantryError, ValueError) as exc:
                         self._send_json(400, {"error": str(exc),
                                               "robot": robot_controller.state()})
                         return
@@ -1445,20 +1429,6 @@ def parse_args():
                              "moves that make the arm weave, which is its riskiest "
                              "motion). Costs about 2x --engine-think per move. "
                              "Default: off -- AI vs AI plays full-strength Stockfish")
-    parser.add_argument("--white-polarity", choices=rig_config.POLARITIES, default=None,
-                        help="what the coil must do to HOLD a white piece. The white "
-                             "magnets are fitted the other way up on this set, so "
-                             "'repel' holds them and 'attract' shoves them off the "
-                             "square. Saved to config/rig.json; omit to use the saved "
-                             "value. Changeable live in the UI")
-    parser.add_argument("--release-ms", type=int, default=None,
-                        metavar="MS",
-                        help=f"how long the grip takes to fade when a piece is set "
-                             f"down ({rig.MIN_RELEASE_MS}-{rig.MAX_RELEASE_MS}). A hard "
-                             "release makes the piece jump, so it eases off and then "
-                             "gives a weak kick to clear the core; 0 restores the old "
-                             "instant kick. Saved to config/rig.json; adjustable live "
-                             "in the UI")
     parser.add_argument("--board-origin", default=rig.ORIGIN_SQUARE,
                         choices=rig.SUPPORTED_ORIGINS,
                         help="which real square the carriage parks on, i.e. how the board "
@@ -1502,8 +1472,6 @@ def _open_robot(args):
     # not of a single move, so it lives on rig rather than being threaded
     # through every planner call. Both planners read it from there.
     rig.ORIGIN_SQUARE = args.board_origin
-    if args.white_polarity or args.release_ms is not None:
-        rig_config.save(white_polarity=args.white_polarity, release_ms=args.release_ms)
     if args.robot_protocol == "legacy" and args.robot != "mock":
         # Said BEFORE the port opens, because opening it is the moment that
         # matters: it resets the Uno, which then takes wherever the carriage
@@ -1519,9 +1487,7 @@ def _open_robot(args):
               "wherever the carriage is as its origin.")
     try:
         robot = open_gantry(args.robot, topple_delay_s=args.topple_delay,
-                            protocol=args.robot_protocol,
-                            white_polarity=args.white_polarity,
-                            release_ms=args.release_ms)
+                            protocol=args.robot_protocol)
     except GantryError as exc:
         raise SystemExit(f"Robot: {exc}")
     except ImportError:
@@ -1530,13 +1496,9 @@ def _open_robot(args):
     print(f"Robot: gantry on {robot.port} ({args.robot_protocol} protocol), "
           f"firmware r{robot.firmware_rev}.")
     if robot.stale_firmware:
-        # Loud, and it will refuse to move -- an r1 board silently attracts
-        # for every move, so the first white move shoves a piece off the board.
+        # Loud, and it will refuse to move -- an r6 or older board still holds
+        # white by repel, so the first white move shoves a piece off the board.
         print(f"Robot: !! {robot.message}")
-    else:
-        print(f"Robot: white pieces are held by {robot.white_polarity.upper()}, "
-              f"release fades over {robot.release_ms}ms "
-              "(both adjustable in the UI).")
     if args.robot_protocol == "legacy" and rig.ORIGIN_SQUARE != rig.PARK_SQUARE:
         print(f"Robot: board origin {rig.ORIGIN_SQUARE} -- squares are rotated "
               "before they reach the firmware.")

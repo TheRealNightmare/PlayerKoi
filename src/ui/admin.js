@@ -46,8 +46,6 @@ const moveOptionsEl = document.getElementById("moveOptions");
 
 const toolGoto = document.getElementById("toolGoto");
 const toolMove = document.getElementById("toolMove");
-const colWhite = document.getElementById("colWhite");
-const colBlack = document.getElementById("colBlack");
 const pathStraight = document.getElementById("pathStraight");
 const pathWeave = document.getElementById("pathWeave");
 const clearFrom = document.getElementById("clearFrom");
@@ -59,7 +57,6 @@ const magAttract = document.getElementById("magAttract");
 const magRepel = document.getElementById("magRepel");
 
 let tool = "goto";       // "goto" | "move"
-let colour = "white";
 let weave = false;
 let fromSquare = null;
 let sending = false;
@@ -107,7 +104,6 @@ function pick(on, off) {
 function renderToggles() {
   hintEl.classList.toggle("error", !!lastError);
   pick(tool === "goto" ? toolGoto : toolMove, tool === "goto" ? toolMove : toolGoto);
-  pick(colour === "white" ? colWhite : colBlack, colour === "white" ? colBlack : colWhite);
   pick(weave ? pathWeave : pathStraight, weave ? pathStraight : pathWeave);
   moveOptionsEl.hidden = tool !== "move";
   if (lastError) {
@@ -219,9 +215,6 @@ async function clickSquare(name) {
   }
   if (!fromSquare) {
     fromSquare = name;
-    // Pre-fill from the tracked board when there is one; still overridable.
-    const label = pieceAt(name);
-    if (label) colour = label.startsWith("white") ? "white" : "black";
     lastError = null;
     render();
     return;
@@ -235,15 +228,13 @@ async function clickSquare(name) {
   // An L-shaped hop would clip the piece it jumps, so suggest the weave.
   // Only on the second click, and only if the human hasn't chosen already.
   const useWeave = weave || isKnightShape(from, name);
-  const ok = await post({ action: "move", from, to: name, colour, weave: useWeave });
+  const ok = await post({ action: "move", from, to: name, weave: useWeave });
   if (ok) fromSquare = null;
   render();
 }
 
 toolGoto.onclick = () => { tool = "goto"; fromSquare = null; render(); };
 toolMove.onclick = () => { tool = "move"; render(); };
-colWhite.onclick = () => { colour = "white"; render(); };
-colBlack.onclick = () => { colour = "black"; render(); };
 pathStraight.onclick = () => { weave = false; render(); };
 pathWeave.onclick = () => { weave = true; render(); };
 clearFrom.onclick = () => { fromSquare = null; render(); };
