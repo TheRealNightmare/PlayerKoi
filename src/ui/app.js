@@ -244,6 +244,23 @@ const releaseMsVal = document.getElementById("releaseMsVal");
 releaseMs.oninput = () => { releaseMsVal.textContent = releaseMs.value + " ms"; };
 releaseMs.onchange = () => postRobot({ release_ms: Number(releaseMs.value) }, releaseMs);
 
+// Grip/settle pauses and the de-cling kick. Pieces still towed after a
+// set-down: raise Settle first, then Kick strength/time.
+const TUNING = [
+  { key: "grip_ms", el: document.getElementById("tuneGrip"),
+    val: document.getElementById("tuneGripVal"), unit: " ms" },
+  { key: "settle_ms", el: document.getElementById("tuneSettle"),
+    val: document.getElementById("tuneSettleVal"), unit: " ms" },
+  { key: "kick_duty", el: document.getElementById("tuneKickDuty"),
+    val: document.getElementById("tuneKickDutyVal"), unit: "" },
+  { key: "kick_ms", el: document.getElementById("tuneKickMs"),
+    val: document.getElementById("tuneKickMsVal"), unit: " ms" },
+];
+for (const t of TUNING) {
+  t.el.oninput = () => { t.val.textContent = t.el.value + t.unit; };
+  t.el.onchange = () => postRobot({ [t.key]: Number(t.el.value) }, t.el);
+}
+
 // The white magnets are fitted the other way up on this set, so the coil has
 // to drive the opposite way to hold them. Which way that is was worth getting
 // wrong once; this makes it a click rather than a reflash.
@@ -387,6 +404,14 @@ function renderRobot(bot) {
   if (bot.stale_firmware) staleFirmwareEl.textContent = bot.message || "firmware is out of date";
 
   releaseMs.disabled = !!bot.stale_firmware;
+  for (const t of TUNING) {
+    t.el.disabled = !!bot.stale_firmware;
+    const v = bot.tuning ? bot.tuning[t.key] : undefined;
+    if (document.activeElement !== t.el && v !== undefined && v !== null) {
+      t.el.value = v;
+      t.val.textContent = v + t.unit;
+    }
+  }
   if (document.activeElement !== releaseMs && bot.release_ms !== null
       && bot.release_ms !== undefined) {
     releaseMs.value = bot.release_ms;
@@ -815,7 +840,9 @@ async function startMode(mode, btn) {
           skill: Number(setSkill.value),
           think: Number(setThink.value),
           move_delay: Number(setDelay.value),
-          noob: setNoob.checked,
+          // AI vs AI always plays full-strength Stockfish with every piece;
+          // the beginner style is only for games against a human.
+          noob: mode === "ai_vs_ai" ? false : setNoob.checked,
           ...puzzleSettings(),
         },
       }),
@@ -828,7 +855,8 @@ async function startMode(mode, btn) {
     }
     // Skill is an engine option, not a mode setting, so it goes the usual way.
     // Puzzles have no engine opponent to set it on.
-    if (mode !== "puzzle") {
+    // AI vs AI sets its own full strength on the server.
+    if (mode !== "puzzle" && mode !== "ai_vs_ai") {
       await fetch("/engine", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

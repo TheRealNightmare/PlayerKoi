@@ -79,10 +79,11 @@ stop there rather than continuing — later steps assume the earlier ones.
 | # | Do | Expect |
 |---|---|---|
 | 1 | Flash `chessbot_v1.ino` | compiles and uploads |
-| 2 | Open the serial monitor at 115200 | `READY ChessBot-V1 r5` — **if the revision is lower, the sketch is stale; re-upload it** |
+| 2 | Open the serial monitor at 115200 | `READY ChessBot-V1 r6` — **if the revision is lower, the sketch is stale; re-upload it** |
 | 3 | **Park the carriage in the origin corner by hand** — the corner of travel beyond h1 (White's right-hand corner) | — |
 | 4 | `PING` | `OK PONG` |
 | 5 | `POS` | `OK POS 0.0 0.0` |
+| 5b | `DWELL`, then `KICK` | `OK DWELL 150 300`, `OK KICK 110 20` — grip/settle pauses and the de-cling kick (r6); the web UI's Robot arm sliders change them |
 | 6 | `MAG 1` then `MAG 0` | `OK MAG 1` / `OK MAG 0`, coil audibly grabs and releases |
 | 7 | `GOTO a1`, then `POS` | `OK POS -415.0 60.0` — **this is the pitch check** |
 | 8 | `HOME` | `OK HOME`, carriage returns to the origin corner |

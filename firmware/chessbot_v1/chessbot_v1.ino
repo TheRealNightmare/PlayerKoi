@@ -36,10 +36,13 @@
                        -> OK BURY e4        lift the piece on e4 and park it
                           on a graveyard slot, given as a RAW MACHINE
                           COORDINATE -- the slots sit outside the 8x8, so
-                          there is no square name for them. Set down with the
-                          same faded release a move uses. The w|b is required
-                          here, unlike on MOVE. The host picks the slot; see
-                          src/graveyard.py.
+                          there is no square name for them. Travels like a
+                          knight: half a square onto a gridline, along it off
+                          the board, along the board's edge line, then into
+                          the slot -- never across a square centre. Set down
+                          with the same faded release a move uses. The w|b is
+                          required here, unlike on MOVE. The host picks the
+                          slot; see src/graveyard.py.
      POL               -> OK POL 1          read the white-magnet polarity
      POL 0|1           -> OK POL <n>        1 = white is held by REPEL
      POLTEST e2        -> OK POLTEST e2     park there, then attract 2s /
@@ -47,6 +50,13 @@
                                             way actually holds the piece
      RELEASE           -> OK RELEASE 200    ms the grip takes to fade away
      RELEASE <ms>      -> OK RELEASE <ms>   0-2000; 0 = no fade, old behaviour
+     DWELL             -> OK DWELL 150 300  pause after gripping, before the
+                                            drag / pause after setting down,
+                                            coil fully off, before moving on
+     DWELL <g> <s>     -> OK DWELL <g> <s>  each 0-2000 ms
+     KICK              -> OK KICK 110 20    the weak reverse that clears the
+                                            core after a set-down: duty, ms
+     KICK <d> <ms>     -> OK KICK <d> <ms>  duty 0-255, ms 0-200
      MAG 0|1|2         -> OK MAG n          off / attract / repel
      PULSE             -> OK PULSE          raw full-power reverse kick, for
                                             the bench. A game move uses the
@@ -143,6 +153,8 @@ const float GRAVEYARD_X_HIGH =  -15.0;  // beyond the h-file:  -65 + 50
 const bool  FOLD_EDGE_WEAVE = false;
 
 // ---------- speed ----------
+// 40mm/s, the proven feed. SPEED changes it at runtime; the host also sends
+// SPEED on connect.
 float feedRateMMS = 40.0;
 unsigned int stepDelayUS;
 
@@ -155,7 +167,10 @@ unsigned int stepDelayUS;
 // r5 is not a protocol change but a geometry one: the origin moved to the
 // travel corner, so an r4 board would take the same square names and BURY
 // coordinates and drive somewhere else. See rig.FIRMWARE_REV.
-#define FIRMWARE_REV 5
+// r6 adds the grip/settle pauses (DWELL), the tunable de-cling kick (KICK)
+// and the gridline path for BURY. The host sends DWELL and KICK on connect,
+// which an r5 board would answer with ERR.
+#define FIRMWARE_REV 6
 
 // Measured on this set: the white pieces' magnets are the other way up, so
 // they need the opposite coil polarity from the black ones. This is only the
@@ -179,8 +194,8 @@ const int MAG_DIAG  = 155;
 // it fires the piece is seated and unheld, so it only has to de-cling the
 // core, not shift anything. Dropping phase 2 entirely is not an option -- a
 // magnetised core tows the piece along when the carriage drives away.
-const int MAG_KICK           = 110;  // de-cling only, not a shove
-const int RELEASE_KICK_MS    = 20;
+const int MAG_KICK           = 110;  // de-cling only, not a shove (default)
+const int RELEASE_KICK_MS    = 20;   // default; KICK changes both at runtime
 const int RELEASE_SETTLE_MS  = 30;   // pause between the fade and the kick
 const int RELEASE_FADE_STEPS = 24;   // PWM steps on the way down
 
@@ -188,6 +203,22 @@ const int RELEASE_FADE_STEPS = 24;   // PWM steps on the way down
 // instant single-kick behaviour exactly, which makes this an A/B test rather
 // than a change you have to take on faith.
 int releaseFadeMS = 200;
+
+// The kick, at runtime. Pieces that still get towed after a set-down mean
+// the core stayed magnetised: a longer or stronger kick is the fix, and
+// finding the right one is a bench job, not a reflash.
+int kickDuty = MAG_KICK;
+int kickMS   = RELEASE_KICK_MS;
+
+// Pauses around a carried piece. GRIP: coil on, carriage still, so the piece
+// is pulled flat onto the pole before it is asked to slide. SETTLE: after the
+// release has switched the coil fully OFF, stay put so the piece is at rest
+// and unheld before the carriage drives away -- leaving at once is what tows
+// it. Both runtime, set by DWELL.
+const int GRIP_MS   = 150;
+const int SETTLE_MS = 300;
+int gripMS   = GRIP_MS;
+int settleMS = SETTLE_MS;
 
 // ---------- state ----------
 float posX = 0.0, posY = 0.0;
@@ -343,6 +374,30 @@ void handleCommand(String line) {
     Serial.println("OK RELEASE " + String(releaseFadeMS));
   }
 
+  // Pauses around a carried piece: DWELL <grip_ms> <settle_ms>.
+  else if (cmd == "DWELL") {
+    if (arg.length() > 0) {
+      float g, st;
+      if (!parseXY(arg, g, st))            { Serial.println("ERR usage DWELL <grip_ms> <settle_ms>"); return; }
+      if (g < 0 || g > 2000 || st < 0 || st > 2000) { Serial.println("ERR dwell 0-2000"); return; }
+      gripMS = (int)g;
+      settleMS = (int)st;
+    }
+    Serial.println("OK DWELL " + String(gripMS) + " " + String(settleMS));
+  }
+
+  // The de-cling kick after a set-down: KICK <duty 0-255> <ms 0-200>.
+  else if (cmd == "KICK") {
+    if (arg.length() > 0) {
+      float d, ms;
+      if (!parseXY(arg, d, ms))            { Serial.println("ERR usage KICK <duty> <ms>"); return; }
+      if (d < 0 || d > 255 || ms < 0 || ms > 200) { Serial.println("ERR kick duty 0-255 ms 0-200"); return; }
+      kickDuty = (int)d;
+      kickMS = (int)ms;
+    }
+    Serial.println("OK KICK " + String(kickDuty) + " " + String(kickMS));
+  }
+
   else if (cmd == "PULSE") {
     magPulse();
     Serial.println("OK PULSE");
@@ -473,28 +528,61 @@ bool parseBury(String a, int &f, int &r, float &x, float &y, bool &reversed) {
 bool doMove(int f0, int r0, int f1, int r1, bool reversed) {
   if (!gotoSquare(f0, r0)) return false;
   magHold(MAG_FULL, reversed);
+  delay(gripMS);
   if (!gotoSquare(f1, r1)) { magOff(); return false; }
   magRelease(reversed);
   return true;
 }
 
-// Park a captured piece on a graveyard slot. Same shape as doMove, and
-// deliberately so — grip, drag, set down with the same faded release — but
-// the destination is a raw machine coordinate rather than a square, because
-// the slots sit OUTSIDE the 8x8 and have no file/rank to name them.
+// Park a captured piece on a graveyard slot. Grip, carry, set down with the
+// same faded release a move uses -- but the destination is a raw machine
+// coordinate rather than a square, because the slots sit OUTSIDE the 8x8 and
+// have no file/rank to name them.
 //
-// moveTo() is what makes that safe: it is the same MIN_X..MAX_X / MIN_Y..MAX_Y
-// guard every other motion goes through, so a bad host coordinate is an
-// "ERR out of range" and not the carriage walking into the frame. It is the
-// only thing standing between a wrong number and the machine, since unlike a
-// square there is no alphabet to constrain what arrives.
+// It travels the way a knight does, never across a square centre: half a
+// square onto the gridline beside its own file (or rank), along that gridline
+// to the board's edge line, along the edge line to the slot's file (or rank),
+// then out into the slot. Every leg runs 25mm from the centres it passes --
+// the same clearance as a knight weave -- both from the pieces still on the
+// board and from the ones already parked in the ring.
+//
+// moveTo() still guards every waypoint: a bad host coordinate is an
+// "ERR out of range" and not the carriage walking into the frame.
 //
 // The host owns which slot: it knows what is already in the pile and the
 // firmware does not. See src/graveyard.py.
 bool doBury(int f0, int r0, float tx, float ty, bool reversed) {
+  // The slot in board units. Slots sit on file/rank centre lines, one pitch
+  // outside the board, so exactly one of these is -1 or 8.
+  float fs = (tx - A1_X_MM) / SQUARE_MM;
+  float rs = (ty - A1_Y_MM) / SQUARE_MM;
+  bool acrossRanks = (rs < -0.5 || rs > 7.5);   // south or north strip
+  bool acrossFiles = (fs < -0.5 || fs > 7.5);   // west or east strip
+  if (acrossRanks == acrossFiles) return false; // on the board, or a corner
+
   if (!gotoSquare(f0, r0)) return false;
   magHold(MAG_FULL, reversed);
-  if (!moveTo(tx, ty)) { magOff(); return false; }
+  delay(gripMS);
+
+  bool ok;
+  if (acrossRanks) {
+    // Off the rank-1 or rank-8 edge. Step sideways onto the file gridline
+    // nearer the slot, run along it to the edge line, then along that.
+    float edge = rs < 0 ? -0.5 : 7.5;
+    float hx = fs > f0 ? 0.5 : (fs < f0 ? -0.5 : (f0 < 7 ? 0.5 : -0.5));
+    ok = gotoSquareF(f0 + hx, r0);
+    if (ok) { magHold(MAG_DIAG, reversed); ok = gotoSquareF(f0 + hx, edge); }
+    if (ok) ok = gotoSquareF(fs, edge);
+  } else {
+    float edge = fs < 0 ? -0.5 : 7.5;
+    float hy = rs > r0 ? 0.5 : (rs < r0 ? -0.5 : (r0 < 7 ? 0.5 : -0.5));
+    ok = gotoSquareF(f0, r0 + hy);
+    if (ok) { magHold(MAG_DIAG, reversed); ok = gotoSquareF(edge, r0 + hy); }
+    if (ok) ok = gotoSquareF(edge, rs);
+  }
+  if (ok) { magHold(MAG_FULL, reversed); ok = moveTo(tx, ty); }
+  if (!ok) { magOff(); return false; }
+
   magRelease(reversed);
   return true;
 }
@@ -515,6 +603,7 @@ bool doKnight(int f0, int r0, int f1, int r1, bool reversed) {
 
   if (!gotoSquare(f0, r0)) return false;
   magHold(MAG_FULL, reversed);
+  delay(gripMS);
 
   if (!gotoSquareF(clampWeave(f0 + hx), clampWeave(r0 + hy))) {
     magOff(); return false;
@@ -598,9 +687,12 @@ void magRelease(bool reversed) {
   // Phase 2: the opposite polarity, weakly, to clear the core. !reversed is
   // the opposite sign for free -- no second attract/repel decision to keep in
   // step with magHold.
-  magHold(MAG_KICK, !reversed);
-  delay(RELEASE_KICK_MS);
+  magHold(kickDuty, !reversed);
+  delay(kickMS);
   magOff();
+
+  // Coil fully off; now let the piece come to rest before anything moves.
+  delay(settleMS);
 }
 
 // The bench verb keeps the old hard kick, deliberately: it stays a raw

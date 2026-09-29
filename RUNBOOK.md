@@ -677,7 +677,7 @@ longer.
 | Arm drops pieces mid-drag | Raise `MAG_HOLD`/`MAG_EDGE` in `src/robot_moves.py` (the firmware clamps at `MAG_MAX_PWM`) |
 | **Neighbouring pieces dragged along as the arm passes** | Lower `MAG_EDGE`. This was the V1 board's defining problem; on 50 mm squares the magnet's edge stops 12.5 mm short of a flanking piece's centre, so if it still happens suspect the coil or the piece bases rather than the routing — see Clearances in [docs/HARDWARE.md](docs/HARDWARE.md) |
 | **A captured piece is dropped rather than set down, and rattles** | Raise `RELEASE` — `BURY` uses the same faded release a move does, so tuning it fixes both |
-| **`ERR out of range` on a capture** | The board is flashed with travel limits that stop at the board edge. Re-upload `chessbot_v1.ino`; V2 needs x `-480..0`, y `0..470` (banner `r5`) |
+| **`ERR out of range` on a capture** | The board is flashed with travel limits that stop at the board edge. Re-upload `chessbot_v1.ino`; V2 needs x `-480..0`, y `0..470` (banner `r6`) |
 | **The arm skips slots that are visibly empty** | The saved pile in `config/rig.json` is stale. Reset the game from the menu, which clears it |
 | **Knight catches pieces leaving the back rank** | The opening pawn wall is the one case routing can't improve on — but on 50 mm squares that is still 25 mm each side, so this should no longer happen. If it does, the coil is too strong or reaching too far: lower `MAG_EDGE` |
 | Magnet coil getting hot | Lower `MAG_MAX_PWM` in the sketch, or feed the DRV8872 from a 5 V buck |

@@ -56,7 +56,7 @@ class LegacyGantryLink(GantryLink):
         if port == "auto":
             port = autodetect_port()
         # Motion is blocking and a full-board drag at 40mm/s takes a while,
-        # so the inherited 40s budget is the right order of magnitude.
+        # so the inherited budget (robot.COMMAND_TIMEOUT_S) is sized for it.
         if timeout is None:
             super().__init__(port, baud)
         else:

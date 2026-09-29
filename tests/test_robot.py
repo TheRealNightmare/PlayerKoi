@@ -254,11 +254,50 @@ class TestClosedLoop(unittest.TestCase):
         self.assertEqual(seen, [True], "the tracker must be held still while the gantry moves")
         self.assertFalse(self.loop.is_paused, "and released afterwards")
 
+    def test_a_misread_human_move_does_not_halt_the_arm(self):
+        """The Human-vs-AI stall: a flag on the HUMAN's move used to halt the
+        arm with "board didn't match after a robot move", and a halted arm
+        never answers. Only the arm's own move may halt it."""
+        # White's pawn read on d4 while the human played e4: unresolvable.
+        misread = standard_starting_matrix()
+        misread[1][4] = None
+        misread[3][3] = "white-pawn"
+        with self._camera_sees(misread):
+            self.loop.force_settle()   # the tracker's own settle, no arm
+
+        self.assertTrue(self.updates[-1][1], "the settle should still flag for the editor")
+        self.assertFalse(self.robot.halted)
+        self.assertTrue(self.controller.ready)
+
     def test_a_halted_arm_will_not_start_another_move(self):
         self.robot.halt("previous failure")
         ok, error = self.controller.execute(self.loop.board_copy, chess.Move.from_uci("e2e4"))
         self.assertFalse(ok)
         self.assertIn("previous failure", error)
+
+
+class TestMotionTuning(unittest.TestCase):
+    """Grip/settle pauses and the de-cling kick reach the board as DWELL and
+    KICK, and a value out of range is refused before anything is sent."""
+
+    def test_setting_sends_both_verbs_with_the_merged_values(self):
+        robot = _make_robot()
+        robot._link.commands.clear()
+        applied = robot.set_tuning(settle_ms=600)
+        self.assertEqual(applied["settle_ms"], 600)
+        self.assertEqual(applied["grip_ms"], rig.MOTION_TUNING["grip_ms"][0])
+        self.assertEqual(robot._link.commands,
+                         [f"DWELL {applied['grip_ms']} 600",
+                          f"KICK {applied['kick_duty']} {applied['kick_ms']}"])
+
+    def test_out_of_range_is_refused_before_sending(self):
+        robot = _make_robot()
+        robot._link.commands.clear()
+        with self.assertRaises(ValueError):
+            robot.set_tuning(kick_duty=300)
+        with self.assertRaises(ValueError):
+            robot.set_tuning(bogus=1)
+        self.assertEqual(robot._link.commands, [])
 
 
 class TestForceSettle(unittest.TestCase):

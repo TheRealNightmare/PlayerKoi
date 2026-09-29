@@ -476,14 +476,15 @@ def firmware_waypoints(command):
     Mirrors the sketch rather than trusting the planner: doKnight() steps
     half a square off the centre line along the short axis, runs, and steps
     back -- that detour is what reaches past the board edge, so it is the
-    part most worth checking. BURY visits the square, then the slot.
+    part most worth checking. BURY runs the gridlines to the slot, the same
+    way (rig.bury_waypoints mirrors doBury).
     """
     verb, *args = command.split()
     to_mm = lambda f, r: rig.square_to_mm(f, r)  # noqa: E731
     if verb == "GOTO":
         return [to_mm(*_square_fr(args[0]))]
     if verb == "BURY":
-        return [to_mm(*_square_fr(args[0])), (float(args[1]), float(args[2]))]
+        return rig.bury_waypoints(*_square_fr(args[0]), float(args[1]), float(args[2]))
     (f0, r0), (f1, r1) = _square_fr(args[0][:2]), _square_fr(args[0][2:4])
     if verb == "MOVE":
         return [to_mm(f0, r0), to_mm(f1, r1)]
@@ -609,3 +610,38 @@ class TestAdminAndGamesShareOneMovementSystem(unittest.TestCase):
         self.assertEqual(commands(legacy.plan(chess.Board(), chess.Move.from_uci("g1f3"))),
                          ["KNIGHT g1f3 w"])
         self.assertEqual(admin_moves.move_command("g1", "f3", "white", True), "KNIGHT g1f3 w")
+
+
+class TestGraveyardFollowsTheGridlines(unittest.TestCase):
+    """A captured piece travels like a knight: off its square onto a
+    gridline, along gridlines only, and never across a square centre -- so
+    it passes 25mm from every piece, on the board or already parked."""
+
+    @staticmethod
+    def _board_units(x, y):
+        return (x - rig.A1_X_MM) / rig.SQUARE_MM, (y - rig.A1_Y_MM) / rig.SQUARE_MM
+
+    def test_every_slot_from_every_square(self):
+        for slot in range(rig.GRAVEYARD_SLOTS):
+            sx, sy = rig.graveyard_slot_to_mm(slot)
+            for square in chess.SQUARES:
+                f0, r0 = chess.square_file(square), chess.square_rank(square)
+                points = rig.bury_waypoints(f0, r0, sx, sy)
+                self.assertEqual(points[0], rig.square_to_mm(f0, r0))
+                self.assertEqual(points[-1], (sx, sy))
+                for x, y in points:
+                    self.assertTrue(rig.within_travel(x, y), (slot, square, x, y))
+                # Axis moves only, like the knight -- no diagonal drags.
+                for (x1, y1), (x2, y2) in zip(points, points[1:]):
+                    self.assertTrue(x1 == x2 or y1 == y2, (slot, square, points))
+                # Every point between the start and the slot sits on a
+                # gridline in at least one axis, so no leg runs through the
+                # middle of a row of squares.
+                for x, y in points[1:-1]:
+                    f, r = self._board_units(x, y)
+                    self.assertTrue(f % 1 == 0.5 or r % 1 == 0.5, (slot, square, f, r))
+
+    def test_a_capture_on_e4_to_the_south_strip(self):
+        sx, sy = rig.graveyard_slot_to_mm(0)   # south strip, a-file end
+        points = [self._board_units(*p) for p in rig.bury_waypoints(4, 3, sx, sy)]
+        self.assertEqual(points, [(4, 3), (3.5, 3), (3.5, -0.5), (0, -0.5), (0, -1)])

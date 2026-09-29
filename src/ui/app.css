@@ -141,6 +141,7 @@ body {
 
 #game { display: none; }
 #sessionRow, #controls, #editShortcuts, #saveCancelRow, #robotRow { display: flex; gap: 10px; }
+#tuningRow { display: flex; flex-direction: column; gap: 6px; }
 #turnRow { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
 
 /* Badges uppercase their text, which SAN cannot survive: "b5" is a pawn

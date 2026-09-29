@@ -34,9 +34,11 @@ from tracking_loop import PAUSE_LAPSE_S
 # arrives, so this is generous rather than tight.
 READY_TIMEOUT_S = 8.0
 
-# Homing crosses the whole board twice at homing speed, and a topple wait
-# holds the line while a human reaches in.
-COMMAND_TIMEOUT_S = 40.0
+# One command is one blocking move. The longest -- a BURY from the far side,
+# along a gridline and then the whole edge line -- is ~850mm, about 20s at
+# 40mm/s plus the grip/settle pauses. Generous rather than tight, so a slower
+# SPEED set at the bench can't turn into a false timeout that halts the game.
+COMMAND_TIMEOUT_S = 120.0
 BAUD = 115200
 
 
@@ -204,6 +206,9 @@ class Robot:
         # nobody has told the board yet.
         self.white_polarity = None
         self.release_ms = None
+        # grip/settle pauses and the de-cling kick, as last sent (see
+        # set_tuning). Empty until open_gantry tells the board.
+        self.tuning = {}
         self.firmware_rev = rig.banner_rev(getattr(link, "banner", None))
         self.stale_firmware = self.firmware_rev < rig.FIRMWARE_REV
         if self.stale_firmware:
@@ -296,6 +301,32 @@ class Robot:
         """Sends a firmware command directly. For the bench console during
         bring-up -- the game path always goes through play()."""
         return self._link.send(command)
+
+    def set_tuning(self, **values):
+        """Grip/settle pauses and the de-cling kick (rig.MOTION_TUNING).
+
+        Any subset may be given; the rest keep their last value, falling back
+        to the defaults. Sent as the two firmware verbs that carry them, DWELL
+        and KICK, and re-sent on every connect by open_gantry for the same
+        reason as the polarity: opening the port reboots the Uno.
+        """
+        merged = {name: spec[0] for name, spec in rig.MOTION_TUNING.items()}
+        merged.update(self.tuning)
+        for name, value in values.items():
+            if name not in rig.MOTION_TUNING:
+                raise ValueError(f"unknown setting {name!r}")
+            if value is None:
+                continue
+            _default, low, high = rig.MOTION_TUNING[name]
+            value = int(value)
+            if not low <= value <= high:
+                raise ValueError(f"{name} must be {low}-{high}, not {value}")
+            merged[name] = value
+        self._link.send(rig_config.dwell_command(merged["grip_ms"], merged["settle_ms"]))
+        self._link.send(rig_config.kick_command(merged["kick_duty"], merged["kick_ms"]))
+        with self._lock:
+            self.tuning = merged
+        return dict(merged)
 
     @property
     def speaks_squares(self):
@@ -502,6 +533,12 @@ class RobotController:
         self._awaiting = None
         self._answered = Event()
         self._confirmed = False
+        # True only while the camera is confirming a move the ARM just made.
+        # A flag then means the physical board and the tracked one disagree
+        # because of the arm, which is worth halting for. A flag at any other
+        # time is a misread of the human's move: the board editor fixes that,
+        # and halting the arm for it would stop the engine answering at all.
+        self._verifying = False
         robot.set_status_callback(self._set_status)
         robot.set_prompt_callback(self._await_confirmation)
 
@@ -565,6 +602,7 @@ class RobotController:
                 "stale_firmware": self._robot.stale_firmware,
                 "white_polarity": self._robot.white_polarity,
                 "release_ms": self._robot.release_ms,
+                "tuning": dict(self._robot.tuning),
             }
 
     @property
@@ -593,6 +631,12 @@ class RobotController:
         rig_config.save(release_ms=applied)
         return applied
 
+    def set_tuning(self, **values):
+        """Applies grip/settle/kick to the board and saves them."""
+        applied = self._robot.set_tuning(**values)
+        rig_config.save(**applied)
+        return applied
+
     def halt(self, reason="halted from the web UI"):
         # Free a blocked prompt first, otherwise a halt requested while the
         # arm waits for a captured piece would leave the robot thread parked
@@ -602,8 +646,14 @@ class RobotController:
         self._robot.halt(reason)
 
     def note_flag(self, reason):
-        """Called from on_update when a settle couldn't be resolved."""
-        if not self._robot.halted:
+        """Called from on_update when a settle couldn't be resolved.
+
+        Halts only when the settle being judged is the arm's own move. A flag
+        on the human's move is a misread for the board editor to fix -- it
+        says nothing about the arm, and halting would leave the engine with
+        no way to answer.
+        """
+        if self._verifying and not self._robot.halted:
             self._robot.halt(f"board didn't match after a robot move: {reason}")
 
     def execute(self, board, move):
@@ -638,7 +688,12 @@ class RobotController:
         # either a flag (note_flag has already halted us) or a board that
         # didn't change at all -- the arm moved and nothing followed it,
         # which is exactly as wrong.
-        if not self._loop.force_settle():
+        self._verifying = True
+        try:
+            confirmed = self._loop.force_settle()
+        finally:
+            self._verifying = False
+        if not confirmed:
             reason = "the camera couldn't confirm the move"
             if not self._robot.halted:
                 self._robot.halt(reason)
@@ -709,6 +764,11 @@ def open_gantry(target, topple_delay_s=robot_moves.DEFAULT_TOPPLE_DELAY_S, on_st
         robot.set_white_polarity(white_polarity or settings["white_polarity"])
         robot.set_release_ms(
             settings["release_ms"] if release_ms is None else release_ms)
+        if protocol == "legacy":
+            # Same reason: the reset forgot the pauses, kick and speed. The
+            # native firmware has no DWELL/KICK verbs.
+            robot.set_tuning(**{name: settings[name] for name in rig.MOTION_TUNING})
+            robot.raw(rig_config.speed_command())
     return robot
 
 

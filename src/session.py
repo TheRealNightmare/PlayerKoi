@@ -45,8 +45,8 @@ MODE_TITLES = {
 MODE_BLURBS = {
     NORMAL: "You move White by hand; the camera reads the board and the arm "
             "answers for Black.",
-    AI_VS_AI: "Stockfish plays both sides and the arm places every move. No "
-              "camera -- set all 32 pieces up first.",
+    AI_VS_AI: "Full-strength Stockfish plays both sides and the arm places "
+              "every move. No camera -- set all 32 pieces up first.",
     GUIDED: "Play White with a coach: it shows the best move on the board, "
             "grades each of yours, and lets you take back a blunder.",
     PUZZLE: "Set up the position shown, press OK, and find the winning line. "

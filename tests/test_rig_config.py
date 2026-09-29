@@ -149,3 +149,39 @@ class TestSettingsDoNotClobberEachOther(ConfigCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMotionTuning(ConfigCase):
+    """Grip/settle pauses and the kick: found at the board, kept on disk."""
+
+    def test_defaults_come_from_rig(self):
+        settings = self.load()
+        for name, (default, _low, _high) in rig.MOTION_TUNING.items():
+            self.assertEqual(settings[name], default, name)
+
+    def test_they_survive_a_save_and_load(self):
+        rig_config.save(grip_ms=200, settle_ms=800, kick_duty=150, kick_ms=40, path=self.path)
+        settings = self.load()
+        self.assertEqual((settings["grip_ms"], settings["settle_ms"],
+                          settings["kick_duty"], settings["kick_ms"]), (200, 800, 150, 40))
+
+    def test_saving_one_keeps_the_others(self):
+        rig_config.save(settle_ms=900, release_ms=300, path=self.path)
+        rig_config.save(kick_ms=50, path=self.path)
+        settings = self.load()
+        self.assertEqual(settings["settle_ms"], 900)
+        self.assertEqual(settings["release_ms"], 300)
+        self.assertEqual(settings["kick_ms"], 50)
+
+    def test_out_of_range_is_refused_on_save_and_ignored_on_load(self):
+        with self.assertRaises(ValueError):
+            rig_config.save(kick_duty=999, path=self.path)
+        self.write({"settle_ms": -5, "grip_ms": "lots"})
+        settings = self.load()
+        self.assertEqual(settings["settle_ms"], rig.MOTION_TUNING["settle_ms"][0])
+        self.assertEqual(settings["grip_ms"], rig.MOTION_TUNING["grip_ms"][0])
+
+    def test_the_commands(self):
+        self.assertEqual(rig_config.dwell_command(150, 300), "DWELL 150 300")
+        self.assertEqual(rig_config.kick_command(110, 20), "KICK 110 20")
+        self.assertEqual(rig_config.speed_command(), "SPEED 40")

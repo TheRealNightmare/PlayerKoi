@@ -79,7 +79,8 @@ BELT_PITCH_MM = 2.0
 MM_PER_REV = PULLEY_TEETH * BELT_PITCH_MM          # 40.0
 STEPS_PER_MM = (MOTOR_STEPS_PER_REV * MICROSTEPS) / MM_PER_REV   # 10.0
 
-# Proven feed rate. The firmware accepts SPEED 1-100 mm/s.
+# Feed rate, the proven 40mm/s. The firmware defaults to it and the host
+# re-sends SPEED on every connect. The firmware accepts SPEED 1-100 mm/s.
 FEED_MMS = 40.0
 
 # Magnet duty cycles, as PWM counts. FULL drags a piece square-to-square;
@@ -98,6 +99,24 @@ MAG_DIAG = 155
 # dropping it entirely is not an option, since a magnetised core tows the
 # piece along when the carriage leaves.
 MAG_KICK = 110
+
+# Hand-tuned motion settings, each (default, min, max). All four are runtime
+# values on the board (DWELL, KICK), re-sent on every connect and adjustable
+# from the web UI, because they are only judged by watching the arm:
+#
+#   grip_ms    coil on, carriage still, before a piece is dragged -- so it is
+#              pulled flat onto the pole first
+#   settle_ms  after the set-down, coil fully OFF, before the carriage drives
+#              on -- leaving at once is what tows the piece
+#   kick_duty  strength of the weak reverse that clears the core after a
+#   kick_ms    set-down, and how long. A piece still towed after the settle
+#              means the core stayed magnetised: raise these.
+MOTION_TUNING = {
+    "grip_ms": (150, 0, 2000),
+    "settle_ms": (300, 0, 2000),
+    "kick_duty": (MAG_KICK, 0, 255),
+    "kick_ms": (20, 0, 200),
+}
 
 # How long that fade takes. Tunable live (RELEASE, and the slider in the web
 # UI) because the right value depends on the piece and the coil; 0 restores
@@ -148,7 +167,10 @@ READY_BANNER = "READY ChessBot-V1"
 #       of travel beyond h1, and a1 to (-415, 60). No new verbs, but an r4
 #       board takes the same square names and BURY coordinates and drives
 #       somewhere else -- so it has to be refused just the same.
-FIRMWARE_REV = 5
+#   r6  DWELL (grip/settle pauses) and KICK (tunable de-cling), both sent on
+#       connect, which an r5 board answers with ERR; BURY travels the
+#       gridlines instead of a straight diagonal.
+FIRMWARE_REV = 6
 
 
 def banner_rev(banner):
@@ -330,3 +352,38 @@ def graveyard_slot_to_mm(slot):
     if strip == NORTH:                      # h-file end back to a-file end
         return (A1_X_MM + (7 - i) * SQUARE_MM, GRAVEYARD_Y_HIGH_MM)
     return (GRAVEYARD_X_LOW_MM, A1_Y_MM + (7 - i) * SQUARE_MM)   # WEST, top down
+
+
+def bury_waypoints(file_, rank, x_mm, y_mm):
+    """Every machine-mm point BURY drives through, from the captured piece's
+    square to its slot. Mirrors doBury() in the firmware, so the host can
+    check a path it never drives itself.
+
+    Like a knight weave, it never crosses a square centre: half a square onto
+    the gridline beside its own file (or rank), along that gridline to the
+    board's edge line, along the edge line to the slot's file (or rank), then
+    out into the slot. Board space in, machine space out -- apply orient_mm to
+    the slot and orient() to the square first on a rotated rig, as the planner
+    does.
+    """
+    fs = (x_mm - A1_X_MM) / SQUARE_MM
+    rs = (y_mm - A1_Y_MM) / SQUARE_MM
+    across_ranks = rs < -0.5 or rs > 7.5
+    across_files = fs < -0.5 or fs > 7.5
+    if across_ranks == across_files:
+        raise ValueError(f"({x_mm}, {y_mm}) is not a graveyard slot")
+
+    def step_toward(target, here):
+        if target != here:
+            return 0.5 if target > here else -0.5
+        return 0.5 if here < 7 else -0.5
+
+    if across_ranks:
+        edge = -0.5 if rs < 0 else 7.5
+        hx = step_toward(fs, file_)
+        board_points = [(file_, rank), (file_ + hx, rank), (file_ + hx, edge), (fs, edge)]
+    else:
+        edge = -0.5 if fs < 0 else 7.5
+        hy = step_toward(rs, rank)
+        board_points = [(file_, rank), (file_, rank + hy), (edge, rank + hy), (edge, rs)]
+    return [square_to_mm(f, r) for f, r in board_points] + [(x_mm, y_mm)]

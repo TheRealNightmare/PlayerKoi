@@ -77,6 +77,9 @@ from square_classifier import DEFAULT_MIN_CONF
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CALIBRATION = REPO_ROOT / "config" / "calibration.json"
 DEFAULT_CLASSIFIER = REPO_ROOT / "models" / "square_classifier_ncnn_model"
+# AI vs AI is a demonstration of the engine, so it plays at full strength
+# (Stockfish Skill Level 20) whatever the Human-vs-AI slider is set to.
+AI_VS_AI_SKILL = 20
 DEFAULT_HARVEST = REPO_ROOT / "training" / "datasets" / "harvested"
 
 _VALID_LABELS = {
@@ -1319,6 +1322,17 @@ def start_server(host, port, buffer, session):
                         return
                     self._send_json(200, {"ok": True, "robot": robot_controller.state()})
                     return
+                tuning = {name: body[name] for name in rig.MOTION_TUNING
+                          if body.get(name) is not None}
+                if tuning:
+                    try:
+                        robot_controller.set_tuning(**tuning)
+                    except (GantryError, ValueError, TypeError) as exc:
+                        self._send_json(400, {"error": str(exc),
+                                              "robot": robot_controller.state()})
+                        return
+                    self._send_json(200, {"ok": True, "robot": robot_controller.state()})
+                    return
                 if body.get("release_ms") is not None:
                     try:
                         robot_controller.set_release_ms(body["release_ms"])
@@ -1430,7 +1444,7 @@ def parse_args():
                              "or castle only when nothing else is legal (those are the "
                              "moves that make the arm weave, which is its riskiest "
                              "motion). Costs about 2x --engine-think per move. "
-                             "Default: on with --ai-vs-ai, off otherwise")
+                             "Default: off -- AI vs AI plays full-strength Stockfish")
     parser.add_argument("--white-polarity", choices=rig_config.POLARITIES, default=None,
                         help="what the coil must do to HOLD a white piece. The white "
                              "magnets are fitted the other way up on this set, so "
@@ -1567,6 +1581,9 @@ def _make_builders(args, engine, buffer, session_ref, progress=None):
         """No camera anywhere in this path: HeadlessLoop is the position, so
         the physical board must start in the standard 32-piece setup or
         everything after the first move is a lie. Nothing verifies that."""
+        # Full-strength Stockfish, every piece in play: the arm handles
+        # knights and castling now, so there is no reason to hold back.
+        engine.set_skill(AI_VS_AI_SKILL)
         loop = HeadlessLoop(on_update=on_update_factory())
         buffer.set_board(loop.current_matrix, None, False, None)  # seed the UI
         controller = EngineController(
@@ -1575,7 +1592,7 @@ def _make_builders(args, engine, buffer, session_ref, progress=None):
             robot=None,  # attached below, once Session has built it
             both_sides=True,
             move_delay_s=setting(settings, "move_delay", args.move_delay),
-            noob=bool(setting(settings, "noob", True)),
+            noob=bool(setting(settings, "noob", False)),
         )
         return loop, None, controller, None
 
@@ -1712,7 +1729,7 @@ def main():
             "skill": args.engine_skill,
             "think": args.engine_think,
             "move_delay": args.move_delay,
-            "noob": True if args.noob is None else args.noob,
+            "noob": bool(args.noob),
         },
     )
     holder["session"] = session
@@ -1723,7 +1740,7 @@ def main():
 
         if args.ai_vs_ai:
             # The old command line still lands straight in the game.
-            session.start(AI_VS_AI, {"noob": True if args.noob is None else args.noob,
+            session.start(AI_VS_AI, {"noob": bool(args.noob),
                                      "move_delay": args.move_delay,
                                      "think": args.engine_think})
             print("Started AI vs AI. Set up all 32 pieces, then press play.")

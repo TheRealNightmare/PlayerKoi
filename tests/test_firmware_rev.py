@@ -229,14 +229,18 @@ class TestPolarityReachesTheBoard(unittest.TestCase):
             robot.set_white_polarity("sideways")
         self.assertEqual(robot._link.commands, [])
 
-    def test_open_gantry_pushes_both_settings_on_connect(self):
+    def test_open_gantry_pushes_every_setting_on_connect(self):
         """Opening the port reboots the Uno, so whatever it was told last
         time is gone. If this stops happening, the board silently reverts to
         its compiled defaults."""
         from robot import open_gantry
 
         robot = open_gantry("mock", white_polarity=rig_config.ATTRACT, release_ms=120)
-        self.assertEqual(robot._link.commands, ["POL 0", "RELEASE 120"])
+        commands = robot._link.commands
+        self.assertEqual(commands[:2], ["POL 0", "RELEASE 120"])
+        self.assertEqual([c.split()[0] for c in commands[2:]], ["DWELL", "KICK", "SPEED"])
+        self.assertEqual(commands[-1], "SPEED 40")
+        self.assertEqual(set(robot.tuning), set(rig.MOTION_TUNING))
         self.assertEqual(robot.white_polarity, rig_config.ATTRACT)
         self.assertEqual(robot.release_ms, 120)
 
@@ -246,9 +250,9 @@ class TestPolarityReachesTheBoard(unittest.TestCase):
         from robot import open_gantry
 
         robot = open_gantry("mock")
-        self.assertEqual(len(robot._link.commands), 2)
-        self.assertTrue(robot._link.commands[0].startswith("POL"))
-        self.assertTrue(robot._link.commands[1].startswith("RELEASE"))
+        verbs = [c.split()[0] for c in robot._link.commands]
+        self.assertEqual(verbs, ["POL", "RELEASE", "DWELL", "KICK", "SPEED"])
+        self.assertFalse({"MOVE", "KNIGHT", "BURY", "GOTO", "HOME"} & set(verbs))
 
     def test_setting_the_release_sends_it(self):
         robot = current_robot()
@@ -273,3 +277,33 @@ class TestPolarityReachesTheBoard(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheSketchMatchesTheMotionSettings(unittest.TestCase):
+    """r6: DWELL and KICK exist, the sketch's defaults are rig.py's, and it
+    starts at the same 40mm/s the host sends."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.sketch = (Path(__file__).resolve().parent.parent
+                      / "firmware" / "chessbot_v1" / "chessbot_v1.ino").read_text()
+
+    def _const(self, name):
+        match = re.search(rf"const\s+int\s+{name}\s*=\s*(\d+)", self.sketch)
+        self.assertIsNotNone(match, name)
+        return int(match.group(1))
+
+    def test_the_verbs_exist(self):
+        self.assertIn('cmd == "DWELL"', self.sketch)
+        self.assertIn('cmd == "KICK"', self.sketch)
+
+    def test_the_defaults_match_rig(self):
+        self.assertEqual(self._const("GRIP_MS"), rig.MOTION_TUNING["grip_ms"][0])
+        self.assertEqual(self._const("SETTLE_MS"), rig.MOTION_TUNING["settle_ms"][0])
+        self.assertEqual(self._const("MAG_KICK"), rig.MOTION_TUNING["kick_duty"][0])
+        self.assertEqual(self._const("RELEASE_KICK_MS"), rig.MOTION_TUNING["kick_ms"][0])
+
+    def test_the_feed_rate_matches_rig(self):
+        match = re.search(r"float\s+feedRateMMS\s*=\s*([\d.]+)", self.sketch)
+        self.assertEqual(float(match.group(1)), rig.FEED_MMS)
+        self.assertEqual(rig.FEED_MMS, 40.0)

@@ -44,6 +44,18 @@ def _clamp_release(ms):
     return ms
 
 
+def _clamp_tuning(name, value):
+    """A motion-tuning value inside its range, or None if unusable."""
+    _default_value, low, high = rig.MOTION_TUNING[name]
+    if isinstance(value, bool):
+        return None
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return None
+    return value if low <= value <= high else None
+
+
 def _clean_graveyard(slots):
     """Occupied slot indices in burial order, or None if unusable.
 
@@ -84,6 +96,7 @@ def load(path=None):
     path = Path(path or CONFIG_PATH)
     settings = {"white_polarity": _default(), "release_ms": rig.DEFAULT_RELEASE_MS,
                 "graveyard": []}
+    settings.update({name: spec[0] for name, spec in rig.MOTION_TUNING.items()})
     try:
         stored = json.loads(path.read_text())
     except (OSError, ValueError):
@@ -98,10 +111,14 @@ def load(path=None):
     graveyard = _clean_graveyard(stored.get("graveyard", []))
     if graveyard is not None:
         settings["graveyard"] = graveyard
+    for name in rig.MOTION_TUNING:
+        value = _clamp_tuning(name, stored.get(name))
+        if value is not None:
+            settings[name] = value
     return settings
 
 
-def save(white_polarity=None, release_ms=None, graveyard=None, path=None):
+def save(white_polarity=None, release_ms=None, graveyard=None, path=None, **tuning):
     """Writes the settings, creating config/ if it isn't there.
 
     Any value may be omitted, in which case whatever is currently stored is
@@ -112,8 +129,14 @@ def save(white_polarity=None, release_ms=None, graveyard=None, path=None):
     src/graveyard.py) and this only records it. Order is preserved because it
     is burial order, so pass a list and not a set. [] clears it.
 
+    `tuning` takes any of rig.MOTION_TUNING's names (grip_ms, settle_ms,
+    kick_duty, kick_ms); None leaves a value alone, like the others.
+
     Returns the settings actually stored.
     """
+    unknown = set(tuning) - set(rig.MOTION_TUNING)
+    if unknown:
+        raise ValueError(f"unknown setting(s): {sorted(unknown)}")
     path = Path(path or CONFIG_PATH)
     settings = load(path)
     if white_polarity is not None:
@@ -135,6 +158,14 @@ def save(white_polarity=None, release_ms=None, graveyard=None, path=None):
                 f"graveyard must be slot indices 0..{rig.GRAVEYARD_SLOTS - 1}, "
                 f"not {graveyard!r}")
         settings["graveyard"] = cleaned
+    for name, value in tuning.items():
+        if value is None:
+            continue
+        clamped = _clamp_tuning(name, value)
+        if clamped is None:
+            _default_value, low, high = rig.MOTION_TUNING[name]
+            raise ValueError(f"{name} must be {low}-{high}, not {value!r}")
+        settings[name] = clamped
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(settings, indent=2) + "\n")
     return settings
@@ -154,3 +185,18 @@ def pol_command(white_polarity):
 def release_command(release_ms):
     """The firmware command that sets the release fade."""
     return f"RELEASE {int(release_ms)}"
+
+
+def dwell_command(grip_ms, settle_ms):
+    """The firmware command that sets the grip and settle pauses."""
+    return f"DWELL {int(grip_ms)} {int(settle_ms)}"
+
+
+def kick_command(kick_duty, kick_ms):
+    """The firmware command that sets the de-cling kick."""
+    return f"KICK {int(kick_duty)} {int(kick_ms)}"
+
+
+def speed_command(feed_mms=None):
+    """The firmware command that sets the feed rate."""
+    return f"SPEED {float(rig.FEED_MMS if feed_mms is None else feed_mms):g}"
