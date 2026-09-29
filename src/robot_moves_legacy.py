@@ -80,6 +80,19 @@ def _bury(square, piece, slot, origin_square=None):
     )
 
 
+def drag_command(from_name, to_name, is_white, weave, origin_square=None):
+    """The one place a MOVE/KNIGHT line is spelled -- game moves, the
+    castling rook and /admin all come through here, so they cannot drift.
+
+    `weave` picks KNIGHT, whose L-shaped path the firmware plans itself;
+    this only names the squares (rotated for how the board is seated) and
+    the colour being carried.
+    """
+    verb = "KNIGHT" if weave else "MOVE"
+    squares = rig.orient_uci(from_name + to_name, origin_square)
+    return f"{verb} {squares} {rig.colour_token(is_white)}"
+
+
 def _full_graveyard_prompt(square, piece):
     """The fallback when all 32 slots are taken.
 
@@ -168,26 +181,23 @@ def plan_with_slots(board, move, origin_square=None, occupied=()):
     mover = board.piece_at(move.from_square)
     origin, word, _ = _describe(move.from_square, mover)
     target = chess.square_name(move.to_square)
-    uci = origin + target
 
     # A knight can't take the straight diagonal between centres without
     # clipping whatever it's jumping, so it weaves along the gridlines
     # instead. The firmware owns that path; we just pick the verb.
     knight = mover is not None and mover.piece_type == chess.KNIGHT
     # Which colour the coil is about to pick up. The white pieces' magnets are
-    # reversed on this set, so the firmware flips polarity on this token --
-    # holding a white piece with the black polarity shoves it off the square.
-    # Named apart from the `colour` the promotion branch below binds to a
-    # word ("white"), so the two can never be confused if this file is
-    # reordered -- one is a protocol token, the other is prose.
-    polarity = rig.colour_token(mover is not None and mover.color == chess.WHITE)
+    # reversed on this set, so the firmware flips polarity on the w|b token
+    # drag_command() adds -- holding a white piece with the black polarity
+    # shoves it off the square.
+    is_white = mover is not None and mover.color == chess.WHITE
     steps.append(
         Step(
             # The command is rotated into machine orientation; the note is
             # not. Step keeps the two apart precisely so the firmware and the
             # human can be told different things about the same move, and the
             # human is looking at a real board in real notation.
-            f"{'KNIGHT' if knight else 'MOVE'} {rig.orient_uci(uci, origin_square)} {polarity}",
+            drag_command(origin, target, is_white, knight, origin_square),
             f"{word} {origin} to {target}",
         )
     )
@@ -203,7 +213,7 @@ def plan_with_slots(board, move, origin_square=None, occupied=()):
         steps.append(
             Step(
                 # Same colour as the king, so the same polarity.
-                f"KNIGHT {rig.orient_uci(rook_from + rook_to, origin_square)} {polarity}",
+                drag_command(rook_from, rook_to, is_white, True, origin_square),
                 f"rook {rook_from} to {rook_to}, weaving past the king",
             )
         )

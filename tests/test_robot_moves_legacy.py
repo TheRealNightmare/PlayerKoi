@@ -564,3 +564,48 @@ class TestEverythingStaysInTravel(unittest.TestCase):
                 for command in commands(steps):
                     self.assertInTravel(command)
                 board.push(move)
+
+
+class TestAdminAndGamesShareOneMovementSystem(unittest.TestCase):
+    """Every game move is sent exactly as /admin would send the same drag --
+    same verb (KNIGHT for the L the firmware plans, MOVE otherwise), same
+    squares, same colour token. /admin is the thing verified on the rig, so
+    the games inherit that check."""
+
+    def test_every_quiet_move_in_random_games(self):
+        random.seed(8)
+        checked = 0
+        for _ in range(30):
+            board = chess.Board()
+            while not board.is_game_over() and board.ply() < 160:
+                move = random.choice(list(board.legal_moves))
+                if not board.is_capture(move) and not board.is_castling(move):
+                    piece = board.piece_at(move.from_square)
+                    expected = admin_moves.move_command(
+                        chess.square_name(move.from_square),
+                        chess.square_name(move.to_square),
+                        "white" if piece.color == chess.WHITE else "black",
+                        piece.piece_type == chess.KNIGHT)
+                    self.assertEqual(commands(legacy.plan(board, move))[0], expected)
+                    checked += 1
+                board.push(move)
+        self.assertGreater(checked, 1000)
+
+    def test_both_castlings_for_both_colours(self):
+        fen = "r3k2r/8/8/8/8/8/8/R3K2R {} KQkq - 0 1"
+        for side, uci, king, rook in (
+            ("w", "e1g1", ("e1", "g1"), ("h1", "f1")),
+            ("w", "e1c1", ("e1", "c1"), ("a1", "d1")),
+            ("b", "e8g8", ("e8", "g8"), ("h8", "f8")),
+            ("b", "e8c8", ("e8", "c8"), ("a8", "d8")),
+        ):
+            colour = "white" if side == "w" else "black"
+            got = commands(legacy.plan(chess.Board(fen.format(side)), chess.Move.from_uci(uci)))
+            self.assertEqual(got, [admin_moves.move_command(*king, colour, False),
+                                   admin_moves.move_command(*rook, colour, True)])
+
+    def test_the_knight_command_is_unchanged(self):
+        # The L itself is the firmware's; this side only names it.
+        self.assertEqual(commands(legacy.plan(chess.Board(), chess.Move.from_uci("g1f3"))),
+                         ["KNIGHT g1f3 w"])
+        self.assertEqual(admin_moves.move_command("g1", "f3", "white", True), "KNIGHT g1f3 w")

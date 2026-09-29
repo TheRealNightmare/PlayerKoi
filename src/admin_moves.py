@@ -15,6 +15,7 @@ Pure: no serial, no session. The route in web_ui.py does the sending.
 import re
 
 import rig
+import robot_moves_legacy
 
 _SQUARE = re.compile(r"^[a-h][1-8]$")
 
@@ -46,8 +47,8 @@ def move_command(from_square, to_square, colour, weave):
         raise ValueError("from and to are the same square")
     if colour not in ("white", "black"):
         raise ValueError(f"colour must be white or black, not {colour!r}")
-    verb = "KNIGHT" if weave else "MOVE"
-    return f"{verb} {rig.orient_uci(frm + to)} {rig.colour_token(colour == 'white')}"
+    # Same builder as every game move, so /admin cannot spell it differently.
+    return robot_moves_legacy.drag_command(frm, to, colour == "white", bool(weave))
 
 
 def mag_command(mode):
