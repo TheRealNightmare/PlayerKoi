@@ -44,7 +44,7 @@
      POL               -> OK POL 0          which way the coil holds EVERY
                                             piece: 0 = attract, 1 = repel
      POL 0|1           -> OK POL <n>        set it (RAM only; host re-sends)
-     DWELL             -> OK DWELL 150 300  pause after gripping, before the
+     DWELL             -> OK DWELL 150 1000 pause after gripping, before the
                                             drag / pause after setting down,
                                             coil fully off, before moving on
      DWELL <g> <s>     -> OK DWELL <g> <s>  each 0-2000 ms
@@ -173,17 +173,21 @@ unsigned int stepDelayUS;
 const bool HOLD_BY_REPEL = false;
 bool holdByRepel = HOLD_BY_REPEL;
 
+// FULL drags a piece square-to-square. DIAG is every gridline leg -- knights,
+// the castling rook and BURY -- where the piece rides offset from the pole.
+// 80% of full: 155 (~60%) sometimes lost the piece partway along the L.
 const int MAG_FULL  = 255;
-const int MAG_WEAVE = 170;
-const int MAG_DIAG  = 155;
+const int MAG_DIAG  = 204;
 
 // Pauses around a carried piece. GRIP: coil on, carriage still, so the piece
 // is pulled flat onto the pole before it is asked to slide. SETTLE: after the
 // set-down has switched the coil fully OFF, stay put so the core's residual
 // magnetism fades and the piece is at rest before the carriage drives away --
 // leaving at once is what tows it. Both runtime, set by DWELL.
+// SETTLE is a full second: 300 ms sometimes left the core magnetised enough to
+// tow the piece a few millimetres.
 const int GRIP_MS   = 150;
-const int SETTLE_MS = 300;
+const int SETTLE_MS = 1000;
 int gripMS   = GRIP_MS;
 int settleMS = SETTLE_MS;
 

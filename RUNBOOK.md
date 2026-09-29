@@ -544,7 +544,10 @@ Fix the physical board with **Edit board** or **Undo last move**, then press
 
 **Every piece is held by attract**, white and black alike — their magnets are
 all fitted the same way up. Each carry is: coil off, drive to the piece, coil
-on + grip pause, carry, coil off + settle pause.
+on + grip pause, carry, coil off + settle pause (1000 ms by default).
+Knight and castling-rook L-moves and graveyard trips run the gridlines at 80%
+magnet power; if a knight still loses its piece partway, raise `MAG_DIAG` in
+the sketch (and `rig.MAG_DIAG`), and lower it if neighbours get dragged.
 
 **If the arm pushes pieces away instead of picking them up**, the magnets are
 the other way up. Switch **Pieces held by** to *repel* in the Robot arm panel
@@ -569,7 +572,7 @@ python3 src/robot.py --port /dev/ttyACM0 --console
 gantry> HOME
 gantry> GOTO 3.5 4
 gantry> POL 1           # hold every piece by repel (0 = attract, the default)
-gantry> DWELL 150 300   # grip pause / settle pause, ms
+gantry> DWELL 150 1000  # grip pause / settle pause, ms
 gantry> MAG 170
 gantry> OFF
 ```

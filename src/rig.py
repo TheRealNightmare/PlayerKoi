@@ -84,12 +84,13 @@ STEPS_PER_MM = (MOTOR_STEPS_PER_REV * MICROSTEPS) / MM_PER_REV   # 10.0
 FEED_MMS = 40.0
 
 # Magnet duty cycles, as PWM counts. FULL drags a piece square-to-square;
-# DIAG is the weaker duty used along the gridlines of a weave, where the
-# piece rides offset from the pole face and full strength snatches it
-# sideways. These are the firmware's measured values for this coil and rail
-# -- chess_gantry's 170 cap is for different hardware and does not apply.
+# DIAG is used on every gridline leg (knights, the castling rook, BURY), where
+# the piece rides offset from the pole face. It is 80% of full: the earlier
+# 155 (~60%) sometimes lost the piece partway along the L. These mirror the
+# firmware -- chess_gantry's 170 cap is for different hardware and does not
+# apply.
 MAG_FULL = 255
-MAG_DIAG = 155
+MAG_DIAG = 204
 
 # Hand-tuned motion settings, each (default, min, max). Both are runtime
 # values on the board (DWELL), re-sent on every connect and adjustable from
@@ -99,10 +100,11 @@ MAG_DIAG = 155
 #              pulled flat onto the pole first
 #   settle_ms  after the set-down, coil fully OFF, before the carriage drives
 #              on -- so the core's residual magnetism dies away. A piece still
-#              towed when the carriage leaves means this is too short.
+#              towed when the carriage leaves means this is too short; 300
+#              was, by a few millimetres, hence a full second.
 MOTION_TUNING = {
     "grip_ms": (150, 0, 2000),
-    "settle_ms": (300, 0, 2000),
+    "settle_ms": (1000, 0, 2000),
 }
 
 # Every piece on this set has its magnet the same way up, so ONE polarity

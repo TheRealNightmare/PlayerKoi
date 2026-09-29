@@ -290,6 +290,16 @@ class TestTheSketchMatchesTheMotionSettings(unittest.TestCase):
         self.assertEqual(self._const("GRIP_MS"), rig.MOTION_TUNING["grip_ms"][0])
         self.assertEqual(self._const("SETTLE_MS"), rig.MOTION_TUNING["settle_ms"][0])
 
+    def test_the_gridline_duty_matches_rig_and_is_80_percent(self):
+        """155 (~60%) sometimes lost a knight partway along the L."""
+        self.assertEqual(self._const("MAG_DIAG"), rig.MAG_DIAG)
+        self.assertEqual(self._const("MAG_FULL"), rig.MAG_FULL)
+        self.assertEqual(rig.MAG_DIAG, round(0.8 * rig.MAG_FULL))
+
+    def test_the_settle_wait_is_a_full_second(self):
+        """300 ms sometimes left the core magnetised enough to tow a piece."""
+        self.assertEqual(rig.MOTION_TUNING["settle_ms"][0], 1000)
+
     def test_the_feed_rate_matches_rig(self):
         match = re.search(r"float\s+feedRateMMS\s*=\s*([\d.]+)", self.sketch)
         self.assertEqual(float(match.group(1)), rig.FEED_MMS)
