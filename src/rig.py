@@ -165,7 +165,14 @@ READY_BANNER = "READY ChessBot-V1"
 #   r9  KICK back: a weak reverse pulse after each set-down to clear the
 #       core, sent on connect -- an r8 board answers ERR unknown KICK. Also a
 #       1 s grip and settle, and constant speed (the r8 ramp is gone).
-FIRMWARE_REV = 9
+#   r10 CASTLE, the castling rook around the outside of the board, sent
+#       mid-game -- an r9 board answers ERR unknown CASTLE with the king
+#       already moved. Also an extra 1 s after BURY.
+FIRMWARE_REV = 10
+
+# After a captured piece is set down in the graveyard, the firmware waits
+# this long on top of the settle pause. Mirrors BURY_WAIT_MS in the sketch.
+BURY_WAIT_MS = 1000
 
 
 def banner_rev(banner):
@@ -382,3 +389,18 @@ def bury_waypoints(file_, rank, x_mm, y_mm):
         hy = step_toward(rs, rank)
         board_points = [(file_, rank), (file_, rank + hy), (edge, rank + hy), (edge, rs)]
     return [square_to_mm(f, r) for f, r in board_points] + [(x_mm, y_mm)]
+
+
+def castle_waypoints(file_from, rank, file_to):
+    """Every machine-mm point CASTLE drives through: the rook's square, half
+    a square OUT past the back rank, along that lane, and back in. Mirrors
+    doCastle() in the firmware. Board space in, machine space out.
+
+    Outward is below rank 1 and above rank 8 -- the lane between the board
+    and the graveyard strip, 25mm from both. Only a back rank can castle.
+    """
+    if rank not in (0, 7):
+        raise ValueError(f"castling runs along rank 1 or 8, not rank {rank + 1}")
+    out = -0.5 if rank == 0 else 7.5
+    points = [(file_from, rank), (file_from, out), (file_to, out), (file_to, rank)]
+    return [square_to_mm(f, r) for f, r in points]

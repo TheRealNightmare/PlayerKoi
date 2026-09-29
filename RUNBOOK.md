@@ -546,7 +546,11 @@ Fix the physical board with **Edit board** or **Undo last move**, then press
 all fitted the same way up. Each carry is: coil off, drive to the piece, coil
 on + grip pause (1000 ms), carry at constant speed, coil off + a short weak
 reverse pulse that clears the core + settle pause (1000 ms).
-Knight and castling-rook L-moves and graveyard trips run the gridlines at the
+The castling rook goes around the **outside** of the board — half a square
+past the back rank, between the board and the graveyard strip — so it never
+passes the king or the pawns. After a captured piece is set down in the
+graveyard, the arm waits an extra second before going back for the capturer.
+Knight L-moves, the castling rook and graveyard trips run at the
 **Gridline power** set in the Robot arm panel (100% by default, `GRID <pct>`
 in the bench console). Lower it if neighbouring pieces get dragged along; it
 saves itself and is reapplied on every start.
@@ -569,9 +573,9 @@ the start of a drag**, raise **Grip pause** instead.
 **If the UI says the firmware is out of date**, re-upload
 `firmware/chessbot_v1/chessbot_v1.ino`. The arm refuses to move until you do,
 and that is deliberate: a board older than r7 still holds white pieces by
-repel, so every white move would shove a piece off its square, and an r8
-board has no `KICK`. Check with the startup line — it should say
-`firmware r9`.
+repel, so every white move would shove a piece off its square, and an r9
+board has no `CASTLE`. Check with the startup line — it should say
+`firmware r10`.
 
 **Bench console** for poking the gantry directly, without any chess:
 
@@ -690,7 +694,7 @@ longer.
 | Arm drops pieces mid-drag | Raise `MAG_HOLD`/`MAG_EDGE` in `src/robot_moves.py` (the firmware clamps at `MAG_MAX_PWM`) |
 | **Neighbouring pieces dragged along as the arm passes** | Lower `MAG_EDGE`. This was the V1 board's defining problem; on 50 mm squares the magnet's edge stops 12.5 mm short of a flanking piece's centre, so if it still happens suspect the coil or the piece bases rather than the routing — see Clearances in [docs/HARDWARE.md](docs/HARDWARE.md) |
 | **A piece is towed after it is set down** | Raise the settle pause (`DWELL`, or the Settle slider) — `BURY` sets down the same way a move does, so tuning it fixes both |
-| **`ERR out of range` on a capture** | The board is flashed with travel limits that stop at the board edge. Re-upload `chessbot_v1.ino`; V2 needs x `-480..0`, y `0..470` (banner `r9`) |
+| **`ERR out of range` on a capture** | The board is flashed with travel limits that stop at the board edge. Re-upload `chessbot_v1.ino`; V2 needs x `-480..0`, y `0..470` (banner `r10`) |
 | **The arm skips slots that are visibly empty** | The saved pile in `config/rig.json` is stale. Reset the game from the menu, which clears it |
 | **Knight catches pieces leaving the back rank** | The opening pawn wall is the one case routing can't improve on — but on 50 mm squares that is still 25 mm each side, so this should no longer happen. If it does, the coil is too strong or reaching too far: lower `MAG_EDGE` |
 | Magnet coil getting hot | Lower `MAG_MAX_PWM` in the sketch, or feed the DRV8872 from a 5 V buck |

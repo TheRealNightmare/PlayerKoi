@@ -8,7 +8,7 @@ its own, with the magnet duties and edge folding already measured into it.
 
 So what is left here is chess rules, and only chess rules:
 
-    which squares move        MOVE vs KNIGHT, and castling's second command
+    which squares move        MOVE vs KNIGHT, and castling's CASTLE command
     what has to come off      captures, including en passant's offset victim
     which slot it goes to     the pile is host-side state; the firmware only
                               drives to the coordinate it is handed
@@ -78,8 +78,8 @@ def _bury(square, piece, slot, origin_square=None):
 
 
 def drag_command(from_name, to_name, weave, origin_square=None):
-    """The one place a MOVE/KNIGHT line is spelled -- game moves, the
-    castling rook and /admin all come through here, so they cannot drift.
+    """The one place a MOVE/KNIGHT line is spelled -- game moves and /admin
+    both come through here, so they cannot drift.
 
     `weave` picks KNIGHT, whose L-shaped path the firmware plans itself;
     this only names the squares (rotated for how the board is seated). No
@@ -88,6 +88,14 @@ def drag_command(from_name, to_name, weave, origin_square=None):
     verb = "KNIGHT" if weave else "MOVE"
     squares = rig.orient_uci(from_name + to_name, origin_square)
     return f"{verb} {squares}"
+
+
+def castle_command(rook_from, rook_to, origin_square=None):
+    """The castling rook's CASTLE line. The firmware takes it around the
+    OUTSIDE of the board: half a square past the back rank, along, and back
+    in -- see rig.castle_waypoints. Rotating the squares keeps the rook on a
+    back rank, and "outward" in machine space is outward on the real board."""
+    return f"CASTLE {rig.orient_uci(rook_from + rook_to, origin_square)}"
 
 
 def _full_graveyard_prompt(square, piece):
@@ -196,16 +204,16 @@ def plan_with_slots(board, move, origin_square=None, occupied=()):
 
     if board.is_castling(move):
         # The rook's squares aren't in the move at all, and it has to pass
-        # under the king that just landed between them -- so it always
-        # weaves, never drags straight.
+        # the king that just landed between them -- so it goes around the
+        # outside of the board rather than dragging straight.
         kingside = chess.square_file(move.to_square) > chess.square_file(move.from_square)
         rank = chess.square_rank(move.from_square)
         rook_from = chess.square_name(chess.square(7 if kingside else 0, rank))
         rook_to = chess.square_name(chess.square(5 if kingside else 3, rank))
         steps.append(
             Step(
-                drag_command(rook_from, rook_to, True, origin_square),
-                f"rook {rook_from} to {rook_to}, weaving past the king",
+                castle_command(rook_from, rook_to, origin_square),
+                f"rook {rook_from} to {rook_to}, around the outside of the board",
             )
         )
 

@@ -750,6 +750,7 @@ def _console(robot):
     """
     print(f"Connected to {robot.port}. Firmware commands go through verbatim.")
     print("chessbot_v1: PING / POS / MAG 0|1|2 / GOTO e4 / MOVE e2e4 / HOME")
+    print("  CASTLE h1f1 castling rook, around the outside of the board")
     print("  POL 0|1     what holds every piece: 0 = attract (default), 1 = repel")
     print("  DWELL g s   grip pause before a drag / settle pause after a set-down, ms")
     print("  GRID pct    magnet power on knight/castling/graveyard gridlines, 0-100 %")

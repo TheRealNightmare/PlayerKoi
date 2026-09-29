@@ -154,8 +154,8 @@ class TestEnPassant(unittest.TestCase):
 
 
 class TestCastling(unittest.TestCase):
-    """The rook's squares aren't in the move, and it has to pass under the
-    king that just landed between them -- so it always weaves."""
+    """The rook's squares aren't in the move, and it has to pass the king
+    that just landed between them -- so it goes around the outside."""
 
     def kingside(self):
         board = chess.Board()
@@ -172,13 +172,13 @@ class TestCastling(unittest.TestCase):
     def test_kingside_moves_the_king_then_weaves_the_rook(self):
         self.assertEqual(
             commands(plan_uci(self.kingside(), "e1g1")),
-            ["MOVE e1g1", "KNIGHT h1f1"],
+            ["MOVE e1g1", "CASTLE h1f1"],
         )
 
     def test_queenside_moves_the_king_then_weaves_the_rook(self):
         self.assertEqual(
             commands(plan_uci(self.queenside(), "e1c1")),
-            ["MOVE e1c1", "KNIGHT a1d1"],
+            ["MOVE e1c1", "CASTLE a1d1"],
         )
 
     def test_black_castles_on_its_own_rank(self):
@@ -187,13 +187,36 @@ class TestCastling(unittest.TestCase):
             board.push_san(san)
         self.assertEqual(
             commands(plan_uci(board, "e8g8")),
-            ["MOVE e8g8", "KNIGHT h8f8"],
+            ["MOVE e8g8", "CASTLE h8f8"],
         )
 
     def test_the_rook_never_drags_straight_through_the_king(self):
         for board, uci in ((self.kingside(), "e1g1"), (self.queenside(), "e1c1")):
             rook = commands(plan_uci(board, uci))[1]
-            self.assertTrue(rook.startswith("KNIGHT"), rook)
+            self.assertTrue(rook.startswith("CASTLE"), rook)
+
+    def test_the_rook_goes_outside_the_board_on_both_sides(self):
+        """Half a square past the back rank: below rank 1 for White, above
+        rank 8 for Black -- never inward between the pawns."""
+        fen = "r3k2r/8/8/8/8/8/8/R3K2R {} KQkq - 0 1"
+        for side, uci in (("w", "e1g1"), ("w", "e1c1"), ("b", "e8g8"), ("b", "e8c8")):
+            rook = commands(legacy.plan(chess.Board(fen.format(side)),
+                                        chess.Move.from_uci(uci)))[1]
+            points = firmware_waypoints(rook)
+            lane_y = points[1][1]
+            self.assertEqual(points[2][1], lane_y, rook)
+            if side == "w":
+                self.assertLess(lane_y, rig.A1_Y_MM, rook)
+                self.assertGreater(lane_y, rig.GRAVEYARD_Y_LOW_MM, rook)
+            else:
+                self.assertGreater(lane_y, rig.A1_Y_MM + 7 * rig.SQUARE_MM, rook)
+                self.assertLess(lane_y, rig.GRAVEYARD_Y_HIGH_MM, rook)
+            for x, y in points:
+                self.assertTrue(rig.within_travel(x, y), rook)
+
+    def test_castle_waypoints_refuse_a_middle_rank(self):
+        with self.assertRaises(ValueError):
+            rig.castle_waypoints(7, 3, 5)
 
 
 class TestPromotion(unittest.TestCase):
@@ -251,7 +274,7 @@ class TestEveryLegalMovePlans(unittest.TestCase):
                         float(parts[2]), float(parts[3])   # or ERR usage
                         continue
                     verb, squares = parts
-                    self.assertIn(verb, ("MOVE", "KNIGHT"))
+                    self.assertIn(verb, ("MOVE", "KNIGHT", "CASTLE"))
                     self.assertEqual(len(squares), 4, command)
                     # Both halves must be real squares, or the firmware
                     # answers ERR bad square.
@@ -345,7 +368,7 @@ class TestOrientation(unittest.TestCase):
         board = chess.Board("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1")
         self.assertEqual(
             commands(plan_uci(board, "e1g1", origin_square="a8")),
-            ["MOVE d8b8", "KNIGHT a8c8"],
+            ["MOVE d8b8", "CASTLE a8c8"],
         )
 
     def test_the_default_origin_is_the_rig_constant(self):
@@ -435,7 +458,8 @@ def firmware_waypoints(command):
     half a square off the centre line along the short axis, runs, and steps
     back -- that detour is what reaches past the board edge, so it is the
     part most worth checking. BURY runs the gridlines to the slot, the same
-    way (rig.bury_waypoints mirrors doBury).
+    way (rig.bury_waypoints mirrors doBury), and CASTLE steps out past the
+    back rank (rig.castle_waypoints mirrors doCastle).
     """
     verb, *args = command.split()
     to_mm = lambda f, r: rig.square_to_mm(f, r)  # noqa: E731
@@ -446,6 +470,8 @@ def firmware_waypoints(command):
     (f0, r0), (f1, r1) = _square_fr(args[0][:2]), _square_fr(args[0][2:4])
     if verb == "MOVE":
         return [to_mm(f0, r0), to_mm(f1, r1)]
+    if verb == "CASTLE":
+        return rig.castle_waypoints(f0, r0, f1)
     assert verb == "KNIGHT", command
     df, dr = f1 - f0, r1 - r0
     sx, sy = (0.5 if df > 0 else -0.5), (0.5 if dr > 0 else -0.5)
@@ -559,7 +585,7 @@ class TestAdminAndGamesShareOneMovementSystem(unittest.TestCase):
         ):
             got = commands(legacy.plan(chess.Board(fen.format(side)), chess.Move.from_uci(uci)))
             self.assertEqual(got, [admin_moves.move_command(*king, False),
-                                   admin_moves.move_command(*rook, True)])
+                                   legacy.castle_command(*rook)])
 
     def test_the_knight_command_is_unchanged(self):
         # The L itself is the firmware's; this side only names it.

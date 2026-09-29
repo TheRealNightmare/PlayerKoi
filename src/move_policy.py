@@ -7,7 +7,7 @@ Two things are being asked for at once, and they pull in the same direction:
 
     look like a beginner     pawn-heavy, pieces barely developed
     spare the gantry         knight moves and castling are the only moves
-                             that send a KNIGHT weave, which is the riskiest
+                             that weave (KNIGHT / CASTLE), which is the riskiest
                              motion the rig makes -- the piece rides offset
                              from the pole face at the gridline power
                              (rig.MOTION_TUNING grid_pct), so it is the one most likely to
@@ -43,8 +43,8 @@ def _is_weave(board, move):
     piece = board.piece_at(move.from_square)
     if piece is not None and piece.piece_type == chess.KNIGHT:
         return True
-    # Castling sends a second KNIGHT command for the rook, which has to weave
-    # under the king that just landed between its squares.
+    # Castling sends a CASTLE command for the rook, which goes around the
+    # outside of the board past the king that just landed between its squares.
     return board.is_castling(move)
 
 

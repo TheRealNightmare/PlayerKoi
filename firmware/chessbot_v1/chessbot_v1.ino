@@ -27,6 +27,10 @@
      PING              -> OK PONG
      MOVE e7e5         -> OK MOVE e7e5      straight drag between centres
      KNIGHT b8c6       -> OK KNIGHT b8c6    L along gridlines, axis moves only
+     CASTLE h1f1       -> OK CASTLE h1f1    the castling rook: steps OUT half
+                          a square past the back rank (between the board and
+                          the graveyard strip), runs along, steps back in.
+                          Rank 1 or 8 only.
                           Every piece on this set has its magnet the same way
                           up, so one polarity holds them all (POL). Each carry is:
                           coil off -> drive to the source -> coil on, grip
@@ -40,8 +44,9 @@
                           knight: half a square onto a gridline, along it off
                           the board, along the board's edge line, then into
                           the slot -- never across a square centre. Set down
-                          the same way a move is. The host picks the slot;
-                          see src/graveyard.py.
+                          the same way a move is, then waits an extra 1 s
+                          (BURY_WAIT_MS). The host picks the slot; see
+                          src/graveyard.py.
      POL               -> OK POL 0          which way the coil holds EVERY
                                             piece: 0 = attract, 1 = repel
      POL 0|1           -> OK POL <n>        set it (RAM only; host re-sends)
@@ -177,7 +182,10 @@ unsigned int stepDelayUS;
 // r9 brings KICK back: a weak reverse pulse after each set-down to clear the
 // core, sent on connect -- an r8 board would answer ERR unknown KICK. Also a
 // 1 s grip and settle by default, and constant speed (no acceleration ramp).
-#define FIRMWARE_REV 9
+// r10 adds CASTLE, the castling rook's path around the outside of the board,
+// which the host sends mid-game -- an r9 board would answer ERR unknown
+// CASTLE with the king already moved. Also an extra 1 s after BURY.
+#define FIRMWARE_REV 10
 
 // Which way the coil drives to HOLD a piece -- the same for every piece.
 // Attract is what the set was magnetised for; POL 1 flips it to repel, in case
@@ -208,6 +216,10 @@ const int GRIP_MS   = 1000;
 const int SETTLE_MS = 1000;
 int gripMS   = GRIP_MS;
 int settleMS = SETTLE_MS;
+
+// After a captured piece is set down in the graveyard, wait this much longer
+// on top of the settle pause before the carriage goes back for the capturer.
+const int BURY_WAIT_MS = 1000;
 
 // The clearing pulse after a set-down: a short, WEAK drive the opposite way
 // to the hold, to knock the leftover magnetism out of the core. Without it
@@ -290,6 +302,15 @@ void handleCommand(String line) {
     if (!parsePly(arg, f0, r0, f1, r1))  { Serial.println("ERR bad ply"); return; }
     if (!doKnight(f0, r0, f1, r1))       { Serial.println("ERR out of range"); return; }
     Serial.println("OK KNIGHT " + arg);
+  }
+
+  // CASTLE <rook from><rook to> -- same rank, which must be rank 1 or 8.
+  else if (cmd == "CASTLE") {
+    int f0, r0, f1, r1;
+    if (!parsePly(arg, f0, r0, f1, r1))  { Serial.println("ERR bad ply"); return; }
+    if (r0 != r1 || (r0 != 0 && r0 != 7)) { Serial.println("ERR castle must run along rank 1 or 8"); return; }
+    if (!doCastle(f0, r0, f1))           { Serial.println("ERR out of range"); return; }
+    Serial.println("OK CASTLE " + arg);
   }
 
   // BURY <square> <x_mm> <y_mm>  -- park a captured piece off the board
@@ -511,6 +532,7 @@ bool doBury(int f0, int r0, float tx, float ty) {
   if (!ok) { magOff(); return false; }
 
   magRelease();
+  delay(BURY_WAIT_MS);
   return true;
 }
 
@@ -545,6 +567,33 @@ bool doKnight(int f0, int r0, int f1, int r1) {
   delay(5);
 
   if (!gotoSquare(f1, r1)) { magOff(); return false; }
+  magRelease();
+  return true;
+}
+
+// The castling rook, around the OUTSIDE of the board. A KNIGHT weave with no
+// rank change steps to rank -0.5 whichever side it is on, which for Black is
+// inward, between its own pawns. This always steps outward instead: half a
+// square past the back rank, onto the lane between the board and the
+// graveyard strip -- 25mm from the back rank's centres and 25mm from the
+// graveyard slots, so parked pieces are never in the way. Runs along it at the
+// gridline power, then steps back onto the destination.
+bool doCastle(int f0, int r, int f1) {
+  float out = (r == 0) ? -0.5 : 7.5;
+
+  magOff();
+  if (!gotoSquare(f0, r)) return false;
+  magHold(MAG_FULL);
+  delay(gripMS);
+
+  if (!gotoSquareF(f0, out)) { magOff(); return false; }
+  magHold(gridDuty());
+
+  if (!gotoSquareF(f1, out)) { magOff(); return false; }
+  magHold(MAG_FULL);
+  delay(5);
+
+  if (!gotoSquare(f1, r)) { magOff(); return false; }
   magRelease();
   return true;
 }

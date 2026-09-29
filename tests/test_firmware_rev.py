@@ -92,6 +92,12 @@ class TestStaleBoardRefuses(unittest.TestCase):
         self.assertEqual(robot.firmware_rev, 1)
         self.assertTrue(robot.stale_firmware)
 
+    def test_an_r9_board_is_stale(self):
+        """r9 has no CASTLE verb, which a game sends mid-move."""
+        robot = Robot(MockGantry(banner="READY ChessBot-V1 r9"),
+                      planner=robot_moves_legacy)
+        self.assertTrue(robot.stale_firmware)
+
     def test_an_r8_board_is_stale(self):
         """r8 has no KICK verb, which the host sends on connect."""
         robot = Robot(MockGantry(banner="READY ChessBot-V1 r8"),
@@ -318,7 +324,7 @@ class TestTheSketchMatchesTheMotionSettings(unittest.TestCase):
 
     def test_every_gridline_leg_uses_the_tunable_power(self):
         self.assertNotIn("MAG_DIAG", self.sketch)
-        self.assertEqual(self.sketch.count("magHold(gridDuty())"), 3)
+        self.assertEqual(self.sketch.count("magHold(gridDuty())"), 4)
 
     def test_grip_and_settle_are_a_second_each(self):
         self.assertEqual(rig.MOTION_TUNING["grip_ms"][0], 1000)
@@ -352,17 +358,17 @@ class TestTheSketchCarriesEveryPieceTheSameWay(unittest.TestCase):
         return self.sketch[start:end]
 
     def test_every_carry_forces_the_coil_off_before_driving_to_the_piece(self):
-        for fn in ("bool doMove(", "bool doKnight(", "bool doBury("):
+        for fn in ("bool doMove(", "bool doKnight(", "bool doBury(", "bool doCastle("):
             body = self._body(fn)
             self.assertIn("magOff();", body, fn)
             self.assertLess(body.index("magOff();"),
-                            body.index("if (!gotoSquare(f0, r0))"), fn)
+                            body.index("if (!gotoSquare(f0, r"), fn)
 
     def test_every_carry_holds_through_magHold(self):
         """So the one POL setting decides the polarity of every carry --
         none of them may drive the coil a fixed way on its own."""
         for fn in ("bool doMove(", "bool doKnight(", "bool doBury(",
-                   "void magRelease("):
+                   "bool doCastle(", "void magRelease("):
             body = self._body(fn)
             self.assertNotIn("magRepel", body, fn)
             self.assertNotIn("magAttract", body, fn)
@@ -393,3 +399,17 @@ class TestTheSketchCarriesEveryPieceTheSameWay(unittest.TestCase):
     def test_there_is_no_colour_left_in_the_protocol(self):
         for gone in ("whiteReversed", "WHITE_IS_REVERSED", "parseColour", "reversed"):
             self.assertNotIn(gone, self.sketch, gone)
+
+    def test_castle_exists_and_goes_outward(self):
+        self.assertIn('cmd == "CASTLE"', self.sketch)
+        body = self._body("bool doCastle(")
+        self.assertIn("float out = (r == 0) ? -0.5 : 7.5;", body)
+        self.assertTrue(body.rstrip().endswith("return true;"))
+        self.assertIn("magRelease();", body)
+
+    def test_bury_waits_an_extra_second_after_the_set_down(self):
+        match = re.search(r"const\s+int\s+BURY_WAIT_MS\s*=\s*(\d+)", self.sketch)
+        self.assertEqual(int(match.group(1)), rig.BURY_WAIT_MS)
+        self.assertEqual(rig.BURY_WAIT_MS, 1000)
+        body = self._body("bool doBury(")
+        self.assertLess(body.index("magRelease();"), body.index("delay(BURY_WAIT_MS);"))

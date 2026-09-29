@@ -81,7 +81,7 @@ stop there rather than continuing — later steps assume the earlier ones.
 | # | Do | Expect |
 |---|---|---|
 | 1 | Flash `chessbot_v1.ino` | compiles and uploads |
-| 2 | Open the serial monitor at 115200 | `READY ChessBot-V1 r9` — **if the revision is lower, the sketch is stale; re-upload it** |
+| 2 | Open the serial monitor at 115200 | `READY ChessBot-V1 r10` — **if the revision is lower, the sketch is stale; re-upload it** |
 | 3 | **Park the carriage in the origin corner by hand** — the corner of travel beyond h1 (White's right-hand corner) | — |
 | 4 | `PING` | `OK PONG` |
 | 5 | `POS` | `OK POS 0.0 0.0` |
@@ -91,6 +91,7 @@ stop there rather than continuing — later steps assume the earlier ones.
 | 8 | `HOME` | `OK HOME`, carriage returns to the origin corner |
 | 9 | `MOVE e2e4` | `OK MOVE e2e4`, a pawn is dragged cleanly |
 | 10 | `KNIGHT b1c3` | `OK KNIGHT b1c3`, weaves without disturbing the pawns |
+| 10b | `CASTLE h1f1` (rook on h1, f1/g1 empty) | `OK CASTLE h1f1`, the rook steps out past rank 1, runs along the gap before the graveyard strip, and steps back onto f1 |
 | 11 | `MM -415 10`, `MM -465 60`, `MM -15 410` | `OK MM …` each time — **the graveyard reach check** |
 | 12 | `BURY e2 -365 10` | `OK BURY e2`, the pawn is carried off the board and *set down*, not dropped |
 
@@ -163,9 +164,10 @@ move has finished"; the Pi never has to guess.
 |---|---|---|
 | `PING` | `OK PONG` | liveness check |
 | `MOVE e7e5` | `OK MOVE e7e5` | straight drag between square centres |
-| `KNIGHT b8c6` | `OK KNIGHT b8c6` | weaves along the gridlines, for knights and castling rooks |
+| `KNIGHT b8c6` | `OK KNIGHT b8c6` | weaves along the gridlines, for knights |
+| `CASTLE h1f1` | `OK CASTLE h1f1` | the castling rook, around the **outside** of the board: half a square past the back rank (the lane between the board and the graveyard strip, 25 mm from both), along it, and back in. Rank 1 or 8 only |
 | `GOTO e4` | `OK GOTO e4` | repositions the carriage, magnet untouched |
-| `BURY e4 -215 10` | `OK BURY e4` | lifts the piece on `e4` and parks it on a graveyard slot. The destination is a **raw machine coordinate**, not a square — the slots sit outside the 8×8 and have no name. Set down the same way a move is. The host picks the slot (`src/graveyard.py`); the firmware only drives to it |
+| `BURY e4 -215 10` | `OK BURY e4` | lifts the piece on `e4` and parks it on a graveyard slot. The destination is a **raw machine coordinate**, not a square — the slots sit outside the 8×8 and have no name. Set down the same way a move is, then waits an extra 1 s. The host picks the slot (`src/graveyard.py`); the firmware only drives to it |
 | `MAG 0\|1\|2` | `OK MAG n` | coil off / attract / repel |
 | `PULSE` | `OK PULSE` | raw full-power reverse kick, for the bench only. No move uses it |
 | `POL` | `OK POL 0` | what holds EVERY piece: 0 = attract (default), 1 = repel |
