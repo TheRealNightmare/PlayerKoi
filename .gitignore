@@ -24,3 +24,5 @@ runs/
 # Puzzle rating and history -- personal, rewritten after every puzzle
 config/puzzles.json
 config/*.json.tmp
+docs/presentation/
+docs/report/
