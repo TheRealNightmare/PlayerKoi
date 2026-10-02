@@ -1,0 +1,6 @@
+file '/home/nightmare/C/MicroChess/video/media/videos/scenes/1080p60/Hook.mp4'
+file '/home/nightmare/C/MicroChess/video/media/videos/scenes/1080p60/CoreIdea.mp4'
+file '/home/nightmare/C/MicroChess/video/media/videos/scenes/1080p60/Vision.mp4'
+file '/home/nightmare/C/MicroChess/video/media/videos/scenes/1080p60/RobotArm.mp4'
+file '/home/nightmare/C/MicroChess/video/media/videos/scenes/1080p60/CoachSafety.mp4'
+file '/home/nightmare/C/MicroChess/video/media/videos/scenes/1080p60/Outro.mp4'

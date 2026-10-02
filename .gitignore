@@ -30,8 +30,6 @@ docs/report/
 # Manim explainer: local env and render outputs
 video/.conda/
 video/media/
-video/out/
-
 # Agent tooling (local only)
 .claude/
 .agents/
