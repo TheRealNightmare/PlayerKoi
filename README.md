@@ -1,4 +1,4 @@
-# Plyer Koi
+# Player Koi
 
 Real-time chess piece detection on a Raspberry Pi 5: a fixed overhead
 IMX219 camera watches a physical chess board, tracks moves as real
