@@ -1,5 +1,7 @@
 # Player Koi
 
+https://github.com/user-attachments/assets/5af99007-9873-4c46-b6aa-f8b299653f17
+
 Real-time chess piece detection on a Raspberry Pi 5: a fixed overhead
 IMX219 camera watches a physical chess board, tracks moves as real
 algebraic notation via python-chess, and serves a live board diagram +
