@@ -2,7 +2,7 @@
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23300029.svg)](https://doi.org/10.5281/zenodo.23300029)
 
-[![Player Koi: animated explainer (2:37)](video/poster.png)](video/out/player_koi_explainer_github.mp4)
+/home/nightmare/C/MicroChess/video/out/player_koi_explainer_github.mp4
 
 *A 2½-minute animated explainer of how the board sees, thinks and moves.
 Click the image, then **View raw**, to download and watch it. It was made
