@@ -1,6 +1,7 @@
 # Player Koi
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23300029.svg)](https://doi.org/10.5281/zenodo.23300029)
+[![Paper DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23300424.svg)](https://doi.org/10.5281/zenodo.23300424)
+[![Code DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23300029.svg)](https://doi.org/10.5281/zenodo.23300029)
 
 https://github.com/user-attachments/assets/3f92d8bb-2a96-4ebc-ba4f-45b34fa86e31
 
@@ -32,6 +33,25 @@ operation. **[docs/DESIGN.md](docs/DESIGN.md)** is the full system
 document: architecture, hardware, geometry, protocols, the reasoning behind
 each decision, and the open risks. **[docs/HARDWARE.md](docs/HARDWARE.md)**
 is the robot arm's circuit and bring-up procedure.
+
+## Paper
+
+M. Islam, S. S. Amin, M. T. Hassan, and F. F. Alam, "Player Koi: A Robotic
+Chessboard That Watches, Thinks and Moves," preprint, Zenodo, 2026.
+doi: [10.5281/zenodo.23300424](https://doi.org/10.5281/zenodo.23300424).
+The code for this version is archived at
+[10.5281/zenodo.23300029](https://doi.org/10.5281/zenodo.23300029).
+
+```bibtex
+@misc{playerkoi2026,
+  author    = {Islam, Mirazul and Amin, Shadman Siam and Hassan, Md. Tanvir and Alam, Fairoze Fatema},
+  title     = {Player Koi: A Robotic Chessboard That Watches, Thinks and Moves},
+  year      = {2026},
+  publisher = {Zenodo},
+  doi       = {10.5281/zenodo.23300424},
+  note      = {Preprint}
+}
+```
 
 ## Hardware assumed
 
