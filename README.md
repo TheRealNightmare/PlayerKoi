@@ -1,6 +1,12 @@
 # Player Koi
 
-https://github.com/user-attachments/assets/5af99007-9873-4c46-b6aa-f8b299653f17
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23300029.svg)](https://doi.org/10.5281/zenodo.23300029)
+
+[![Player Koi: animated explainer (2:37)](video/poster.png)](video/out/player_koi_explainer_github.mp4)
+
+*A 2½-minute animated explainer of how the board sees, thinks and moves.
+Click the image, then **View raw**, to download and watch it. It was made
+with Manim and an Edge TTS voice, and the source is in [`video/`](video/).*
 
 Real-time chess piece detection on a Raspberry Pi 5: a fixed overhead
 IMX219 camera watches a physical chess board, tracks moves as real
@@ -423,4 +429,9 @@ tools/        generators for everything in design/, plus read_board_ai.py,
               zstandard
 training/     dataset collection + training + export instructions (see
               training/NOTES.md) -- most steps run off-Pi
+video/        the animated explainer: scenes.py (Manim scenes), script.md
+              (narration), render.sh (renders + joins everything into
+              out/), edge_tts_service.py (the voiceover). Rendering needs
+              the local conda env in video/.conda (manim, manim-voiceover,
+              edge-tts, python-chess) and an internet connection for the voice
 ```

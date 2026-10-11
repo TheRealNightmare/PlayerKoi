@@ -13,8 +13,8 @@ machine is built the way it is, `docs/HARDWARE.md`.
 - Success looks like: `READY ChessBot-V1` printed on the serial monitor
 
 > **Do not flash `firmware/chess_gantry/`.** That sketch is for a different,
-> unbuilt machine — TMC2208 drivers, limit switches, a different pin map, and
-> twice the steps per millimetre. On this rig it would home into switches that
+> unbuilt machine — limit switches, a different pin map, and twice the steps
+> per millimetre (both use TMC2208 drivers; this rig runs them at 1/2 step). On this rig it would home into switches that
 > aren't fitted and drive every distance 2× too far.
 
 There are two sketches in this repo on purpose. `chessbot_v1` is what runs the
@@ -23,7 +23,8 @@ the Pi plans the paths instead of the Uno.
 
 ## Wiring
 
-Arduino Uno + CNC Shield V3, CoreXY belts, DRV8833 driving the electromagnet.
+Arduino Uno + CNC Shield V3 with two TMC2208 stepper drivers (1/2 step),
+CoreXY belts, DRV8833 driving the electromagnet.
 
 | Signal | Pin | Notes |
 |---|---|---|
